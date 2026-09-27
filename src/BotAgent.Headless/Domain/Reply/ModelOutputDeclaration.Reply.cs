@@ -8,8 +8,8 @@ namespace BotAgent.Domain.Reply;
 /// </summary>
 public readonly partial record struct ModelOutputDeclaration
 {
-    /// <summary>适合度 / 正文 / 氛围 / 氛围补注。</summary>
-    private static (int? Suitability, string? Reply, string? Vibe, string? VibeNote) ReadReply(JsonElement root)
+    /// <summary>适合度 / 正文 / 氛围 / 氛围补注 / 认知意图。</summary>
+    private static (int? Suitability, string? Reply, string? Vibe, string? VibeNote, string? Intent) ReadReply(JsonElement root)
     {
         int? suitability = null;
         if (root.TryGetProperty("suitability", out var s))
@@ -46,7 +46,20 @@ public readonly partial record struct ModelOutputDeclaration
             }
         }
 
-        return (suitability, reply, vibe, vibeNote);
+        string? intent = null;
+        if ((root.TryGetProperty("intent", out var it) || root.TryGetProperty("mode", out it)) && it.ValueKind == JsonValueKind.String)
+        {
+            var raw = it.GetString()?.Trim().ToLowerInvariant();
+            intent = raw switch
+            {
+                "rational" or "理性" => "rational",
+                "emotional" or "感性" => "emotional",
+                "balanced" or "中性" => "balanced",
+                _ => raw
+            };
+        }
+
+        return (suitability, reply, vibe, vibeNote, intent);
     }
 
     /// <summary>表情包 / 引用目标 / 戳谁。</summary>
