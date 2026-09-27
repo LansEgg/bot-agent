@@ -18,7 +18,7 @@ public static class Program
             SettingsExistenceTests();
             AuditChainTests();
             TraceArchiveTests();
-            Console.WriteLine("通过 8，失败 0");
+            Console.WriteLine("通过 9，失败 0");
             return 0;
         }
         catch (Exception ex)
@@ -76,6 +76,12 @@ public static class Program
 
     private static void TraceArchiveTests()
     {
+        var counters = new TurnTraceStore();
+        counters.Begin("synthetic:tenant-a");
+        counters.Begin("synthetic:tenant-b");
+        Check(counters.StartedTotal == 2 && counters.ActiveCount == 2,
+            "决策轮开始后 metrics 请求总量与活动数可观察");
+
         var trace = new TurnTrace(
             "synthetic-trace-1",
             "synthetic:tenant-a",
