@@ -10,9 +10,13 @@ public sealed partial class WebUiServer
     {
         var summary = _traceArchive?.Snapshot();
         var durations = summary?.Durations ?? Array.Empty<int>();
+        var started = _traces?.StartedTotal ?? 0;
         var completed = _traces?.CompletedTotal ?? 0;
         var active = _traces?.ActiveCount ?? 0;
         var body = new StringBuilder()
+            .AppendLine("# HELP botagent_turns_started_total Decision turns accepted by the processing pipeline since process start.")
+            .AppendLine("# TYPE botagent_turns_started_total counter")
+            .Append("botagent_turns_started_total ").AppendLine(started.ToString(CultureInfo.InvariantCulture))
             .AppendLine("# HELP botagent_turns_completed_total Completed decision turns since process start.")
             .AppendLine("# TYPE botagent_turns_completed_total counter")
             .Append("botagent_turns_completed_total ").AppendLine(completed.ToString(CultureInfo.InvariantCulture))
