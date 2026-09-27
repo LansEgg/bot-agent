@@ -132,6 +132,13 @@ public sealed partial class WebUiServer
         if (body["whitelistPrivates"] is JsonNode wlp) s.WhitelistPrivates = wlp.GetValue<string>() ?? string.Empty;
             if (body["aiDesire"] is JsonNode desire) s.AiDesire = Math.Clamp(desire.GetValue<int>(), 0, 100);
         if (body["suitabilityThreshold"] is JsonNode th) s.SuitabilityThreshold = Math.Clamp(th.GetValue<int>(), 0, 100);
+        if (body["adaptiveSamplingEnabled"] is JsonNode ase) s.AdaptiveSamplingEnabled = ase.GetValue<bool>();
+        if (body["rationalTemperature"] is JsonNode rt) s.RationalTemperature = Math.Clamp(rt.GetValue<double>(), 0.0, 2.0);
+        if (body["rationalTopP"] is JsonNode rtp) s.RationalTopP = Math.Clamp(rtp.GetValue<double>(), 0.0, 1.0);
+        if (body["emotionalTemperature"] is JsonNode et) s.EmotionalTemperature = Math.Clamp(et.GetValue<double>(), 0.0, 2.0);
+        if (body["emotionalTopP"] is JsonNode etp) s.EmotionalTopP = Math.Clamp(etp.GetValue<double>(), 0.0, 1.0);
+        if (body["defaultTemperature"] is JsonNode dt) s.DefaultTemperature = Math.Clamp(dt.GetValue<double>(), 0.0, 2.0);
+        if (body["defaultTopP"] is JsonNode dtp) s.DefaultTopP = Math.Clamp(dtp.GetValue<double>(), 0.0, 1.0);
         // 批次 E：聊天侧有限步进循环的上限（1 = 与改造前逐字一致；钳到 1..3，与 AgentTurnLoop 同一口径）
         if (body["maxAgentSteps"] is JsonNode steps) s.MaxAgentSteps = Math.Clamp(steps.GetValue<int>(), 1, 3);
         // 批次 F：本地通道名单（空 = 整条通道都不建；改它要重启才生效 —— 通道是在装配点建的，热更新只改名单）
@@ -562,6 +569,13 @@ public sealed partial class WebUiServer
                 ["fastModel"] = s.FastModel,
                 ["replyModel"] = s.ReplyModel,
         ["suitabilityThreshold"] = s.SuitabilityThreshold,
+        ["adaptiveSamplingEnabled"] = s.AdaptiveSamplingEnabled,
+        ["rationalTemperature"] = s.RationalTemperature,
+        ["rationalTopP"] = s.RationalTopP,
+        ["emotionalTemperature"] = s.EmotionalTemperature,
+        ["emotionalTopP"] = s.EmotionalTopP,
+        ["defaultTemperature"] = s.DefaultTemperature,
+        ["defaultTopP"] = s.DefaultTopP,
         ["maxAgentSteps"] = s.MaxAgentSteps,
         ["localChannelIds"] = s.LocalChannelIds,
         ["agentServerUseGate"] = s.AgentServerUseGate,

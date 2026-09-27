@@ -109,6 +109,13 @@ public static class BotConfig
     [nameof(AppSettings.WhitelistPrivates)] = new[] { "QQCHAT_WHITELIST_PRIVATES" },
             [nameof(AppSettings.AiDesire)] = new[] { "QQCHAT_AI_DESIRE" },
             [nameof(AppSettings.SuitabilityThreshold)] = new[] { "QQCHAT_SUITABILITY_THRESHOLD" },
+            [nameof(AppSettings.AdaptiveSamplingEnabled)] = new[] { "QQCHAT_ADAPTIVE_SAMPLING" },
+            [nameof(AppSettings.RationalTemperature)] = new[] { "QQCHAT_RATIONAL_TEMP" },
+            [nameof(AppSettings.RationalTopP)] = new[] { "QQCHAT_RATIONAL_TOP_P" },
+            [nameof(AppSettings.EmotionalTemperature)] = new[] { "QQCHAT_EMOTIONAL_TEMP" },
+            [nameof(AppSettings.EmotionalTopP)] = new[] { "QQCHAT_EMOTIONAL_TOP_P" },
+            [nameof(AppSettings.DefaultTemperature)] = new[] { "QQCHAT_DEFAULT_TEMP" },
+            [nameof(AppSettings.DefaultTopP)] = new[] { "QQCHAT_DEFAULT_TOP_P" },
             [nameof(AppSettings.AiModeEnabled)] = new[] { "QQCHAT_AI_MODE" },
             [nameof(AppSettings.MaxTokens)] = new[] { "QQCHAT_MAX_TOKENS" },
             [nameof(AppSettings.PrivateCooldownSeconds)] = new[] { "QQCHAT_PRIVATE_COOLDOWN" },
@@ -261,6 +268,13 @@ public static class BotConfig
         s.WhitelistPrivates = Str("QQCHAT_WHITELIST_PRIVATES") ?? s.WhitelistPrivates;
         s.AiDesire = Int("QQCHAT_AI_DESIRE") ?? s.AiDesire;
         s.SuitabilityThreshold = Int("QQCHAT_SUITABILITY_THRESHOLD") ?? s.SuitabilityThreshold;
+        s.AdaptiveSamplingEnabled = Bool("QQCHAT_ADAPTIVE_SAMPLING") ?? s.AdaptiveSamplingEnabled;
+        s.RationalTemperature = Dbl("QQCHAT_RATIONAL_TEMP") ?? s.RationalTemperature;
+        s.RationalTopP = Dbl("QQCHAT_RATIONAL_TOP_P") ?? s.RationalTopP;
+        s.EmotionalTemperature = Dbl("QQCHAT_EMOTIONAL_TEMP") ?? s.EmotionalTemperature;
+        s.EmotionalTopP = Dbl("QQCHAT_EMOTIONAL_TOP_P") ?? s.EmotionalTopP;
+        s.DefaultTemperature = Dbl("QQCHAT_DEFAULT_TEMP") ?? s.DefaultTemperature;
+        s.DefaultTopP = Dbl("QQCHAT_DEFAULT_TOP_P") ?? s.DefaultTopP;
         s.AiModeEnabled = Bool("QQCHAT_AI_MODE") ?? s.AiModeEnabled;
         s.MaxTokens = Int("QQCHAT_MAX_TOKENS") ?? s.MaxTokens;
         s.PrivateCooldownSeconds = Int("QQCHAT_PRIVATE_COOLDOWN") ?? s.PrivateCooldownSeconds;
@@ -463,6 +477,12 @@ public static class BotConfig
         s.QuickLoginUin = s.QuickLoginUin.Trim();
         s.AiDesire = Math.Clamp(s.AiDesire, 0, 100);
         s.SuitabilityThreshold = Math.Clamp(s.SuitabilityThreshold, 0, 100);
+        s.RationalTemperature = Math.Clamp(s.RationalTemperature, 0.0, 2.0);
+        s.RationalTopP = Math.Clamp(s.RationalTopP, 0.0, 1.0);
+        s.EmotionalTemperature = Math.Clamp(s.EmotionalTemperature, 0.0, 2.0);
+        s.EmotionalTopP = Math.Clamp(s.EmotionalTopP, 0.0, 1.0);
+        s.DefaultTemperature = Math.Clamp(s.DefaultTemperature, 0.0, 2.0);
+        s.DefaultTopP = Math.Clamp(s.DefaultTopP, 0.0, 1.0);
         // 参与状态机的上限（P1）：env / 老配置里的值同样要钳 —— 这是服务端那道硬边界，
         // 面板与 env 都只是“愿望”。（状态机内部还会再过一次 Clamped()，两层都不省。）
         s.ParticipationMaxConsecutiveReplies = Math.Clamp(s.ParticipationMaxConsecutiveReplies, 1, 10);
@@ -659,5 +679,22 @@ public static class BotConfig
             Console.Error.WriteLine($"[Config] {n}='{v}' 不是布尔值，已忽略");
             return null;
         }
+    }
+
+    private static double? Dbl(string name)
+    {
+        var raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        if (double.TryParse(raw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        {
+            return value;
+        }
+
+        Console.Error.WriteLine($"[Config] {name}='{raw}' 不是浮点数，已忽略");
+        return null;
     }
 }

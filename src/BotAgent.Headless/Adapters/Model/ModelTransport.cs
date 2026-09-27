@@ -67,7 +67,8 @@ internal sealed class ModelTransport : IModelTransport
     /// 供调用方写诊断日志与拉黑嫌疑图片（上游吞回复时这两个数是关键线索）。
     /// </summary>
     public async Task<BuiltRequest> BuildAsync(
-        IReadOnlyList<ChatMessage> window, string systemContent, IReadOnlyCollection<long> quotableIds, CancellationToken ct)
+        IReadOnlyList<ChatMessage> window, string systemContent, IReadOnlyCollection<long> quotableIds, CancellationToken ct,
+        Domain.Reply.SamplingProfile? sampling = null)
     {
         var messages = new JsonArray();
         messages.Add(new JsonObject { ["role"] = "system", ["content"] = systemContent });
@@ -158,16 +159,37 @@ internal sealed class ModelTransport : IModelTransport
             FileLog.Write("Agent", "上下文以自己发言结尾 → 补一条系统口吻的 user 轮（上游不接受 model-turn 结尾）");
         }
 
+        var replyModel = _settings.ReplyModel;
         var payload = new JsonObject
         {
             // 聊天回复：快速档开就换轻量模型（ReplyModel 里包了判断；其余后台活儿仍用主模型）
-            ["model"] = _settings.ReplyModel,
+            ["model"] = replyModel,
             ["messages"] = messages,
             ["max_tokens"] = _settings.MaxTokens > 0 ? _settings.MaxTokens : 2048, // 仅防御非法值（旧数据可能为负数），不设上限
-            ["temperature"] = 0.7
         };
 
+        if (SupportsSamplingParameters(replyModel))
+        {
+            var temp = sampling?.Temperature ?? _settings.DefaultTemperature;
+            payload["temperature"] = Math.Clamp(temp, 0.0, 2.0);
+            var topP = sampling?.TopP ?? _settings.DefaultTopP;
+            if (topP > 0)
+            {
+                payload["top_p"] = Math.Clamp(topP, 0.01, 1.0);
+            }
+        }
+
         return new BuiltRequest(payload, attachedImages, attachedImageIds);
+    }
+
+    /// <summary>
+    /// 检测模型是否支持自定义 temperature 与 top_p 超参数（推理模型如 o1/o3/reasoner 不支持自定义采样参数）。
+    /// </summary>
+    public static bool SupportsSamplingParameters(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)) return true;
+        var m = model.ToLowerInvariant();
+        return !m.StartsWith("o1") && !m.StartsWith("o3") && !m.Contains("reasoner");
     }
 
     /// <summary>

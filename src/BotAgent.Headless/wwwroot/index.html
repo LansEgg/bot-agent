@@ -550,6 +550,31 @@
                       <input type="range" id="setMaxAgentSteps" min="1" max="3" step="1" />
                     </div>
                     <label class="switch-row">
+                      <input type="checkbox" id="setAdaptiveSampling" />
+                      <span class="switch"></span>
+                      <span>自适应采样超参数（理性低温保准，感性升温灵动）</span>
+                    </label>
+                    <div class="grid-2">
+                      <div class="field">
+                        <label>理性温度<b class="val" id="rationalTempVal">0.3</b></label>
+                        <input type="range" id="setRationalTemp" min="0" max="1" step="0.05" />
+                      </div>
+                      <div class="field">
+                        <label>理性 Top_P<b class="val" id="rationalTopPVal">0.3</b></label>
+                        <input type="range" id="setRationalTopP" min="0" max="1" step="0.05" />
+                      </div>
+                    </div>
+                    <div class="grid-2">
+                      <div class="field">
+                        <label>感性温度<b class="val" id="emotionalTempVal">0.85</b></label>
+                        <input type="range" id="setEmotionalTemp" min="0" max="1.5" step="0.05" />
+                      </div>
+                      <div class="field">
+                        <label>感性 Top_P<b class="val" id="emotionalTopPVal">0.9</b></label>
+                        <input type="range" id="setEmotionalTopP" min="0" max="1" step="0.05" />
+                      </div>
+                    </div>
+                    <label class="switch-row">
                       <input type="checkbox" id="setAiMode" />
                       <span class="switch"></span>
                       <span>AI 自动回复开关</span>

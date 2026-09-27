@@ -184,7 +184,8 @@ public static class ModelOutputParser
                     ReasonCode: verdict.ReasonCode,
                     Malformed: verdict.Malformed,
                     ToolId: verdict.ToolId,
-                    QuestionText: verdict.QuestionText),
+                    QuestionText: verdict.QuestionText,
+                    Intent: declared.Intent),
                 notices);
         }
         catch (JsonException)

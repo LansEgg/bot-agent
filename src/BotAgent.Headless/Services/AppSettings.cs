@@ -66,6 +66,32 @@ public sealed class AppSettings
 
     public int MaxTokens { get; set; } = 2048;
 
+    // ---------- 自适应采样超参数 (理性/感性动态温度与 top_p) ----------
+    /// <summary>是否开启动态自适应采样（理性问题降温提准确率，感性互动升温保灵动）。默认开。</summary>
+    public bool AdaptiveSamplingEnabled { get; set; } = true;
+    /// <summary>理性问题目标温度（0.0 ~ 2.0），默认 0.3。</summary>
+    public double RationalTemperature { get; set; } = 0.3;
+    /// <summary>理性问题收窄采样 Top_P（0.0 ~ 1.0），默认 0.3。</summary>
+    public double RationalTopP { get; set; } = 0.3;
+    /// <summary>感性互动目标温度（0.0 ~ 2.0），默认 0.85。</summary>
+    public double EmotionalTemperature { get; set; } = 0.85;
+    /// <summary>感性互动放宽采样 Top_P（0.0 ~ 1.0），默认 0.9。</summary>
+    public double EmotionalTopP { get; set; } = 0.9;
+    /// <summary>基准默认温度（未开自适应或中性时的温度），默认 0.7。</summary>
+    public double DefaultTemperature { get; set; } = 0.7;
+    /// <summary>基准默认 Top_P（未开自适应或中性时），默认 0.85。</summary>
+    public double DefaultTopP { get; set; } = 0.85;
+
+    /// <summary>构造当前生效的自适应采样配置契约。</summary>
+    public Domain.Reply.AdaptiveSamplingConfig ToSamplingConfig() => new(
+        AdaptiveSamplingEnabled,
+        RationalTemperature,
+        RationalTopP,
+        EmotionalTemperature,
+        EmotionalTopP,
+        DefaultTemperature,
+        DefaultTopP);
+
     // ---------- OneBot 通道 ----------
 
     /// <summary>ForwardWebSocket（推荐）/ ReverseWebSocket / Http。</summary>
