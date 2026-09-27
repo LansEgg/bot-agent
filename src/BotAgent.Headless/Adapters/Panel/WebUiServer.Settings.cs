@@ -132,6 +132,13 @@ public sealed partial class WebUiServer
         if (body["whitelistPrivates"] is JsonNode wlp) s.WhitelistPrivates = wlp.GetValue<string>() ?? string.Empty;
             if (body["aiDesire"] is JsonNode desire) s.AiDesire = Math.Clamp(desire.GetValue<int>(), 0, 100);
         if (body["suitabilityThreshold"] is JsonNode th) s.SuitabilityThreshold = Math.Clamp(th.GetValue<int>(), 0, 100);
+        if (body["adaptiveSamplingEnabled"] is JsonNode ase) s.AdaptiveSamplingEnabled = ase.GetValue<bool>();
+        if (body["rationalTemperature"] is JsonNode rt) s.RationalTemperature = Math.Clamp(rt.GetValue<double>(), 0.0, 2.0);
+        if (body["rationalTopP"] is JsonNode rtp) s.RationalTopP = Math.Clamp(rtp.GetValue<double>(), 0.0, 1.0);
+        if (body["emotionalTemperature"] is JsonNode et) s.EmotionalTemperature = Math.Clamp(et.GetValue<double>(), 0.0, 2.0);
+        if (body["emotionalTopP"] is JsonNode etp) s.EmotionalTopP = Math.Clamp(etp.GetValue<double>(), 0.0, 1.0);
+        if (body["defaultTemperature"] is JsonNode dt) s.DefaultTemperature = Math.Clamp(dt.GetValue<double>(), 0.0, 2.0);
+        if (body["defaultTopP"] is JsonNode dtp) s.DefaultTopP = Math.Clamp(dtp.GetValue<double>(), 0.0, 1.0);
         // 批次 E：聊天侧有限步进循环的上限（1 = 与改造前逐字一致；钳到 1..3，与 AgentTurnLoop 同一口径）
         if (body["maxAgentSteps"] is JsonNode steps) s.MaxAgentSteps = Math.Clamp(steps.GetValue<int>(), 1, 3);
         // 批次 F：本地通道名单（空 = 整条通道都不建；改它要重启才生效 —— 通道是在装配点建的，热更新只改名单）
@@ -542,15 +549,23 @@ public sealed partial class WebUiServer
     }
 
     private JsonObject BuildSettingsPayload()
-
     {
         var s = _settings;
 
         return new JsonObject
         {
-            ["runtime"] = new JsonObject
-            {
-                ["botPersona"] = s.BotPersona,
+            ["runtime"] = BuildRuntimePayload(s),
+            // 只读：容器环境变量职责，改这里无效（见 BuildEnvPayload）
+            ["env"] = BuildEnvPayload(s),
+            ["settingsFile"] = _settingsRepo.FilePath
+        };
+    }
+
+    private JsonObject BuildRuntimePayload(AppSettings s)
+    {
+        var runtime = new JsonObject
+        {
+            ["botPersona"] = s.BotPersona,
                 ["messageWhitelist"] = s.MessageWhitelist,
         ["whitelistGroups"] = s.WhitelistGroups,
         ["whitelistPrivates"] = s.WhitelistPrivates,
@@ -562,6 +577,13 @@ public sealed partial class WebUiServer
                 ["fastModel"] = s.FastModel,
                 ["replyModel"] = s.ReplyModel,
         ["suitabilityThreshold"] = s.SuitabilityThreshold,
+        ["adaptiveSamplingEnabled"] = s.AdaptiveSamplingEnabled,
+        ["rationalTemperature"] = s.RationalTemperature,
+        ["rationalTopP"] = s.RationalTopP,
+        ["emotionalTemperature"] = s.EmotionalTemperature,
+        ["emotionalTopP"] = s.EmotionalTopP,
+        ["defaultTemperature"] = s.DefaultTemperature,
+        ["defaultTopP"] = s.DefaultTopP,
         ["maxAgentSteps"] = s.MaxAgentSteps,
         ["localChannelIds"] = s.LocalChannelIds,
         ["agentServerUseGate"] = s.AgentServerUseGate,
@@ -586,20 +608,6 @@ public sealed partial class WebUiServer
                 ["profileSummaryThreshold"] = s.ProfileSummaryThreshold,
                 ["profileSummaryMaxChars"] = s.ProfileSummaryMaxChars,
                 ["profileSummaryIntervalSeconds"] = s.ProfileSummaryIntervalSeconds,
-                ["enableVoice"] = s.EnableVoice,
-        ["voiceName"] = s.VoiceName,
-        ["voiceSpeed"] = s.VoiceSpeed,
-            ["voicePitch"] = s.VoicePitch,
-            ["voiceVol"] = s.VoiceVol,
-            ["voiceEmotion"] = s.VoiceEmotion,
-        ["voiceMaxChars"] = s.VoiceMaxChars,
-        ["voiceEagerness"] = s.VoiceEagerness,
-        ["ttsServiceUrl"] = s.TtsServiceUrl,
-        ["ttsProvider"] = s.TtsProvider,
-        ["ttsApiBase"] = s.TtsApiBase,
-        ["ttsModel"] = s.TtsModel,
-        ["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey()),
-        ["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey()),
 
         // 官方通道（QQ 开放平台）：与私域并存，两边会话/上下文/白名单互不串台。
         // secret 不在这里回（密钥只从环境变量读，面板不回显）。
@@ -732,11 +740,28 @@ public sealed partial class WebUiServer
         // 当前心情（可手改；空 = 由代码按被戳次数自动描述）
         ["mood"] = _mood.CurrentText(Clock.Now) ?? string.Empty,
         ["moodSummary"] = _mood.Describe(Clock.Now)
-            },
-            // 只读：容器环境变量职责，改这里无效（见 BuildEnvPayload）
-            ["env"] = BuildEnvPayload(s),
-            ["settingsFile"] = _settingsRepo.FilePath
         };
+
+        PopulateVoiceSettings(runtime, s);
+        return runtime;
+    }
+
+    private void PopulateVoiceSettings(JsonObject runtime, AppSettings s)
+    {
+        runtime["enableVoice"] = s.EnableVoice;
+        runtime["voiceName"] = s.VoiceName;
+        runtime["voiceSpeed"] = s.VoiceSpeed;
+        runtime["voicePitch"] = s.VoicePitch;
+        runtime["voiceVol"] = s.VoiceVol;
+        runtime["voiceEmotion"] = s.VoiceEmotion;
+        runtime["voiceMaxChars"] = s.VoiceMaxChars;
+        runtime["voiceEagerness"] = s.VoiceEagerness;
+        runtime["ttsServiceUrl"] = s.TtsServiceUrl;
+        runtime["ttsProvider"] = s.TtsProvider;
+        runtime["ttsApiBase"] = s.TtsApiBase;
+        runtime["ttsModel"] = s.TtsModel;
+        runtime["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey());
+        runtime["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey());
     }
 
     /// <summary>

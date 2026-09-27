@@ -55,7 +55,8 @@ public readonly partial record struct ModelOutputDeclaration(
     string? Read,
     string? Action,
     string? Reason,
-    string? Tool)
+    string? Tool,
+    string? Intent = null)
 {
     /// <summary>
     /// 把模型输出里的 JSON 对象读成声明（只读、不判定；格式不合法的一律当"没给"）。
@@ -63,7 +64,7 @@ public readonly partial record struct ModelOutputDeclaration(
     /// </summary>
     public static ModelOutputDeclaration FromJson(JsonElement root)
     {
-        var (suitability, reply, vibe, vibeNote) = ReadReply(root);
+        var (suitability, reply, vibe, vibeNote, intent) = ReadReply(root);
         var (stickerId, replyToId, pokeTargetId) = ReadTargets(root);
         var (listen, shareSong, mood) = ReadMedia(root);
         var (both, speak, voiceEmotion, voiceSpeed, voicePitch) = ReadVoice(root);
@@ -73,7 +74,7 @@ public readonly partial record struct ModelOutputDeclaration(
         return new ModelOutputDeclaration(
             suitability, reply, vibe, vibeNote, stickerId, replyToId, pokeTargetId, mood,
             listen, shareSong, both, speak, voiceEmotion, voiceSpeed, voicePitch,
-            search, read, action, reason, tool);
+            search, read, action, reason, tool, intent);
     }
 
     /// <summary>结构化动作：action / reasonCode / toolRequest。</summary>

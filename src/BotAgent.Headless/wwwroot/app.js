@@ -1452,6 +1452,15 @@ function renderChannelStatus(channels) {
     $("threshVal").textContent = r.suitabilityThreshold;
     $("setMaxAgentSteps").value = r.maxAgentSteps;
     $("agentStepsVal").textContent = r.maxAgentSteps;
+    $("setAdaptiveSampling").checked = r.adaptiveSamplingEnabled !== false;
+    $("setRationalTemp").value = r.rationalTemperature ?? 0.3;
+    $("rationalTempVal").textContent = r.rationalTemperature ?? 0.3;
+    $("setRationalTopP").value = r.rationalTopP ?? 0.3;
+    $("rationalTopPVal").textContent = r.rationalTopP ?? 0.3;
+    $("setEmotionalTemp").value = r.emotionalTemperature ?? 0.85;
+    $("emotionalTempVal").textContent = r.emotionalTemperature ?? 0.85;
+    $("setEmotionalTopP").value = r.emotionalTopP ?? 0.9;
+    $("emotionalTopPVal").textContent = r.emotionalTopP ?? 0.9;
     $("setAiMode").checked = r.aiModeEnabled;
     $("setGroupCooldown").value = r.groupCooldownSeconds;
     $("setPrivateCooldown").value = r.privateCooldownSeconds;
@@ -1682,6 +1691,11 @@ function renderChannelStatus(channels) {
       aiDesire: Number($("setDesire").value),
       suitabilityThreshold: Number($("setThreshold").value),
       maxAgentSteps: Number($("setMaxAgentSteps").value),
+      adaptiveSamplingEnabled: $("setAdaptiveSampling").checked,
+      rationalTemperature: Number($("setRationalTemp").value),
+      rationalTopP: Number($("setRationalTopP").value),
+      emotionalTemperature: Number($("setEmotionalTemp").value),
+      emotionalTopP: Number($("setEmotionalTopP").value),
       aiModeEnabled: $("setAiMode").checked,
       maxTokens: Number($("setMaxTokens").value),
       groupCooldownSeconds: Number($("setGroupCooldown").value),
@@ -3323,6 +3337,10 @@ function renderChannelStatus(channels) {
     $("setDesire").addEventListener("input", (e) => { $("desireVal").textContent = e.target.value; });
     $("setVoiceEagerness").addEventListener("input", (e) => { $("voiceEagernessVal").textContent = e.target.value; });
     $("setThreshold").addEventListener("input", (e) => { $("threshVal").textContent = e.target.value; });
+    $("setRationalTemp").addEventListener("input", (e) => { $("rationalTempVal").textContent = e.target.value; });
+    $("setRationalTopP").addEventListener("input", (e) => { $("rationalTopPVal").textContent = e.target.value; });
+    $("setEmotionalTemp").addEventListener("input", (e) => { $("emotionalTempVal").textContent = e.target.value; });
+    $("setEmotionalTopP").addEventListener("input", (e) => { $("emotionalTopPVal").textContent = e.target.value; });
     $("saveBtn").addEventListener("click", saveSettings);
 
     // 清除密钥：必须先确认（密钥没了机器人就发不出话，不是小事）
