@@ -3,6 +3,8 @@ using BotAgent.Adapters.Panel;
 using BotAgent.Adapters.Model;
 using BotAgent.Domain.Qq;
 using BotAgent.Domain.Ports;
+using BotAgent.Domain.Model;
+using BotAgent.Services.Resilience;
 using BotAgent.Services;
 using BotAgent.Services.Agent;
 using BotAgent.Services.NapCat;
@@ -87,12 +89,18 @@ internal static class CompositionRoot
         // 配置库：同样无状态；热更新与面板共用它。
         var settingsStore = new SettingsStore();
 
+        // Provider 注册表只登记非敏感路由元数据；实际密钥仍由环境变量/密钥库提供。
+        // 启动时同步 primary 的地址与模型名，但不覆盖已有熔断状态。
+        var providerStore = new ModelProviderStore();
+        providerStore.EnsurePrimary(settings);
+
         // ① 上行通道层（协议端 + 可选的官方通道 + 聚合器）：见 BuildChannelLayer
-        var (gateway, source, official, local) = BuildChannelLayer(settings, settingsBox);
+        var riskBackoff = new ProtocolRiskBackoff(msg => FileLog.Write("OneBot", msg));
+        var (gateway, source, official, local) = BuildChannelLayer(settings, settingsBox, riskBackoff);
 
         // ② 模型与媒体层（模型客户端 / 表情包 / 桥 / 语音 / 音乐与链接 / 联网研究）：见 BuildModelAndMediaLayer
         var (brain, store, profiles, stickers, agentBridge, voice, music, links, research) =
-            BuildModelAndMediaLayer(settings, settingsBox, source, secrets);
+            BuildModelAndMediaLayer(settings, settingsBox, source, secrets, providerStore);
 
         // ---------------- 用例层：谁依赖谁，只在这里看得到 ----------------
         // 共享状态先建：登录号 / 收摊标记 / 事件聚合 / 白名单闸门（其余组件都要问它们）
@@ -115,7 +123,7 @@ internal static class CompositionRoot
         // 决策轨迹（批次 C）：一轮一条、只有形状；回复链 / 发送层 / 能力闸门三处往上记节点。
         var traces = new TurnTraceStore(archive: new TraceArchiveStore());
         var audit = new AuditLogStore();
-        var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit);
+        var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit, riskBackoff);
 
         // 各域用例
         var vibes = new VibeTracker();
@@ -174,7 +182,7 @@ internal static class CompositionRoot
                 Log: ui.EmitLog,
                 SelfId: () => identity.SelfId,
                 IsDisposed: () => lifetime.IsDisposed),
-            traces);
+            traces, riskBackoff);
         poke.RequestReply = conversation => reply.RequestReply(conversation, null);
 
         // 后台巡检（静默兜底 / 画像巡检 / 表情包巡检 / 账号在线探测）
@@ -259,9 +267,9 @@ internal static class CompositionRoot
     /// 两条路交给**同一个** Agent，隔离靠会话 key 的通道前缀（见 Channels.Key）。顺序与日志措辞逐字搬来。
     /// </summary>
     private static (OneBotGateway Gateway, IQqChatSource Source, OfficialBotGateway? Official, LocalChannelSource? Local) BuildChannelLayer(
-        AppSettings settings, SettingsBox settingsBox)
+        AppSettings settings, SettingsBox settingsBox, ProtocolRiskBackoff riskBackoff)
     {
-        var gateway = new OneBotGateway(settingsBox)
+        var gateway = new OneBotGateway(settingsBox, riskBackoff)
         {
             SelfIdHint = settings.UinOrZero
         };
@@ -325,7 +333,7 @@ internal static class CompositionRoot
     /// </summary>
     private static (OpenAiClient Brain, ConversationStore Store, MemberProfileStore Profiles, StickerService Stickers,
         AgentBridgeServer AgentBridge, VoiceUseCase Voice, MusicUseCase Music, LinkPreviewer Links, ResearchUseCase Research)
-        BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets)
+        BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets, ModelProviderStore providerStore)
     {
         // 模型那条路的出网：辅助调用 60 秒、聊天按 QQCHAT_MODEL_TIMEOUT_SECONDS（默认 120）、图片下载 8 秒
         var modelAuxHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "model-aux");
@@ -337,7 +345,36 @@ internal static class CompositionRoot
         var transport = new ModelTransport(
             settingsBox, modelChatHttp, modelAuxHttp, imageDownloader, OpenAiClient.ModelTimeout());
 
-        var brain = new OpenAiClient(settingsBox, modelAuxHttp, modelChatHttp, imageDownloader, transport)
+        var persistedProviders = providerStore.LoadAll();
+        var providerRoutes = persistedProviders
+            .Select(p => TryBuildProviderRoute(p, settings, secrets))
+            .Where(route => route is not null)
+            .Cast<ModelProviderRoute>()
+            .ToDictionary(route => route.ProviderId, StringComparer.Ordinal);
+        var providerRunner = new ProviderFailoverRunner(
+            persistedProviders.Select(p => new ProviderCandidate(p.Id, p.Priority, p.IsEnabled)),
+            initialSnapshots: persistedProviders.Select(ToCircuitSnapshot),
+            onSnapshotChanged: snapshot =>
+            {
+                try
+                {
+                    providerStore.SaveCircuit(snapshot);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Warn("Model", $"Provider 熔断状态持久化失败（仅影响恢复台账）：{ex.GetType().Name}");
+                }
+            });
+
+                var brain = new OpenAiClient(settingsBox, modelAuxHttp, modelChatHttp, imageDownloader, transport,
+            providerRunner,
+            providerRoutes,
+            providerId =>
+            {
+                var provider = persistedProviders.FirstOrDefault(p =>
+                    string.Equals(p.Id, providerId, StringComparison.Ordinal));
+                return provider is null ? null : TryBuildProviderRoute(provider, settingsBox.Current, secrets);
+            })
         {
             BotIdentity = string.IsNullOrWhiteSpace(settings.NormalizedUin) ? null : settings.NormalizedUin,
             BotPersona = settings.BotPersona,
@@ -361,7 +398,7 @@ internal static class CompositionRoot
         // 语音（TTS）：客户端、频率门、面板试听都在这个用例里（HttpClient 也只在这里造一个）
         var voiceHttp = new HttpFetcher(TimeSpan.FromSeconds(30), msg => FileLog.Write("Net", msg), "voice");
         var voice = new VoiceUseCase(
-            new VoiceService(voiceHttp, () => settingsBox.Current, secrets, msg => FileLog.Write("Voice", msg)),
+            new VoiceService(voiceHttp, () => settingsBox.Current, secrets, msg => FileLog.Write("Voice", msg), new ToolCircuitBreaker("tts")),
             settingsBox,
             msg => FileLog.Write("Voice", msg));
 
@@ -391,10 +428,69 @@ internal static class CompositionRoot
         // 联网研究（搜索 / 读页面）：它自己的 HttpClient 超时给宽松点（检索要等上游模型回话）
         var researchHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "search");
         var research = new ResearchUseCase(
-            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg)),
+            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg), new ToolCircuitBreaker("search")),
             msg => FileLog.Write("Search", msg));
 
 
         return (brain, store, profiles, stickers, agentBridge, voice, music, links, research);
     }
+
+    private static ModelProviderRoute? TryBuildProviderRoute(
+        PersistedModelProvider provider, AppSettings settings, ISecretsRepository secrets)
+    {
+        var apiKey = ResolveProviderSecret(provider.SecretKeyRef, settings, secrets);
+                if (string.IsNullOrWhiteSpace(apiKey) ||
+            apiKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            apiKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(provider.BaseUrl) ||
+            string.IsNullOrWhiteSpace(provider.ModelName))
+        {
+            return null;
+        }
+
+                var baseUrl = string.Equals(provider.Id, "primary", StringComparison.Ordinal)
+            ? settings.ModelBaseUrl
+            : provider.BaseUrl;
+        var model = string.Equals(provider.Id, "primary", StringComparison.Ordinal)
+            ? settings.Model
+            : provider.ModelName;
+        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        return new ModelProviderRoute(provider.Id, baseUrl.Trim(), model.Trim(), apiKey.Trim());
+    }
+
+    private static string? ResolveProviderSecret(
+        string secretRef, AppSettings settings, ISecretsRepository secrets)
+    {
+        if (secretRef.StartsWith("secret:", StringComparison.OrdinalIgnoreCase))
+        {
+            return secrets.Load(secretRef["secret:".Length..].Trim());
+        }
+
+        if (secretRef.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            var name = secretRef["env:".Length..].Trim();
+            var value = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value) &&
+                string.Equals(name, "QQCHAT_API_KEY", StringComparison.OrdinalIgnoreCase))
+            {
+                value = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            }
+
+            // 兼容 BotConfig 已经解析好的环境变量快照；不把它写回注册表。
+            return string.IsNullOrWhiteSpace(value) &&
+                   string.Equals(name, "QQCHAT_API_KEY", StringComparison.OrdinalIgnoreCase)
+                ? settings.ApiKey
+                : value;
+        }
+
+        return null;
+    }
+
+    private static ProviderCircuitSnapshot ToCircuitSnapshot(PersistedModelProvider provider)
+        => new(provider.Id, provider.CircuitState, provider.ConsecutiveHardFailures,
+            provider.CooldownUntil, ProbeInFlight: false);
 }

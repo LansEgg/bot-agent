@@ -2200,7 +2200,7 @@ public static partial class Program
 
     private sealed class FakeQqMessageSender : IQqMessageSender
     {
-        public Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo) => Task.FromResult(true);
+        public Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false) => Task.FromResult(true);
         public Task SendPlainAsync(BotConversation conversation, string text) => Task.CompletedTask;
         public Task SendApprovalReplyAsync(QqChatMessage msg, string text) => Task.CompletedTask;
     }
