@@ -549,15 +549,23 @@ public sealed partial class WebUiServer
     }
 
     private JsonObject BuildSettingsPayload()
-
     {
         var s = _settings;
 
         return new JsonObject
         {
-            ["runtime"] = new JsonObject
-            {
-                ["botPersona"] = s.BotPersona,
+            ["runtime"] = BuildRuntimePayload(s),
+            // 只读：容器环境变量职责，改这里无效（见 BuildEnvPayload）
+            ["env"] = BuildEnvPayload(s),
+            ["settingsFile"] = _settingsRepo.FilePath
+        };
+    }
+
+    private JsonObject BuildRuntimePayload(AppSettings s)
+    {
+        var runtime = new JsonObject
+        {
+            ["botPersona"] = s.BotPersona,
                 ["messageWhitelist"] = s.MessageWhitelist,
         ["whitelistGroups"] = s.WhitelistGroups,
         ["whitelistPrivates"] = s.WhitelistPrivates,
@@ -600,20 +608,6 @@ public sealed partial class WebUiServer
                 ["profileSummaryThreshold"] = s.ProfileSummaryThreshold,
                 ["profileSummaryMaxChars"] = s.ProfileSummaryMaxChars,
                 ["profileSummaryIntervalSeconds"] = s.ProfileSummaryIntervalSeconds,
-                ["enableVoice"] = s.EnableVoice,
-        ["voiceName"] = s.VoiceName,
-        ["voiceSpeed"] = s.VoiceSpeed,
-            ["voicePitch"] = s.VoicePitch,
-            ["voiceVol"] = s.VoiceVol,
-            ["voiceEmotion"] = s.VoiceEmotion,
-        ["voiceMaxChars"] = s.VoiceMaxChars,
-        ["voiceEagerness"] = s.VoiceEagerness,
-        ["ttsServiceUrl"] = s.TtsServiceUrl,
-        ["ttsProvider"] = s.TtsProvider,
-        ["ttsApiBase"] = s.TtsApiBase,
-        ["ttsModel"] = s.TtsModel,
-        ["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey()),
-        ["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey()),
 
         // 官方通道（QQ 开放平台）：与私域并存，两边会话/上下文/白名单互不串台。
         // secret 不在这里回（密钥只从环境变量读，面板不回显）。
@@ -746,11 +740,28 @@ public sealed partial class WebUiServer
         // 当前心情（可手改；空 = 由代码按被戳次数自动描述）
         ["mood"] = _mood.CurrentText(Clock.Now) ?? string.Empty,
         ["moodSummary"] = _mood.Describe(Clock.Now)
-            },
-            // 只读：容器环境变量职责，改这里无效（见 BuildEnvPayload）
-            ["env"] = BuildEnvPayload(s),
-            ["settingsFile"] = _settingsRepo.FilePath
         };
+
+        PopulateVoiceSettings(runtime, s);
+        return runtime;
+    }
+
+    private void PopulateVoiceSettings(JsonObject runtime, AppSettings s)
+    {
+        runtime["enableVoice"] = s.EnableVoice;
+        runtime["voiceName"] = s.VoiceName;
+        runtime["voiceSpeed"] = s.VoiceSpeed;
+        runtime["voicePitch"] = s.VoicePitch;
+        runtime["voiceVol"] = s.VoiceVol;
+        runtime["voiceEmotion"] = s.VoiceEmotion;
+        runtime["voiceMaxChars"] = s.VoiceMaxChars;
+        runtime["voiceEagerness"] = s.VoiceEagerness;
+        runtime["ttsServiceUrl"] = s.TtsServiceUrl;
+        runtime["ttsProvider"] = s.TtsProvider;
+        runtime["ttsApiBase"] = s.TtsApiBase;
+        runtime["ttsModel"] = s.TtsModel;
+        runtime["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey());
+        runtime["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey());
     }
 
     /// <summary>
