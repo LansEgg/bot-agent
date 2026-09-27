@@ -139,7 +139,7 @@ public sealed class ReplyPipeline
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _historyRequested = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _replyCooldown = new();
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentQueue<PendingReply>> _pendingReplies = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TenantReplyQueue> _pendingReplies = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, BotConversation> _pendingConversations = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _inFlight = new();
     private SemaphoreSlim _replyGate;
@@ -150,8 +150,6 @@ public sealed class ReplyPipeline
     /// <summary>每个会话最近一次“自己主动开口”的时间（用于主动发言的冷却）。</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _lastProactive = new();
     private long _lastGenerationMs;
-    /// <summary>待回复队列元素：触发消息 id（null = 没有触发）+ 这是不是“自己主动开口”。</summary>
-    private readonly record struct PendingReply(long? TriggerMessageId, bool Proactive);
     /// <summary>日志节流：同一来源的“忽略”类日志最多每分钟一条（否则忙群里会刷爆）。</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _noisyLogAt = new();
     /// <summary>
@@ -955,7 +953,8 @@ public sealed class ReplyPipeline
                 _replyCooldown[conversation.SourceKey] = Clock.Now;
             }
 
-            EnqueueReply(conversation, triggerMessageId, proactive);
+            var mustPreserve = catchUp || directInWindow;
+            EnqueueReply(conversation, triggerMessageId, proactive, mustPreserve);
             return;
         }
 
@@ -973,8 +972,12 @@ public sealed class ReplyPipeline
             });
         _hooks.Log($"等这一轮说完再评估（被限流挡下的新消息已记下）: {conversation.Name}");
     }
-    /// <summary>把一条待回复请求排入该会话的 FIFO 链，并唤醒调度器。</summary>
-    private void EnqueueReply(BotConversation conversation, long? triggerMessageId, bool proactive = false)
+    /// <summary>把一条待回复请求排入该会话的有界 FIFO 链，并唤醒调度器。</summary>
+    private void EnqueueReply(
+        BotConversation conversation,
+        long? triggerMessageId,
+        bool proactive = false,
+        bool mustPreserve = false)
     {
         if (triggerMessageId is not null)
         {
@@ -982,12 +985,11 @@ public sealed class ReplyPipeline
         }
 
         _pendingConversations[conversation.SourceKey] = conversation;
-        _pendingReplies
-            .GetOrAdd(conversation.SourceKey, _ => new System.Collections.Concurrent.ConcurrentQueue<PendingReply>())
-            .Enqueue(new PendingReply(triggerMessageId, proactive));
-
+        var queue = _pendingReplies.GetOrAdd(conversation.SourceKey, _ => new TenantReplyQueue());
+        _ = queue.Enqueue(new PendingReply(triggerMessageId, proactive, mustPreserve), TenantReplyQueue.DefaultCapacity);
         _ = DrainReplyQueueAsync();
     }
+
     /// <summary>
     /// 调度器：从各会话的 FIFO 链头取请求交给并发 worker。
     ///   • 同一会话同时只能有一个在途请求（保证回复顺序与引用正确）
@@ -1023,7 +1025,7 @@ public sealed class ReplyPipeline
                     {
                         // 并发抢占失败：把触发消息放回队首位置（重新入队到尾部也可，
                         // 因为同一会话此时必定无其它待处理项）
-                        queue.Enqueue(pending);
+                        queue.Enqueue(pending, TenantReplyQueue.DefaultCapacity);
                         continue;
                     }
 
@@ -1384,7 +1386,6 @@ public sealed class ReplyPipeline
             voiceParts.Add(voiceText);
         }
 
-
         // 模型可以顺手写一句“我现在的心情”——存下来，下一轮提示词里带上（空/太长会被忽略）
         if (_mood.SetText(result.Mood, Clock.Now))
         {
@@ -1410,7 +1411,6 @@ public sealed class ReplyPipeline
 
         var (voiceSent, voiceFailed) = await TrySendVoiceAsync(
             conversation, turn.Snapshot, turn.Caps, voiceParts, voiceText, isGroup, targetId, result);
-
 
         await SendTurnAsync(
             conversation, turn.Context, triggerMessageId, turn.Caps, isGroup, targetId, replyTo,
@@ -1502,7 +1502,6 @@ public sealed class ReplyPipeline
 
         return (false, replyTo);
     }
-
 
     /// <summary>
     /// 第 1 步：**取上下文**（以及提示词要用的素材）—— 会话窗口、参与者档案、表情包候选、群成员身份、
@@ -1634,7 +1633,6 @@ public sealed class ReplyPipeline
             LinkText: linkText);
     }
 
-
     /// <summary>
     /// 第 4 步里**不需要真的发东西**的那几条出口：开待批单（action=tool）、开待答问题（action=ask）、
     /// 以及“这一轮就是不说话”（空回复 / 上游空响应 / 自评低已经在上一步拦过）。
@@ -1701,7 +1699,6 @@ public sealed class ReplyPipeline
         }
         return false;
     }
-
 
     /// <summary>
     /// 第 4 步的**动作**那一半：搜索 / 读页 / 听歌 / 分享歌（都是两轮动作，后台去跑、下一轮再开口）
@@ -1812,7 +1809,6 @@ public sealed class ReplyPipeline
         }
         return sticker;
     }
-
 
     /// <summary>
     /// 语音那条路（第 4 步之一）：过技术性限制（开关 / 字数上限 / 同会话频率下限 / 能力闸门）→ 拼 /speak URL
