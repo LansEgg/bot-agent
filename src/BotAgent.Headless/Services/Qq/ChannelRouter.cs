@@ -183,8 +183,8 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
     public Task<bool> SendMusicAsync(bool isGroup, long targetId, string platform, string songId, string title = "", CancellationToken ct = default)
         => Resolve(isGroup, targetId).SendMusicAsync(isGroup, targetId, platform, songId, title, ct);
 
-    public Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null)
-        => Resolve(isGroup, targetId).SendTextAsync(isGroup, targetId, text, ct, replyToMessageId);
+    public Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null, bool directAddress = false)
+        => Resolve(isGroup, targetId).SendTextAsync(isGroup, targetId, text, ct, replyToMessageId, directAddress);
 
     public Task<(string? Text, long SenderId)> GetMessageInfoAsync(long messageId, CancellationToken ct = default)
         => Resolve(false, messageId).GetMessageInfoAsync(messageId, ct);

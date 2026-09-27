@@ -17,7 +17,7 @@ namespace BotAgent.Services.Ports;
 public interface IQqMessageSender
 {
     /// <summary>按节奏分句发一段回复（返回是否真的发出去了）。</summary>
-    Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo);
+    Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false);
 
     /// <summary>往某个会话直发一段纯文本（不走节奏分句）。</summary>
     Task SendPlainAsync(BotConversation conversation, string text);

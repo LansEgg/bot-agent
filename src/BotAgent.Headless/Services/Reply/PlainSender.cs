@@ -8,6 +8,7 @@ using BotAgent.Services.Ops;
 using BotAgent.Services.Panel;
 using BotAgent.Services.Qq;
 using BotAgent.Services.Ports;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.Reply;
 
@@ -30,6 +31,7 @@ public sealed class PlainSender : IQqMessageSender
     private readonly Action<string> _log;
     private readonly TurnTraceStore _traces;
     private readonly IAuditChain? _audit;
+    private readonly ProtocolRiskBackoff? _riskBackoff;
 
     public PlainSender(
         SettingsBox box,
@@ -39,7 +41,8 @@ public sealed class PlainSender : IQqMessageSender
         OwnMessageLedger ownLedger,
         Action<string> log,
         TurnTraceStore traces,
-        IAuditChain? audit = null)
+        IAuditChain? audit = null,
+        ProtocolRiskBackoff? riskBackoff = null)
     {
         _box = box;
         _source = source;
@@ -49,6 +52,7 @@ public sealed class PlainSender : IQqMessageSender
         _log = log;
         _traces = traces;
         _audit = audit;
+        _riskBackoff = riskBackoff;
     }
 
     private AppSettings _settings => _box.Current;
@@ -57,7 +61,7 @@ public sealed class PlainSender : IQqMessageSender
     /// 发送回复。开启分句时按句末标点切分并留出打字间隔（更像真人）；
     /// 只有第一句带 QQ 的"回复"引用，后续分句不带。
     /// </summary>
-    public async Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo)
+    public async Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
     {
         // P4（V3 §10）：发送前把 Markdown 降级成 QQ 纯文本。
         // 批次 C 的回复审计：凭据形状、或（聊天这一路）本机/服务器路径形状 → **整条不发**。
@@ -78,9 +82,25 @@ public sealed class PlainSender : IQqMessageSender
             return false;
         }
 
+        var sourceKey = BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.IsAliasId(targetId) ? BotAgent.Domain.Qq.Channels.Official : BotAgent.Domain.Qq.Channels.IsLocalId(targetId) ? BotAgent.Domain.Qq.Channels.Local : BotAgent.Domain.Qq.Channels.Private, isGroup, targetId);
+        if (_riskBackoff?.IsActive(sourceKey) == true)
+        {
+            var decision = _riskBackoff.EvaluateText(sourceKey, directAddress, reply);
+            if (!decision.Allowed)
+            {
+                _traces.Node(sourceKey, TurnNodeKind.Outbound, "blocked", reasonCode: decision.ReasonCode);
+                return false;
+            }
+
+            var shortReply = decision.Text;
+            var one = await _source.SendTextAsync(isGroup, targetId, shortReply, replyToMessageId: replyTo, directAddress: true);
+            _ownLedger.Remember(one, shortReply);
+            _traces.Node(sourceKey, TurnNodeKind.Outbound, one.Ok ? "sent" : "failed", reasonCode: decision.ReasonCode, count: shortReply.Length);
+            return one.Ok;
+        }
         if (!_settings.SplitReplies)
         {
-            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo);
+            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo, directAddress: directAddress);
             _ownLedger.Remember(one, reply);
             return one.Ok;
         }
@@ -88,7 +108,7 @@ public sealed class PlainSender : IQqMessageSender
         var segments = TextRules.SplitSentences(reply);
         if (segments.Count <= 1)
         {
-            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo);
+            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo, directAddress: directAddress);
             _ownLedger.Remember(one, reply);
             return one.Ok;
         }
@@ -100,7 +120,7 @@ public sealed class PlainSender : IQqMessageSender
                 isGroup,
                 targetId,
                 segments[i],
-                replyToMessageId: i == 0 ? replyTo : null);
+                replyToMessageId: i == 0 ? replyTo : null, directAddress: directAddress);
             _ownLedger.Remember(sent, segments[i]);
 
             if (!sent.Ok)
@@ -196,7 +216,7 @@ public sealed class PlainSender : IQqMessageSender
         {
             var isGroup = msg.IsGroup;
             var targetId = isGroup ? msg.GroupId : msg.UserId;
-            var ok = await SendWithCadenceAsync(isGroup, targetId, text, msg.MessageId);
+            var ok = await SendWithCadenceAsync(isGroup, targetId, text, msg.MessageId, directAddress: msg.MentionedSelf);
             if (!ok)
             {
                 _log("[审批] 回执没发出去（协议端拒绝或超时）");

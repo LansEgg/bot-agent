@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using BotAgent.Services.Music;
 using BotAgent.Services.Qq;
 using BotAgent.Domain.Qq;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.OneBot;
 
@@ -35,6 +36,8 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
     private AppSettings _settings => _box.Current;
 
     private readonly SettingsBox _box;
+    private readonly ProtocolRiskBackoff? _riskBackoff;
+    private readonly Func<AppSettings, IOneBotTransport>? _transportFactory;
     private long _selfId;
 
     /// <summary>
@@ -51,7 +54,15 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
 
     public bool IsConnected { get; private set; }
 
-    public OneBotGateway(SettingsBox box) => _box = box;
+    public OneBotGateway(
+        SettingsBox box,
+        ProtocolRiskBackoff? riskBackoff = null,
+        Func<AppSettings, IOneBotTransport>? transportFactory = null)
+    {
+        _box = box;
+        _riskBackoff = riskBackoff;
+        _transportFactory = transportFactory;
+    }
 
     /// <summary>
     /// 连接信息（协议 / 地址 / Token）相对给定那一份有没有变化，供上层决定是否重建连接。
@@ -67,7 +78,7 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
         Stop();
 
         _cts = new CancellationTokenSource();
-        _transport = CreateTransport(_settings);
+        _transport = _transportFactory?.Invoke(_settings) ?? CreateTransport(_settings);
         _transport.OnText += OnTransportText;
         _transport.OnStateChanged += OnTransportStateChanged;
 
@@ -108,8 +119,24 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
     /// <summary>收到撤回（post_type=notice 下的 group_recall / friend_recall）。</summary>
     public event Action<QqRecallEvent>? MessageRecalled;
 
-    public async Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null)
+    Task<SendResult> IQqActions.SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct, long? replyToMessageId)
+        => SendTextAsync(isGroup, targetId, text, ct, replyToMessageId, directAddress: false);
+
+    public async Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null, bool directAddress = false)
     {
+        var sourceKey = Channels.Key(Channel, isGroup, targetId);
+        if (_riskBackoff is not null)
+        {
+            var decision = _riskBackoff.EvaluateText(sourceKey, directAddress, text);
+            if (!decision.Allowed)
+            {
+                Log($"协议端风控退避中，跳过文本发送（会话={Channels.Describe(sourceKey)}，原因={decision.ReasonCode}）");
+                return new SendResult(false);
+            }
+
+            text = decision.Text;
+        }
+
         var action = isGroup ? "send_group_msg" : "send_private_msg";
         var key = isGroup ? "group_id" : "user_id";
         // 带"回复"引用原消息（触发 QQ 回复语句功能）
@@ -118,6 +145,10 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
             : Json(text);
         var result = await SendActionAsync(action, $"{{\"{key}\":{targetId},\"message\":{messageJson}}}", ct);
         var ok = result is not null && GetRetcode(result) == 0;
+        if (!ok)
+        {
+            ObserveMessageSendFailure(isGroup, targetId, action, result);
+        }
         // 协议端会在 data.message_id 里回新消息的 id（数字或字符串两种写法都见过）：
         // 记下它，别人引用回复机器人那句话时才能对上号（见 handoff-4 §27）。
         return new SendResult(ok, ok ? ReadMessageId(result) : 0);
@@ -148,6 +179,12 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
             return false;
         }
 
+        if (_riskBackoff?.IsActive(Channels.Key(Channel, isGroup, targetId)) == true)
+        {
+            Log($"协议端风控中，跳过音乐发送（会话={Channels.Describe(Channels.Key(Channel, isGroup, targetId))}）");
+            return false;
+        }
+
         var action = isGroup ? "send_group_msg" : "send_private_msg";
         var key = isGroup ? "group_id" : "user_id";
         var music = $"{{\"type\":\"music\",\"data\":{{\"type\":{Json(platform)},\"id\":{Json(songId)}}}}}";
@@ -155,6 +192,7 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
         var code = result is null ? -999 : GetRetcode(result);
         if (code != 0)
         {
+            ObserveMessageSendFailure(isGroup, targetId, action, result);
             // 把上游原话打出来：NapCat/NTQQ 各版本对 music 段的接受程度不一样，
             // 这段日志是判断“到底是不支持还是参数不对”的唯一依据
             Log($"music 段发送失败 retcode={code}（platform={platform}, id={songId}）：{result?.ToJsonString() ?? "(无响应，可能超时)"}");
@@ -180,6 +218,12 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
             return false;
         }
 
+        if (_riskBackoff?.IsActive(Channels.Key(Channel, isGroup, targetId)) == true)
+        {
+            Log($"协议端风控退避中，跳过语音发送（会话={Channels.Describe(Channels.Key(Channel, isGroup, targetId))}）");
+            return false;
+        }
+
         var action = isGroup ? "send_group_msg" : "send_private_msg";
         var key = isGroup ? "group_id" : "user_id";
         var record = $"{{\"type\":\"record\",\"data\":{{\"file\":{Json(audioUrl)}}}}}";
@@ -187,6 +231,7 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
         var code = result is null ? -999 : GetRetcode(result);
         if (code != 0)
         {
+            ObserveMessageSendFailure(isGroup, targetId, action, result);
             Log($"record 段发送失败 retcode={code}（url={audioUrl}）：{result?.ToJsonString() ?? "(无响应，可能超时)"}");
         }
 
@@ -205,6 +250,12 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
             return false;
         }
 
+        if (_riskBackoff?.IsActive(Channels.Key(Channel, isGroup, targetId)) == true)
+        {
+            Log($"协议端风控中，跳过图片发送（会话={Channels.Describe(Channels.Key(Channel, isGroup, targetId))}）");
+            return false;
+        }
+
         var action = isGroup ? "send_group_msg" : "send_private_msg";
         var key = isGroup ? "group_id" : "user_id";
         var image = $"{{\"type\":\"image\",\"data\":{{\"file\":\"base64://{Convert.ToBase64String(data)}\"}}}}";
@@ -213,7 +264,13 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
             : $"[{image}]";
 
         var result = await SendActionAsync(action, $"{{\"{key}\":{targetId},\"message\":{messageJson}}}", ct);
-        return result is not null && GetRetcode(result) == 0;
+        var ok = result is not null && GetRetcode(result) == 0;
+        if (!ok)
+        {
+            ObserveMessageSendFailure(isGroup, targetId, action, result);
+        }
+
+        return ok;
     }
 
     /// <summary>
@@ -227,6 +284,13 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
             return false;
         }
 
+        var sourceKey = Channels.Key(Channel, isGroup, targetId);
+        if (_riskBackoff?.IsActive(sourceKey) == true)
+        {
+            Log($"协议端风控中，跳过戳一戳（会话={Channels.Describe(sourceKey)}）");
+            return false;
+        }
+
         var (action, paramsJson) = isGroup
             ? ("group_poke", $"{{\"group_id\":{targetId},\"user_id\":{userId}}}")
             : ("friend_poke", $"{{\"user_id\":{userId}}}");
@@ -234,6 +298,11 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
         // 协议端不支持（retcode 1404 / 未知动作）不当作错误刷屏，只记一次日志
         var result = await SendActionAsync(action, paramsJson, ct);
         var ok = result is not null && GetRetcode(result) == 0;
+        if (!ok)
+        {
+            ObserveMessageSendFailure(isGroup, targetId, action, result);
+        }
+
         if (!ok && _pokeUnsupported != action)
         {
             _pokeUnsupported = action;
@@ -1444,6 +1513,20 @@ public sealed class OneBotGateway : IQqChatSource, IQqActions, IDisposable
         }
 
         return node?["status"]?.GetValue<string>() == "ok" ? 0 : -1;
+    }
+
+    private void ObserveMessageSendFailure(bool isGroup, long targetId, string action, JsonNode? result)
+    {
+        if (_riskBackoff is null || targetId <= 0)
+        {
+            return;
+        }
+
+        var retcode = result is null ? -1 : GetRetcode(result);
+        var wording = result?["wording"]?.GetValue<string>()
+                      ?? result?["message"]?.GetValue<string>()
+                      ?? result?["msg"]?.GetValue<string>();
+        _riskBackoff.ObserveFailure(Channels.Key(Channel, isGroup, targetId), action, retcode, wording);
     }
 
     private static IOneBotTransport CreateTransport(AppSettings settings) => settings.OneBotProtocol switch

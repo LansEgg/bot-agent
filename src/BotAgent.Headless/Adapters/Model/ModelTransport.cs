@@ -176,14 +176,35 @@ internal sealed class ModelTransport : IModelTransport
     /// <param name="payload">请求体（<see cref="BuildAsync" /> 造的）。</param>
     /// <param name="attachedImages">这一轮真送出去的图片张数（写进诊断日志）。</param>
     /// <param name="attachedImageIds">这一轮真的送出去的图片所属消息 id（去掉图片重试成功后要把它们拉黑）。</param>
-    public async Task<SendOutcome> SendAsync(JsonObject payload, int attachedImages, IReadOnlyList<long> attachedImageIds, CancellationToken ct)
+    public Task<SendOutcome> SendAsync(JsonObject payload, int attachedImages, IReadOnlyList<long> attachedImageIds, CancellationToken ct)
+        => SendAsync(payload, attachedImages, attachedImageIds, provider: null, ct);
+
+    public async Task<SendOutcome> SendAsync(
+        JsonObject payload, int attachedImages, IReadOnlyList<long> attachedImageIds,
+        ModelProviderRoute? provider, CancellationToken ct)
     {
-        // 请求体是一次性的（HttpContent 只能读一次），每次重发都要重建一份带鉴权头的请求
-        var request = new HttpRequestMessage(HttpMethod.Post, Url())
+        // Provider 路由只在本次请求内生效，不修改 SettingsBox，避免并发请求互相污染配置。
+        var requestPayload = provider is null
+            ? payload
+            : (JsonObject)payload.DeepClone();
+        if (provider is not null && !string.IsNullOrWhiteSpace(provider.ModelName))
         {
-            Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+            requestPayload["model"] = provider.ModelName.Trim();
+        }
+
+        var requestUrl = provider is null ? Url() : BuildUrl(provider.BaseUrl);
+        var apiKey = provider is null ? _settings.ApiKey.Trim() : provider.ApiKey.Trim();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new InvalidOperationException($"Provider '{provider?.ProviderId ?? "primary"}' 未配置 API Key");
+        }
+
+        // 请求体是一次性的（HttpContent 只能读一次），每次重发都要重建一份带鉴权头的请求
+        var request = new HttpRequestMessage(HttpMethod.Post, requestUrl)
+        {
+            Content = new StringContent(requestPayload.ToJsonString(), Encoding.UTF8, "application/json")
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         // 5xx/429 与**超时**各重试一次。
         // 为什么要：上游网关（多账号池网关之类）经常回 503 auth_unavailable / No capacity ——
@@ -222,11 +243,11 @@ internal sealed class ModelTransport : IModelTransport
 
                 Services.FileLog.Write("Agent", $"模型请求超时（{limit} 秒）→ 2 秒后重试一次（这次最多等 {TimeoutRetrySeconds} 秒）");
                 await Clock.Delay(TimeSpan.FromSeconds(2), ct);
-                request = new HttpRequestMessage(HttpMethod.Post, Url())
+                request = new HttpRequestMessage(HttpMethod.Post, requestUrl)
                 {
-                    Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+                    Content = new StringContent(requestPayload.ToJsonString(), Encoding.UTF8, "application/json")
                 };
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 continue;
             }
 
@@ -251,11 +272,11 @@ internal sealed class ModelTransport : IModelTransport
             await Clock.Delay(TimeSpan.FromSeconds(2), ct);
 
             // 请求体是一次性的，重试要重建一份
-            request = new HttpRequestMessage(HttpMethod.Post, Url())
+            request = new HttpRequestMessage(HttpMethod.Post, requestUrl)
             {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+                Content = new StringContent(requestPayload.ToJsonString(), Encoding.UTF8, "application/json")
             };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
         if (response is null)
@@ -273,11 +294,11 @@ internal sealed class ModelTransport : IModelTransport
             await Clock.Delay(TimeSpan.FromSeconds(2), ct);
 
             // 请求体是一次性的，重试要重建一份（与上面 5xx 重试同理）
-            using var retryRequest = new HttpRequestMessage(HttpMethod.Post, Url())
+            using var retryRequest = new HttpRequestMessage(HttpMethod.Post, requestUrl)
             {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+                Content = new StringContent(requestPayload.ToJsonString(), Encoding.UTF8, "application/json")
             };
-            retryRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+            retryRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             using var retryResponse = await _auxHttp.SendAsync(retryRequest, ct);
             if (!retryResponse.IsSuccessStatusCode)
             {
@@ -299,12 +320,12 @@ internal sealed class ModelTransport : IModelTransport
         var textOnlyRetry = false;
         if (!HasChoices(json) && attachedImages > 0)
         {
-            var stripped = StripImages(payload);
-            using var plainRequest = new HttpRequestMessage(HttpMethod.Post, Url())
+            var stripped = StripImages(requestPayload);
+            using var plainRequest = new HttpRequestMessage(HttpMethod.Post, requestUrl)
             {
                 Content = new StringContent(stripped.ToJsonString(), Encoding.UTF8, "application/json")
             };
-            plainRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+            plainRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             using var plainResponse = await _auxHttp.SendAsync(plainRequest, ct);
             if (plainResponse.IsSuccessStatusCode)
             {
