@@ -27,6 +27,7 @@ public sealed class TurnTraceStore
     private readonly Func<DateTimeOffset> _now;
     private readonly ITraceArchive? _archive;
     private long _seq;
+    private long _startedTotal;
     private long _completedTotal;
 
     public TurnTraceStore(Func<DateTimeOffset>? clock = null, ITraceArchive? archive = null)
@@ -41,6 +42,7 @@ public sealed class TurnTraceStore
         lock (_gate)
         {
             _seq++;
+            _startedTotal++;
             _active[conversationKey ?? string.Empty] = new Turn("t" + _seq, _now());
         }
     }
@@ -93,7 +95,7 @@ public sealed class TurnTraceStore
             }
 
             if (_archive is not null && (trace.TotalMs >= 5000 || !string.Equals(outcome, "done", StringComparison.OrdinalIgnoreCase)
-                || trace.Nodes.Any(n => n.Status is "failed" or "error" or "blocked")))
+                || trace.Nodes.Any(n => n.Status is "failed" or "error" or "blocked" or "partial")))
             {
                 _archive.Append(trace);
             }
@@ -111,6 +113,18 @@ public sealed class TurnTraceStore
     }
 
     public ITraceArchive? Archive => _archive;
+    /// <summary>进程启动以来开始处理的决策轮次数，用于请求总量 metrics 计数器。</summary>
+    public long StartedTotal
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _startedTotal;
+            }
+        }
+    }
+
 
     /// <summary>进程启动以来完成的轮次数，用于低基数 metrics 计数器。</summary>
     public long CompletedTotal

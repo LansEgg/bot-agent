@@ -8,6 +8,7 @@ using BotAgent.Services.Ops;
 using BotAgent.Services.Panel;
 using BotAgent.Services.Qq;
 using BotAgent.Services.Ports;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.Reply;
 
@@ -30,6 +31,7 @@ public sealed class PlainSender : IQqMessageSender
     private readonly Action<string> _log;
     private readonly TurnTraceStore _traces;
     private readonly IAuditChain? _audit;
+    private readonly ProtocolRiskBackoff? _riskBackoff;
 
     public PlainSender(
         SettingsBox box,
@@ -39,7 +41,8 @@ public sealed class PlainSender : IQqMessageSender
         OwnMessageLedger ownLedger,
         Action<string> log,
         TurnTraceStore traces,
-        IAuditChain? audit = null)
+        IAuditChain? audit = null,
+        ProtocolRiskBackoff? riskBackoff = null)
     {
         _box = box;
         _source = source;
@@ -49,6 +52,7 @@ public sealed class PlainSender : IQqMessageSender
         _log = log;
         _traces = traces;
         _audit = audit;
+        _riskBackoff = riskBackoff;
     }
 
     private AppSettings _settings => _box.Current;
@@ -56,8 +60,9 @@ public sealed class PlainSender : IQqMessageSender
     /// <summary>
     /// 发送回复。开启分句时按句末标点切分并留出打字间隔（更像真人）；
     /// 只有第一句带 QQ 的"回复"引用，后续分句不带。
+    /// 返回逐段报告（issue #14）：调用方只把**真的发出去**的段落写进会话历史。
     /// </summary>
-    public async Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo)
+    public async Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
     {
         // P4（V3 §10）：发送前把 Markdown 降级成 QQ 纯文本。
         // 批次 C 的回复审计：凭据形状、或（聊天这一路）本机/服务器路径形状 → **整条不发**。
@@ -67,7 +72,7 @@ public sealed class PlainSender : IQqMessageSender
         {
             RecordDlpBlock(audit, "chat", reply.Length);
             _log($"[审计] 这条回复不发（{ReplyAuditRules.Code(audit)}；{reply.Length} 字）");
-            return false;
+            return new CadenceSendReport(Array.Empty<string>(), ReplyAuditRules.Code(audit));
         }
 
         var rawReply = reply;
@@ -75,40 +80,63 @@ public sealed class PlainSender : IQqMessageSender
         if (reply.Length == 0)
         {
             _log($"清洗后没有可发内容（原文 {rawReply.Length} 字，全是 Markdown 装饰）→ 这一条不发");
-            return false;
+            return new CadenceSendReport(Array.Empty<string>(), "sanitized_empty");
         }
 
+        var sourceKey = BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.IsAliasId(targetId) ? BotAgent.Domain.Qq.Channels.Official : BotAgent.Domain.Qq.Channels.IsLocalId(targetId) ? BotAgent.Domain.Qq.Channels.Local : BotAgent.Domain.Qq.Channels.Private, isGroup, targetId);
+        if (_riskBackoff?.IsActive(sourceKey) == true)
+        {
+            var decision = _riskBackoff.EvaluateText(sourceKey, directAddress, reply);
+            if (!decision.Allowed)
+            {
+                _traces.Node(sourceKey, TurnNodeKind.Outbound, "blocked", reasonCode: decision.ReasonCode);
+                return new CadenceSendReport(Array.Empty<string>(), decision.ReasonCode);
+            }
+
+            var shortReply = decision.Text;
+            var one = await _source.SendTextAsync(isGroup, targetId, shortReply, replyToMessageId: replyTo, directAddress: true);
+            _ownLedger.Remember(one, shortReply);
+            _traces.Node(sourceKey, TurnNodeKind.Outbound, one.Ok ? "sent" : "failed", reasonCode: decision.ReasonCode, count: shortReply.Length);
+            return one.Ok
+                ? new CadenceSendReport(new[] { shortReply })
+                : new CadenceSendReport(Array.Empty<string>(), decision.ReasonCode);
+        }
         if (!_settings.SplitReplies)
         {
-            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo);
+            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo, directAddress: directAddress);
             _ownLedger.Remember(one, reply);
-            return one.Ok;
+            return one.Ok ? new CadenceSendReport(new[] { reply }) : new CadenceSendReport(Array.Empty<string>(), "send_failed");
         }
 
         var segments = TextRules.SplitSentences(reply);
         if (segments.Count <= 1)
         {
-            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo);
+            var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo, directAddress: directAddress);
             _ownLedger.Remember(one, reply);
-            return one.Ok;
+            return one.Ok ? new CadenceSendReport(new[] { reply }) : new CadenceSendReport(Array.Empty<string>(), "send_failed");
         }
 
-        var allOk = true;
+        // 分句发送：**逐段记账**。以前只回一个 bool —— 前几段成功、后面失败时，
+        // 调用方只看到 false，于是"实际发出去的段落"根本没写进会话历史（issue #14）。
+        var delivered = new List<string>();
+        string? failure = null;
         for (var i = 0; i < segments.Count; i++)
         {
             var sent = await _source.SendTextAsync(
                 isGroup,
                 targetId,
                 segments[i],
-                replyToMessageId: i == 0 ? replyTo : null);
+                replyToMessageId: i == 0 ? replyTo : null, directAddress: directAddress);
             _ownLedger.Remember(sent, segments[i]);
 
             if (!sent.Ok)
             {
-                allOk = false;
-                _log($"第 {i + 1}/{segments.Count} 段发送失败，停止后续分段");
+                failure = "segment_failed";
+                _log($"第 {i + 1}/{segments.Count} 段发送失败，停止后续分段（已发出 {delivered.Count} 段）");
                 break;
             }
+
+            delivered.Add(segments[i]);
 
             // 打字节奏：基础间隔 + 按字数估算的输入时间
             if (i < segments.Count - 1)
@@ -118,7 +146,7 @@ public sealed class PlainSender : IQqMessageSender
             }
         }
 
-        return allOk;
+        return new CadenceSendReport(delivered, failure);
     }
 
     /// <summary>发一条纯文本（agent 回话 / 审批公告专用：不走人设、不分句、不受群冷却限制）。</summary>
@@ -196,7 +224,7 @@ public sealed class PlainSender : IQqMessageSender
         {
             var isGroup = msg.IsGroup;
             var targetId = isGroup ? msg.GroupId : msg.UserId;
-            var ok = await SendWithCadenceAsync(isGroup, targetId, text, msg.MessageId);
+            var ok = (await SendWithCadenceAsync(isGroup, targetId, text, msg.MessageId, directAddress: msg.MentionedSelf)).AnySent;
             if (!ok)
             {
                 _log("[审批] 回执没发出去（协议端拒绝或超时）");

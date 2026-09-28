@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using BotAgent.Domain.Ports;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.Voice;
 
@@ -22,15 +23,16 @@ public sealed class VoiceService
     private readonly Func<AppSettings> _settings;
     private readonly ISecretsRepository _secrets;
     private readonly Action<string> _log;
+    private readonly ToolCircuitBreaker? _circuit;
 
-    public VoiceService(IHttpFetcher http, Func<AppSettings> settings, ISecretsRepository secrets, Action<string> log)
+    public VoiceService(IHttpFetcher http, Func<AppSettings> settings, ISecretsRepository secrets, Action<string> log, ToolCircuitBreaker? circuit = null)
     {
         _http = http;
         _settings = settings;
         _secrets = secrets;
         _log = log;
+        _circuit = circuit;
     }
-
     /// <summary>当前配置的 TTS 服务根地址（去掉尾部斜杠）；没配/不是 http(s) 绝对地址时返回 null。</summary>
     public string? BaseUrl => Normalize(_settings().TtsServiceUrl);
 
@@ -122,6 +124,28 @@ public sealed class VoiceService
         int? speedOverride,
         CancellationToken ct)
     {
+        if (_circuit is null)
+        {
+            return await SynthesizeCoreAsync(text, voiceOverride, speedOverride, ct).ConfigureAwait(false);
+        }
+
+        var run = await _circuit.RunAsync(
+            token => SynthesizeCoreAsync(text, voiceOverride, speedOverride, token), ct).ConfigureAwait(false);
+        if (run.Succeeded)
+        {
+            return run.Value;
+        }
+
+        _log($"[Voice] TTS 工具调用未完成（{run.ReasonCode}）");
+        return (null, run.ReasonCode);
+    }
+
+    private async Task<(byte[]? Data, string? Error)> SynthesizeCoreAsync(
+        string text,
+        string? voiceOverride,
+        int? speedOverride,
+        CancellationToken ct)
+    {
         var url = BuildSpeakUrl(text, voiceOverride, speedOverride);
         if (url is null)
         {
@@ -134,7 +158,6 @@ public sealed class VoiceService
             var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
             if (!resp.IsSuccessStatusCode)
             {
-                // 服务端失败时返回的是 JSON（{"error": "…"}），把这句话原样带给面板
                 var detail = System.Text.Encoding.UTF8.GetString(bytes);
                 try
                 {
@@ -142,7 +165,6 @@ public sealed class VoiceService
                 }
                 catch
                 {
-                    // 不是 JSON 就用原文（截断，别把整页 HTML 塞进面板）
                 }
 
                 if (detail.Length > 300)
@@ -156,11 +178,14 @@ public sealed class VoiceService
 
             if (bytes.Length < 44 || bytes[0] != 'R' || bytes[1] != 'I' || bytes[2] != 'F' || bytes[3] != 'F')
             {
-                // 不是 wav：多数是配置错（地址指到了一个网页），说出来比"静默无声"强
                 return (null, $"TTS 返回的不是 wav（{bytes.Length} 字节，HTTP {resp.Content.Headers.ContentType}）");
             }
 
             return (bytes, null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -168,7 +193,6 @@ public sealed class VoiceService
             return (null, ex.Message);
         }
     }
-
     /// <summary>问一下 TTS 服务自己：活着吗、有哪些音色（面板用来校验地址与音色名）。</summary>
     // ---------- 音色复刻（MiniMax Voice Clone） ----------
     //

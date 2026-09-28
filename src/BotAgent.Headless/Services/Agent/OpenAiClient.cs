@@ -10,6 +10,7 @@ using BotAgent.Domain.Reply;
 using BotAgent.Services.Model;
 using BotAgent.Domain.Model;
 using BotAgent.Domain.Ports;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.Agent;
 
@@ -67,7 +68,10 @@ public sealed class OpenAiClient : IModelClient
     private readonly SettingsBox _box;
 
     public OpenAiClient(
-        SettingsBox box, IHttpFetcher auxHttp, IHttpFetcher chatHttp, IImageDownloader images, IModelTransport transport)
+        SettingsBox box, IHttpFetcher auxHttp, IHttpFetcher chatHttp, IImageDownloader images, IModelTransport transport,
+        ProviderFailoverRunner? providerFailover = null,
+        IReadOnlyDictionary<string, ModelProviderRoute>? providerRoutes = null,
+        Func<string, ModelProviderRoute?>? providerRouteResolver = null)
     {
         _box = box;
         _auxHttp = auxHttp;
@@ -75,10 +79,16 @@ public sealed class OpenAiClient : IModelClient
         _imageDownloader = images;
         ChatTimeout = chatHttp.Timeout;
         _transport = transport;
+        _providerFailover = providerFailover;
+        _providerRoutes = providerRoutes ?? new Dictionary<string, ModelProviderRoute>(StringComparer.Ordinal);
+        _providerRouteResolver = providerRouteResolver;
     }
 
     /// <summary>出网那一层（请求体组装 / 发送 / 三条兜底重试），见 <see cref="ModelTransport" />。</summary>
     private readonly IModelTransport _transport;
+    private readonly ProviderFailoverRunner? _providerFailover;
+    private readonly IReadOnlyDictionary<string, ModelProviderRoute> _providerRoutes;
+    private readonly Func<string, ModelProviderRoute?>? _providerRouteResolver;
 
     /// <summary>聊天那次请求的超时（面板/日志要如实显示；值来自装配点那个出网客户端）。</summary>
     public TimeSpan ChatTimeout { get; }
@@ -121,13 +131,13 @@ public sealed class OpenAiClient : IModelClient
         IReadOnlyList<StickerChoice>? stickers = null, bool pokeContext = false, string? moodText = null, string? musicText = null, string? linkText = null, bool enableListen = false, bool enableVoice = false, string? recallText = null, bool enableWebSearch = false, string? searchText = null, string? groupRolesText = null, string? vibeHint = null, bool proactive = false,
         bool enableAsk = false, bool enableToolRequest = false, string? toolList = null, Domain.Reply.SamplingProfile? sampling = null)
     {
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+        if (_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey))
         {
             throw new InvalidOperationException("未配置 API Key");
         }
 
-        if (_settings.ApiKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            _settings.ApiKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        if (_providerFailover is null && (_settings.ApiKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            _settings.ApiKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException("API Key 填成了 URL，请填入密钥 token（设置页「Agent 大脑」）");
         }
@@ -186,7 +196,13 @@ public sealed class OpenAiClient : IModelClient
         // 以前直接 `choices[0]` → IndexOutOfRangeException，被记成“模型请求失败”：一条消息就这么没了。
         // 之后改成“按沉默处理”，但**一条都不重试**：明明多半是上游吞了，却白丢一轮回复。
         // 现在由 ModelTransport 分两步兜：① 空 choices 重试一次；② 带图两轮都空 → 去掉图片再试一次。
-        var (json, textOnlyRetry) = await _transport.SendAsync(built.Payload, built.AttachedImages, built.AttachedImageIds, ct);
+        var outcome = await SendThroughProvidersAsync(built, ct);
+        if (outcome is null)
+        {
+            return new CompletionResult(null, null, null, ReasonCode: "provider_unavailable", Malformed: true, UpstreamEmpty: true);
+        }
+
+        var (json, textOnlyRetry) = outcome.Value;
 
         using var doc = JsonDocument.Parse(json);
 
@@ -224,6 +240,51 @@ public sealed class OpenAiClient : IModelClient
         Services.FileLog.Write("Agent", $"模型返回里没有 message.content → 本轮按沉默处理：{Truncate(json, 200)}");
         return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true);
     }
+private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, CancellationToken ct)
+    {
+        if (_providerFailover is null)
+        {
+            return await _transport.SendAsync(built.Payload, built.AttachedImages, built.AttachedImageIds, ct)
+                .ConfigureAwait(false);
+        }
+
+        var result = await _providerFailover.RunAsync(async (candidate, token) =>
+        {
+            var route = _providerRouteResolver?.Invoke(candidate.Id);
+            if (route is null && !_providerRoutes.TryGetValue(candidate.Id, out route))
+            {
+                return ProviderCallResult<SendOutcome>.Failure("provider_secret_unavailable", hardFailure: false);
+            }
+
+            // 快速回复模型是请求级开关；未启用时使用注册表中每个 Provider 自己的模型名。
+            var requestedModel = built.Payload["model"]?.GetValue<string>();
+            var model = string.Equals(_settings.ReplyModel, _settings.Model, StringComparison.Ordinal)
+                ? route.ModelName
+                : requestedModel ?? route.ModelName;
+            var effectiveRoute = route with { ModelName = model };
+            var outcome = await _transport.SendAsync(
+                built.Payload, built.AttachedImages, built.AttachedImageIds, effectiveRoute, token)
+                .ConfigureAwait(false);
+
+            // 空 choices 不是成功响应：让 L1 继续尝试下一 Provider，同时仍保留最终安全静默。
+            return ModelJson.HasChoices(outcome.Json)
+                ? ProviderCallResult<SendOutcome>.Success(outcome)
+                : ProviderCallResult<SendOutcome>.Failure("upstream_empty", hardFailure: true);
+        }, ct).ConfigureAwait(false);
+
+        if (!result.Succeeded)
+        {
+            FileLog.Warn("Agent", $"Provider 调用不可用，进入安全静默（reason={result.ReasonCode}，hops={result.FallbackHops}）");
+            return null;
+        }
+
+        if (result.FallbackHops > 0)
+        {
+            FileLog.Write("Agent", $"Provider 已故障转移（hops={result.FallbackHops}，provider={result.ProviderId}）");
+        }
+
+        return result.Value;
+    }
     private readonly List<long> _imageFilterSuspectOrder = new();
 
     /// <summary>给表情包库用：下载图片原始字节（内部走同一套 SSRF 防护与大小限制）。</summary>
@@ -249,9 +310,46 @@ public sealed class OpenAiClient : IModelClient
         CancellationToken ct = default,
         string? baseUrlOverride = null,
         string? apiKeyOverride = null)
-        => CompleteChatCoreAsync(model, systemPrompt, messages, maxTokens, temperature,
+        => CompleteChatWithProviderFailoverAsync(model, systemPrompt, messages, maxTokens, temperature,
             null, ct, baseUrlOverride, apiKeyOverride);
 
+    private async Task<string?> CompleteChatWithProviderFailoverAsync(
+        string model,
+        string systemPrompt,
+        IReadOnlyList<(string Role, string Text)> messages,
+        int maxTokens,
+        double temperature,
+        string? reasoningEffort,
+        CancellationToken ct,
+        string? baseUrlOverride,
+        string? apiKeyOverride)
+    {
+        // 显式覆盖用于测试/指定上游时保持原语义，不把它误当注册表 Provider。
+        if (_providerFailover is null || !string.IsNullOrWhiteSpace(baseUrlOverride) || !string.IsNullOrWhiteSpace(apiKeyOverride))
+        {
+            return await CompleteChatCoreAsync(model, systemPrompt, messages, maxTokens, temperature,
+                reasoningEffort, ct, baseUrlOverride, apiKeyOverride).ConfigureAwait(false);
+        }
+
+        var result = await _providerFailover.RunAsync(async (candidate, token) =>
+        {
+            var route = _providerRouteResolver?.Invoke(candidate.Id);
+            if (route is null && !_providerRoutes.TryGetValue(candidate.Id, out route))
+            {
+                return ProviderCallResult<string>.Failure("provider_route_unavailable", hardFailure: false);
+            }
+
+            var routedModel = string.IsNullOrWhiteSpace(route.ModelName) ? model : route.ModelName;
+            var response = await CompleteChatCoreAsync(
+                routedModel, systemPrompt, messages, maxTokens, temperature,
+                reasoningEffort, token, route.BaseUrl, route.ApiKey).ConfigureAwait(false);
+            return response is null
+                ? ProviderCallResult<string>.Failure("chat_completion_failed", hardFailure: true)
+                : ProviderCallResult<string>.Success(response);
+        }, ct).ConfigureAwait(false);
+
+        return result.Succeeded ? result.Value : null;
+    }
     private async Task<string?> CompleteChatCoreAsync(
         string model,
         string systemPrompt,
@@ -367,7 +465,7 @@ public sealed class OpenAiClient : IModelClient
         CancellationToken ct = default,
         string? baseUrlOverride = null,
         string? apiKeyOverride = null)
-        => CompleteChatCoreAsync(model, systemPrompt, messages, maxTokens, temperature,
+        => CompleteChatWithProviderFailoverAsync(model, systemPrompt, messages, maxTokens, temperature,
             reasoningEffort, ct, baseUrlOverride, apiKeyOverride);
 
     private static bool LooksLikeUnsupportedReasoning(string body)

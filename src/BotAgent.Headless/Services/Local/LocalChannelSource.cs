@@ -84,7 +84,7 @@ public sealed class LocalChannelSource : IQqChatSource
 
     /// <summary>出站：不碰网络，记进出箱（长度与形状，日志也只记长度）。</summary>
     public Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default,
-        long? replyToMessageId = null)
+        long? replyToMessageId = null, bool directAddress = false)
     {
         var key = Channels.Key(Channels.Local, isGroup, targetId);
         var id = Interlocked.Increment(ref _nextMessageId);

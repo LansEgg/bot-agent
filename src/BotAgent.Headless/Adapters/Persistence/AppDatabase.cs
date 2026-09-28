@@ -100,6 +100,19 @@ public static class AppDatabase
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>执行写入 SQL，返回受影响的行数。</summary>
+    public static int ExecCount(SqliteConnection conn, string sql, params (string Name, object? Value)[] args)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+        {
+            cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+
+        return cmd.ExecuteNonQuery();
+    }
+
     /// <summary>写事务（同步）：回调里做若干条写操作，异常整体回滚。</summary>
     public static void Write(Action<SqliteConnection> action)
     {
@@ -429,7 +442,25 @@ public static class AppDatabase
             CREATE INDEX IF NOT EXISTS idx_security_audit_log_time
               ON security_audit_log(created_at, id);
             """);
+        CreateModelProviderTable(conn);
     }
+
+    private static void CreateModelProviderTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS model_providers(
+              id                         TEXT PRIMARY KEY,
+              priority                   INTEGER NOT NULL,
+              name                       TEXT NOT NULL,
+              base_url                   TEXT NOT NULL,
+              model_name                 TEXT NOT NULL,
+              secret_key_ref             TEXT NOT NULL,
+              is_enabled                 INTEGER NOT NULL DEFAULT 1,
+              circuit_state              TEXT NOT NULL DEFAULT 'closed',
+              consecutive_hard_failures  INTEGER NOT NULL DEFAULT 0,
+              cooldown_until             TEXT,
+              updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """);
 
     /// <summary>
     /// 按 <c>PRAGMA user_version</c> 逐版补列：v1 基线、v2 会话 next_seq、v3 成员消息主键补 group_id、
@@ -456,7 +487,8 @@ public static class AppDatabase
             Write(conn2 => Exec(conn2, "PRAGMA user_version = 2;"));
         }
 
-        // v3：member_messages 的主键补上 group_id（旧版 A/B 群序号重叠会互相覆盖）        if (version < 3)
+        // v3：member_messages 的主键补上 group_id（旧版 A/B 群序号重叠会互相覆盖）
+        if (version < 3)
         {
             var pkHasGroup = Scalar<long>("""
                 SELECT COUNT(1) FROM pragma_table_info('member_messages') WHERE name = 'group_id' AND pk > 0
@@ -501,6 +533,11 @@ public static class AppDatabase
             Write(conn2 => Exec(conn2, "PRAGMA user_version = 4;"));
         }
 
-
+        // v6：Provider 注册表与熔断状态持久化；新库建表已完成，旧库在这里补齐版本标记。
+        if (version < 6)
+        {
+            Write(CreateModelProviderTable);
+            Write(conn2 => Exec(conn2, "PRAGMA user_version = 6;"));
+        }
     }
 }

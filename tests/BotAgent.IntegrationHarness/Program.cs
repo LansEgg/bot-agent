@@ -305,12 +305,12 @@ public static partial class Program
         var linesBeforeDoubleEmpty = bot.OutputLines.Count;
         openAi.EmptyChoicesTimes = 2;
         await protocol.SendGroupMessageAsync(99999, 20003, "老王", "@机器人 连续空", 7007, mentionBot: true, ct: cts.Token);
-        await WaitUntilAsync(() => bot.OutputLines.Skip(linesBeforeDoubleEmpty).Any(l => l.Contains("上游空响应") || l.Contains("连续两次都没给 choices")),
+        await WaitUntilAsync(() => bot.OutputLines.Skip(linesBeforeDoubleEmpty).Any(l => l.Contains("上游连续两次空响应")),
             TimeSpan.FromSeconds(60));
         await Task.Delay(500);
         var newLines = bot.OutputLines.Skip(linesBeforeDoubleEmpty).ToList();
         Check("★ 连续两次空 → 这轮不说话，且日志写明“上游空响应”（不再冒充“模型选择沉默”）",
-            newLines.Any(l => l.Contains("上游空响应") || l.Contains("连续两次都没给 choices")) &&
+            newLines.Any(l => l.Contains("上游连续两次空响应")) &&
             !newLines.Any(l => l.Contains("模型选择沉默")),
             string.Join(" | ", newLines.Where(l => l.Contains("空") || l.Contains("沉默")).TakeLast(3)));
         Check("★ 空结果不会凭空发出消息",
