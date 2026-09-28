@@ -425,6 +425,31 @@ public sealed class AppSettings
     /// <summary>取 access_token 的地址，留空 = <c>https://bots.qq.com/app/getAppAccessToken</c>（同样是为了可测）。</summary>
     public string OfficialTokenUrl { get; set; } = string.Empty;
 
+    // ---------- 飞书通道（Feishu Bot API） ----------
+
+    /// <summary>启用飞书机器人通道（默认关）。</summary>
+    public bool FeishuEnabled { get; set; }
+
+    /// <summary>飞书应用 App ID（cli_xxx）。</summary>
+    public string FeishuAppId { get; set; } = string.Empty;
+
+    /// <summary>飞书应用 App Secret（只从环境变量或密钥库读，不落 settings.json）。</summary>
+    [JsonIgnore]
+    public string FeishuAppSecret { get; set; } = string.Empty;
+
+    /// <summary>飞书事件回调 Verification Token。</summary>
+    public string FeishuVerificationToken { get; set; } = string.Empty;
+
+    /// <summary>飞书事件签名 Encrypt Key（可选，只从环境变量或密钥库读）。</summary>
+    [JsonIgnore]
+    public string FeishuEncryptKey { get; set; } = string.Empty;
+
+    /// <summary>飞书通道白名单（写群 chat_id / 用户 open_id 或映射后的内部号，逗号分隔；空 = 拒绝）。</summary>
+    public string FeishuWhitelist { get; set; } = string.Empty;
+
+    /// <summary>飞书 REST 接口根地址（留空 = https://open.feishu.cn，留口子给本地合成测试）。</summary>
+    public string FeishuApiBase { get; set; } = string.Empty;
+
     // ---------- 链接与分享卡片 ----------
 
     /// <summary>群里发的链接要不要真打开看一下（取标题/摘要）——给模型“看看里面写了什么”的根据。</summary>

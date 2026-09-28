@@ -2,8 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-**无界面、跨平台的 QQ 聊天机器人常驻服务**：通过 [NapCat](https://github.com/NapNeko/NapCatQQ) 挂接官方 QQ 客户端（OneBot v11），
-由 OpenAI 兼容模型（DeepSeek / OpenAI / 通义 / Ollama / 自建中转…）自动回复私聊与群聊，自带 Web 面板。
+**无界面、可插拔多聊天平台的 Agent 常驻服务**：支持 QQ 私域（[NapCat](https://github.com/NapNeko/NapCatQQ) / OneBot v11）、QQ 官方开放平台、飞书应用机器人（Feishu Bot）以及零外部依赖本地测试通道，由 OpenAI 兼容模型（DeepSeek / OpenAI / 通义 / Ollama / 自建中转…）驱动自动回复私聊、群聊与频道消息，自带轻量 Web 管理面板。
 
 ![.NET](https://img.shields.io/badge/.NET-8.0-blue) ![Platform](https://img.shields.io/badge/Platform-Docker%20%7C%20Linux-green) ![License](https://img.shields.io/badge/License-MIT-orange)
 

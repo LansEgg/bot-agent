@@ -26,7 +26,8 @@
     logs: [],
     modelStudio: { context: "chat" },
     settingsLoaded: false,    // 设置表单是否已从服务端回填过
-    agentPromptDefault: "",  // 服务端那份默认「Agent 附加提示词」（面板「恢复默认」按钮用，不在前端抄一份）
+    quota: { tenant: "", snapshot: null, loading: false },
+     agentPromptDefault: "",  // 服务端那份默认「Agent 附加提示词」（面板「恢复默认」按钮用，不在前端抄一份）
     chatOpen: false,          // 手机端：是否已点进某个会话（列表 ↔ 聊天 的主从切换）
     login: {                  // 扫码登录卡片
       qr: null,               // /api/qqlogin 的响应
@@ -1409,6 +1410,120 @@ function renderChannelStatus(channels) {
 
   /* 拉服务器 agent 接口的模型列表（GET <AgentServerBaseUrl>/models） */
 
+  function quotaNumber(value) {
+    return Number.isFinite(Number(value)) ? new Intl.NumberFormat("zh-CN").format(Number(value)) : "—";
+  }
+
+  function quotaUtcText(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toISOString();
+  }
+
+  function renderQuotaSnapshot(snapshot) {
+    const fields = ["quotaUsedTokens", "quotaRemainingTokens", "quotaTokenSplit", "quotaResetDate", "quotaNextResetAt", "quotaEnergySaving", "quotaSilentReason"];
+    if (!snapshot) {
+      for (const id of fields) $(id).textContent = "—";
+      $("quotaDailyLimit").value = "";
+      return;
+    }
+
+    $("quotaDailyLimit").value = snapshot.dailyTokenLimit;
+    $("quotaUsedTokens").textContent = `${quotaNumber(snapshot.usedTokens)} / ${quotaNumber(snapshot.dailyTokenLimit)}`;
+    $("quotaRemainingTokens").textContent = quotaNumber(snapshot.remainingTokens);
+    $("quotaTokenSplit").textContent = `${quotaNumber(snapshot.usedPromptTokens)} / ${quotaNumber(snapshot.usedCompletionTokens)}`;
+    $("quotaResetDate").textContent = snapshot.resetDate || "—";
+    $("quotaNextResetAt").textContent = quotaUtcText(snapshot.nextResetAt);
+    const energy = $("quotaEnergySaving");
+    energy.textContent = snapshot.energySaving ? "节能静默" : "正常回复";
+    energy.classList.toggle("warn", !!snapshot.energySaving);
+    energy.classList.toggle("ok", !snapshot.energySaving);
+    $("quotaSilentReason").textContent = snapshot.energySavingReason || "—";
+  }
+
+  function renderQuotaTenants() {
+    const select = $("quotaTenant");
+    if (!select) return "";
+
+    const rows = state.conversations.filter((conversation) => conversation && conversation.key);
+    const selectedStillExists = rows.some((conversation) => conversation.key === state.quota.tenant);
+    const selected = selectedStillExists ? state.quota.tenant : (rows[0]?.key || "");
+    select.replaceChildren();
+    if (rows.length === 0) {
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "暂无已登记会话";
+      select.appendChild(empty);
+    } else {
+      for (const conversation of rows) {
+        const option = document.createElement("option");
+        option.value = conversation.key;
+        option.textContent = conversation.name || "未命名会话";
+        select.appendChild(option);
+      }
+    }
+    select.value = selected;
+    select.disabled = !selected || state.quota.loading;
+    $("quotaDailyLimit").disabled = !selected || state.quota.loading;
+    $("quotaSaveBtn").disabled = !selected || !state.quota.snapshot || state.quota.loading;
+    state.quota.tenant = selected;
+    return selected;
+  }
+
+  async function loadQuotaPanel() {
+    const selected = renderQuotaTenants();
+    if (!selected) {
+      state.quota.snapshot = null;
+      renderQuotaSnapshot(null);
+      $("quotaHint").textContent = "先选择一个已登记会话";
+      return;
+    }
+
+    state.quota.loading = true;
+    renderQuotaTenants();
+    $("quotaHint").textContent = "正在读取配额状态…";
+    try {
+      const snapshot = await api(`/api/quotas?tenant=${encodeURIComponent(selected)}`);
+      state.quota.snapshot = snapshot;
+      renderQuotaSnapshot(snapshot);
+      $("quotaHint").textContent = "来源已选择 · 保存配额不会清除今日用量";
+    } catch (error) {
+      state.quota.snapshot = null;
+      renderQuotaSnapshot(null);
+      $("quotaHint").textContent = `读取失败：${error.data?.error || error.message}`;
+    } finally {
+      state.quota.loading = false;
+      renderQuotaTenants();
+    }
+  }
+
+  async function saveQuota() {
+    const tenant = state.quota.tenant;
+    const dailyTokenLimit = Number($("quotaDailyLimit").value);
+    if (!tenant || !Number.isSafeInteger(dailyTokenLimit) || dailyTokenLimit < 1 || dailyTokenLimit > 1000000000) {
+      toast("每日配额必须是 1 到 1,000,000,000 的整数");
+      return;
+    }
+
+    const button = $("quotaSaveBtn");
+    button.disabled = true;
+    try {
+      const snapshot = await api("/api/quotas", {
+        method: "POST",
+        body: JSON.stringify({ tenant, dailyTokenLimit })
+      });
+      state.quota.snapshot = snapshot;
+      renderQuotaSnapshot(snapshot);
+      $("quotaHint").textContent = `已保存 · 今日已用 ${quotaNumber(snapshot.usedTokens)} Token，未清零`;
+      toast("每日 Token 配额已保存");
+    } catch (error) {
+      $("quotaHint").textContent = `保存失败：${error.data?.error || error.message}`;
+      toast("每日 Token 配额保存失败");
+    } finally {
+      state.quota.loading = false;
+      renderQuotaTenants();
+    }
+  }
+
   async function loadSettings() {
     state.settingsLoaded = false; // 重新加载期间先封住保存
     const data = await api("/api/settings");
@@ -1663,6 +1778,7 @@ function renderChannelStatus(channels) {
       resetAgentDeviceDraft(); // 回到上一份已保存快照，不保留已经放弃的改动
     }
 
+    await loadQuotaPanel();
     renderModelStudio();
 
     // 放在最后：全部回填成功才认为可保存
@@ -3337,11 +3453,17 @@ function renderChannelStatus(channels) {
     $("setDesire").addEventListener("input", (e) => { $("desireVal").textContent = e.target.value; });
     $("setVoiceEagerness").addEventListener("input", (e) => { $("voiceEagernessVal").textContent = e.target.value; });
     $("setThreshold").addEventListener("input", (e) => { $("threshVal").textContent = e.target.value; });
+    $("setMaxAgentSteps").addEventListener("input", (e) => { $("agentStepsVal").textContent = e.target.value; });
     $("setRationalTemp").addEventListener("input", (e) => { $("rationalTempVal").textContent = e.target.value; });
     $("setRationalTopP").addEventListener("input", (e) => { $("rationalTopPVal").textContent = e.target.value; });
     $("setEmotionalTemp").addEventListener("input", (e) => { $("emotionalTempVal").textContent = e.target.value; });
     $("setEmotionalTopP").addEventListener("input", (e) => { $("emotionalTopPVal").textContent = e.target.value; });
     $("saveBtn").addEventListener("click", saveSettings);
+     $("quotaTenant").addEventListener("change", (event) => {
+       state.quota.tenant = event.target.value;
+       loadQuotaPanel();
+     });
+     $("quotaSaveBtn").addEventListener("click", saveQuota);
 
     // 清除密钥：必须先确认（密钥没了机器人就发不出话，不是小事）
     $("clearApiKey").addEventListener("click", () => {
@@ -3367,7 +3489,8 @@ function renderChannelStatus(channels) {
     const dirtyOnEdit = (ev) => {
       const target = ev.target;
       const insidePasswordCard = typeof target?.closest === "function" && target.closest("#panelPasswordSettings");
-      if (!target || (target.id !== "setTheme" && !insidePasswordCard)) markSettingsDirty();
+      const insideQuotaCard = typeof target?.closest === "function" && target.closest("#quotaCard");
+       if (!target || (target.id !== "setTheme" && !insidePasswordCard && !insideQuotaCard)) markSettingsDirty();
     };
     $("pageSettings").addEventListener("input", dirtyOnEdit);
     $("pageSettings").addEventListener("change", dirtyOnEdit);

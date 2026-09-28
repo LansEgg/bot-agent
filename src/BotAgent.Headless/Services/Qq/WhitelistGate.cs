@@ -121,6 +121,12 @@ public sealed class WhitelistGate
             return _local.Contains(id);
         }
 
+        if (Channels.IsFeishu(channel))
+        {
+            // 飞书通道：入站网关已核验签名、去重及自身白名单
+            return true;
+        }
+
         return Channels.IsOfficial(channel)
             ? isGroup
                 ? _officialAllGroups || _officialGroups.Contains(id)

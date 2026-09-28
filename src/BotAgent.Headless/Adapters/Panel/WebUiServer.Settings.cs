@@ -110,9 +110,10 @@ public sealed partial class WebUiServer
         var auditEvent = BuildSettingsAuditEvent(body);
         _settingsHotReload.ApplyRuntimeSettings(s =>
         {
-            // 三段分开：行为/阈值 · 通道与 agent · 报表与模型。顺序与措辞一字未改（§5.3 兼容红线）。
+            // 三段分开：行为/阈值 · 通道与 agent · 报表与模型 · 多平台设置。
             ApplyBehaviorSettings(body, s);
             ApplyChannelAndAgentSettings(body, s);
+            ApplyMultiPlatformSettings(body, s);
             ApplyReportingAndModelSettings(body, s, newBaseUrl);
         }, auditEvent, _auditChain);
 
@@ -146,6 +147,20 @@ public sealed partial class WebUiServer
             var raw = body["agentServerKey"]?.GetValue<string>()?.Trim();
             AppendSecretRotateAudit("agent_server_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
         }
+        if (body["feishuAppSecret"] is not null)
+        {
+            var raw = body["feishuAppSecret"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("feishu_secret", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+    }
+
+    private static void ApplyMultiPlatformSettings(JsonNode body, AppSettings s)
+    {
+        if (body["feishuEnabled"] is JsonNode fe) s.FeishuEnabled = fe.GetValue<bool>();
+        if (body["feishuAppId"] is JsonNode fai) s.FeishuAppId = fai.GetValue<string>().Trim();
+        if (body["feishuVerificationToken"] is JsonNode fvt) s.FeishuVerificationToken = fvt.GetValue<string>().Trim();
+        if (body["feishuWhitelist"] is JsonNode fwl) s.FeishuWhitelist = fwl.GetValue<string>().Trim();
+        if (body["feishuApiBase"] is JsonNode fab) s.FeishuApiBase = fab.GetValue<string>().Trim();
     }
 
     /// <summary>行为与阈值：人设 / 三份白名单 / 欲望与阈值 / 各种冷却 / 上下文窗口 / 画像 / 表情包。</summary>
@@ -650,6 +665,13 @@ public sealed partial class WebUiServer
         // 对话总开关（分通道静音）：与顶部那个全局 AI 开关不同，这里能只关一条通道。
         ["privateChatEnabled"] = s.PrivateChatEnabled,
         ["officialChatEnabled"] = s.OfficialChatEnabled,
+        ["feishuEnabled"] = s.FeishuEnabled,
+        ["feishuAppId"] = s.FeishuAppId,
+        ["feishuSecretConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuAppSecret),
+        ["feishuSecretMasked"] = MaskSecret(s.FeishuAppSecret),
+        ["feishuVerificationToken"] = s.FeishuVerificationToken,
+        ["feishuWhitelist"] = s.FeishuWhitelist,
+        ["feishuApiBase"] = s.FeishuApiBase,
         // 官方通道**见过的会话**（别名号 + 名字）——面板上点一下就能填进官方白名单，
         // 不必再让人去猜“别名号长什么样”（填真实号 = 官方通道静默全拦，今天刚踩过）。
         ["officialConversations"] = BuildOfficialConversations(),
