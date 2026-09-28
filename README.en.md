@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | English
 
-**A headless, cross-platform QQ chat bot that runs as a long-lived service**: it attaches to the official QQ client through [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot v11) and lets any OpenAI-compatible model (DeepSeek / OpenAI / Qwen / Ollama / a self-hosted gateway …) reply automatically in private chats and group chats. A web panel is built in.
+**A headless, pluggable multi-chat-platform Agent runtime that runs as a long-lived service**: it attaches to QQ private chats ([NapCat](https://github.com/NapNeko/NapCatQQ) / OneBot v11), QQ Official Platform, Feishu (Lark) applications, and zero-dependency local test channels, using OpenAI-compatible models (DeepSeek / OpenAI / Qwen / Ollama / self-hosted gateway …) to reply automatically in private, group, and channel chats. A lightweight web management panel is built in.
 
 > A note on Chinese literals: some inline examples below are Chinese-language strings — prompt templates, in-chat markers such as `[已撤回]` / `〔旁白：…〕`, and settings values — because that is what the bot actually emits. They are kept verbatim so they can be copied as-is.
 

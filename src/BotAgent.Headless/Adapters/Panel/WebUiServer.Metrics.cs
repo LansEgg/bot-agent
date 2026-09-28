@@ -61,6 +61,22 @@ public sealed partial class WebUiServer
             }
         }
 
+        var platforms = _platformRegistry?.GetSnapshots();
+        if (platforms is { Count: > 0 })
+        {
+            body.AppendLine("# HELP botagent_platform_adapter_connected Connection status of registered platform adapters.")
+                .AppendLine("# TYPE botagent_platform_adapter_connected gauge");
+            foreach (var p in platforms)
+            {
+                body.Append("botagent_platform_adapter_connected{platform=\"")
+                    .Append(p.PlatformId)
+                    .Append("\",account=\"")
+                    .Append(p.AccountScope)
+                    .Append("\"} ")
+                    .AppendLine(p.Connected ? "1" : "0");
+            }
+        }
+
         return WriteBytesAsync(context, 200, "text/plain; version=0.0.4; charset=utf-8", Encoding.UTF8.GetBytes(body.ToString()));
     }
 

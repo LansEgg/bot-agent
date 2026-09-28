@@ -178,6 +178,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         new("GET", PanelMatch.Exact, "/api/local", (r) => WriteJsonAsync(r.Context, 200, BuildLocalChannelPayload())),
         new("POST", PanelMatch.Exact, "/api/local/message", (r) => HandleLocalMessageAsync(r.Context)),
 
+        // ─────────── 多平台注册表与飞书 Webhook（多平台演进 · 阶段 2/4）───────────
+        new("GET", PanelMatch.Exact, "/api/platforms", (r) => HandlePlatformsAsync(r.Context)),
+        new("POST", PanelMatch.Exact, "/api/webhooks/feishu", (r) => HandleFeishuWebhookAsync(r.Context)),
+
         // ─────────── AI 总开关 ───────────
         new("POST", PanelMatch.Exact, "/api/ai-mode", HandleAiModeAsync),
 

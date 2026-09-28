@@ -2,13 +2,13 @@
 
 [简体中文](README.md) | English
 
-A **headless, cross-platform, container-deployable** QQ chat bot service: it connects to an OneBot v11 protocol side (NapCat and friends) and uses an OpenAI-compatible model to reply automatically in QQ private chats and group chats, with a web panel built in.
+A **headless, pluggable multi-platform, container-deployable** universal chat agent runtime: it supports QQ private (OneBot v11/NapCat), QQ Official Platform, Feishu (Lark) Bot, and local zero-dependency testing channels, using an OpenAI-compatible model to reply automatically in private, group, and channel chats, with a lightweight web panel built in.
 
 > A note on Chinese literals: some inline examples below are Chinese-language strings — prompt templates, in-chat markers such as `[已撤回]` / `〔旁白：…〕`, and settings values — because that is what the bot actually emits. They are kept verbatim so they can be copied as-is.
 
 
 ```
-QQ client (Linux)  ←injected—  NapCat (container)  ←—OneBot v11 WS——  Bot Agent (container)  ——→  model API
+Chat Platforms (QQ / Feishu / Local)  ←—Adapter Seam—  Bot Agent (Container)  ——→  Model API
 ```
 
 - **No UI, no Windows dependency**: `net8.0`, Docker image around 80MB (the runtime stage is based on `dotnet/runtime:8.0`)

@@ -291,7 +291,12 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
         if (!result.Succeeded)
         {
             FileLog.Warn("Agent", $"Provider 调用不可用，进入安全静默（reason={result.ReasonCode}，hops={result.FallbackHops}）");
-            return null;
+            if (string.Equals(result.ReasonCode, "upstream_empty", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            throw new HttpRequestException($"Provider 调用不可用（reason={result.ReasonCode}）");
         }
 
         if (result.FallbackHops > 0)

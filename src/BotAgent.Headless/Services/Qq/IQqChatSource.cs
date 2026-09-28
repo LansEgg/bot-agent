@@ -9,8 +9,8 @@ namespace BotAgent.Services.Qq;
 public readonly record struct SendResult(bool Ok, long MessageId = 0);
 
 /// <summary>
-/// QQ 消息源统一抽象：上层（会话/Agent）只依赖此接口收发消息，
-/// 不关心背后是内置账号登录（Lagrange.Core）还是外部 OneBot 协议端。
+/// 既有通道消息源抽象（兼容外观 Facade）：供 QQ 私域、QQ 官方、本地通道及平台转接层使用。
+/// 通用核心已逐步通过 <see cref="Domain.Ports.IPlatformAdapter"/> 和 <see cref="Domain.Ports.IPlatformMessenger"/> 进行中立解耦。
 /// </summary>
 public interface IQqChatSource
 {

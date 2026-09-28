@@ -21,7 +21,7 @@ namespace BotAgent.Services.Reply;
 /// 为什么单拎：回复主链、agent 命令、审批三处都要发消息，各自抄一份"分句 + 记账"迟早不一致；
 /// 而且它把 <see cref="OwnMessageLedger" />（"这句话是我哪条消息发的"）的写入收在一处。
 /// </summary>
-public sealed class PlainSender : IQqMessageSender
+public sealed class PlainSender : IQqMessageSender, IConversationReplySender
 {
     private readonly SettingsBox _box;
     private readonly IQqChatSource _source;
@@ -83,7 +83,7 @@ public sealed class PlainSender : IQqMessageSender
             return new CadenceSendReport(Array.Empty<string>(), "sanitized_empty");
         }
 
-        var sourceKey = BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.IsAliasId(targetId) ? BotAgent.Domain.Qq.Channels.Official : BotAgent.Domain.Qq.Channels.IsLocalId(targetId) ? BotAgent.Domain.Qq.Channels.Local : BotAgent.Domain.Qq.Channels.Private, isGroup, targetId);
+        var sourceKey = BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.IsAliasId(targetId) ? BotAgent.Domain.Qq.Channels.Official : BotAgent.Domain.Qq.Channels.IsLocalId(targetId) ? BotAgent.Domain.Qq.Channels.Local : BotAgent.Domain.Qq.Channels.IsFeishuId(targetId) ? BotAgent.Domain.Qq.Channels.Feishu : BotAgent.Domain.Qq.Channels.Private, isGroup, targetId);
         if (_riskBackoff?.IsActive(sourceKey) == true)
         {
             var decision = _riskBackoff.EvaluateText(sourceKey, directAddress, reply);

@@ -157,7 +157,9 @@ public sealed partial class WebUiServer : IDisposable
         ApprovalUseCase? approvals = null,
         LocalChannelSource? localChannel = null,
         Action? onRestart = null,
-        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? circuitStatusProvider = null)
+        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? circuitStatusProvider = null,
+        IPlatformRegistry? platformRegistry = null,
+        Platforms.Feishu.FeishuBotGateway? feishuGateway = null)
     {
         _port = port;
         _box = box;
@@ -196,6 +198,8 @@ public sealed partial class WebUiServer : IDisposable
         _localChannel = localChannel;
         _onRestart = onRestart;
         _circuitStatusProvider = circuitStatusProvider;
+        _platformRegistry = platformRegistry;
+        _feishuGateway = feishuGateway;
 
         // 启动时把密钥库里那份 TTS 密钥重新写给 tts 容器（容器可能刚被重建、
         // 或者上次写文件前我们就重启了）——否则面板里存着 key，语音却发不出去。
@@ -242,6 +246,8 @@ public sealed partial class WebUiServer : IDisposable
     /// </summary>
     private readonly Action? _onRestart;
     private readonly Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? _circuitStatusProvider;
+    private readonly IPlatformRegistry? _platformRegistry;
+    private readonly Platforms.Feishu.FeishuBotGateway? _feishuGateway;
 
     /// <summary>实际监听的前缀（启动失败为 null）。</summary>
     public string? ListeningOn { get; private set; }
@@ -320,7 +326,9 @@ public sealed partial class WebUiServer : IDisposable
             var path = context.Request.Url?.AbsolutePath ?? "/";
             var method = context.Request.HttpMethod;
 
-            var publicPath = path.Equals("/healthz", StringComparison.OrdinalIgnoreCase) ||
+            var isFeishuWebhook = path.Equals("/api/webhooks/feishu", StringComparison.OrdinalIgnoreCase);
+            var publicPath = isFeishuWebhook ||
+                path.Equals("/healthz", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/readyz", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/metrics", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/api/auth/status", StringComparison.OrdinalIgnoreCase) ||
@@ -343,7 +351,7 @@ public sealed partial class WebUiServer : IDisposable
                 }
             }
 
-            if (string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) && !IsSameOrigin(context))
+            if (!isFeishuWebhook && string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) && !IsSameOrigin(context))
             {
                 await WriteJsonAsync(context, 403, new JsonObject { ["error"] = "cross-origin request rejected" });
                 context.Response.Close();

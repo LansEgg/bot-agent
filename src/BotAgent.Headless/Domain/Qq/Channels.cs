@@ -1,21 +1,15 @@
 using System.Text;
+using BotAgent.Domain.Conversation;
+using BotAgent.Domain.Messaging;
+using BotAgent.Domain.Platforms;
 
 namespace BotAgent.Domain.Qq;
 
 /// <summary>
-/// 通道（渠道）常量，以及「会话 key ⇄ 通道」的换算。
+/// 通道常量与遗留会话 key 换算收口。
+/// 结构化编码现已由 <see cref="ConversationIdCodec"/> 集中管理，本类维护前缀与历史号段互斥规则。
 ///
-/// 为什么要有这个概念：机器人现在同时接两路上行 ——
-///   • <see cref="Private"/>：**私域**，自建协议端（NapCat / OneBot，管理员自己的 QQ 号）；
-///   • <see cref="Official"/>：**官方**，QQ 开放平台（appid + 官方网关，用户是 openid）。
-/// 两边的 QQ 号/群号体系完全不同（一边是数字 QQ 号，一边是 openid 字符串），
-/// 上下文、人设、白名单、长期记忆必须**严格隔离** —— 否则官方那边一个 openid 撞上群号，
-/// 就会把两个场景的对话串到一起。
-///
-/// 隔离靠的是**会话 key 前缀**，而且有个刻意的取舍：
-/// <b>私域不加前缀</b>（仍旧是 <c>group:123</c> / <c>private:456</c>）——
-/// 老库里的会话、面板按钮、<c>//</c> 命令参数全都以这个格式为准，加前缀会把它们全废掉。
-/// 官方通道才带 <c>official:</c> 前缀。<see cref="ChannelOf"/> 认前缀，其余地方不必知道细节。
+/// 隔离靠的是**会话 key 前缀**与专属号段互斥（QQ 私域无前缀 / 官方 official: 8e15 起 / 本地 local: 7e15 起 / 飞书 feishu: 6e15 起）。
 /// </summary>
 public static class Channels
 {
@@ -31,11 +25,23 @@ public static class Channels
     /// </summary>
     public const string Local = "local";
 
+    /// <summary>飞书通道（多平台演进阶段 4）：飞书应用机器人，默认关。</summary>
+    public const string Feishu = "feishu";
+
     /// <summary>官方通道的会话 key 前缀。</summary>
     public const string OfficialPrefix = Official + ":";
 
     /// <summary>本地通道的会话 key 前缀。</summary>
     public const string LocalPrefix = Local + ":";
+
+    /// <summary>飞书通道的会话 key 前缀。</summary>
+    public const string FeishuPrefix = Feishu + ":";
+
+    /// <summary>飞书通道内部别名号起点：6e15 起，与本地 7e15、官方 8e15 及真实 QQ 号互斥。</summary>
+    public const long FeishuBase = 6_000_000_000_000_000L;
+
+    /// <summary>是不是飞书通道发的内部别名号。</summary>
+    public static bool IsFeishuId(long id) => id >= FeishuBase && id < LocalBase;
 
     /// <summary>
     /// 官方通道「别名号」的起点：官方平台的会话标识是 openid 字符串（<c>C4A1…</c>），
@@ -69,15 +75,47 @@ public static class Channels
     public static bool IsLocalId(long id) => id >= LocalBase && id < AliasBase;
 
     public static string ChannelOf(string? sourceKey)
-        => sourceKey switch
+    {
+        if (string.IsNullOrEmpty(sourceKey))
         {
-            not null when sourceKey.StartsWith(OfficialPrefix, StringComparison.OrdinalIgnoreCase) => Official,
-            not null when sourceKey.StartsWith(LocalPrefix, StringComparison.OrdinalIgnoreCase) => Local,
-            _ => Private,
-        };
+            return Private;
+        }
+
+        if (sourceKey.StartsWith(OfficialPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return Official;
+        }
+
+        if (sourceKey.StartsWith(LocalPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return Local;
+        }
+
+        if (sourceKey.StartsWith(FeishuPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return Feishu;
+        }
+
+        if (sourceKey.StartsWith("v=1;", StringComparison.OrdinalIgnoreCase) && ConversationIdCodec.TryParse(sourceKey, out var cid))
+        {
+            var p = cid.PlatformId;
+            return p switch
+            {
+                PlatformId.QqOfficial => Official,
+                PlatformId.Local => Local,
+                PlatformId.Feishu => Feishu,
+                _ => Private,
+            };
+        }
+
+        return Private;
+    }
 
     public static bool IsOfficial(string? channel)
         => string.Equals(channel, Official, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsFeishu(string? channel)
+        => string.Equals(channel, Feishu, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 上行**自报**的通道名 → 内部通道常量（认不出来的一律归私域，与改造前一致）。
@@ -86,8 +124,9 @@ public static class Channels
     /// 第三条通道一上来就会被贴成私域 —— 于是白名单、key、上下文全走错路。收在这里，下次加通道只改一处。
     /// </summary>
     public static string Declared(string? channel)
-        => IsOfficial(channel) ? Official
-            : IsLocal(channel) ? Local
+        => IsOfficial(channel) || string.Equals(channel, PlatformId.QqOfficial, StringComparison.OrdinalIgnoreCase) ? Official
+            : IsLocal(channel) || string.Equals(channel, PlatformId.Local, StringComparison.OrdinalIgnoreCase) ? Local
+            : IsFeishu(channel) || string.Equals(channel, PlatformId.Feishu, StringComparison.OrdinalIgnoreCase) ? Feishu
             : Private;
 
     /// <summary>是不是本地通道（批次 F）。</summary>
@@ -100,7 +139,9 @@ public static class Channels
             ? $"{OfficialPrefix}{(isGroup ? "group" : "private")}:{id}"
             : IsLocal(channel)
                 ? $"{LocalPrefix}{(isGroup ? "group" : "private")}:{id}"
-                : $"{(isGroup ? "group" : "private")}:{id}";
+                : IsFeishu(channel)
+                    ? $"{FeishuPrefix}{(isGroup ? "group" : "private")}:{id}"
+                    : $"{(isGroup ? "group" : "private")}:{id}";
 
     /// <summary>从会话 key 上得到（是否群, 目标号），前缀被吃掉。解析不出来时返回 (false, 0)。</summary>
     public static (bool IsGroup, long Id) Parse(string? sourceKey)
@@ -124,28 +165,42 @@ public static class Channels
             return sourceKey[OfficialPrefix.Length..];
         }
 
-        return sourceKey.StartsWith(LocalPrefix, StringComparison.OrdinalIgnoreCase)
-            ? sourceKey[LocalPrefix.Length..]
+        if (sourceKey.StartsWith(LocalPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return sourceKey[LocalPrefix.Length..];
+        }
+
+        return sourceKey.StartsWith(FeishuPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sourceKey[FeishuPrefix.Length..]
             : sourceKey;
     }
 
     /// <summary>面板/日志里给人看的名字。</summary>
     public static string Display(string? channel)
-        => IsOfficial(channel) ? "官方" : IsLocal(channel) ? "本地" : "私域";
+        => IsOfficial(channel) ? "官方" : IsLocal(channel) ? "本地" : IsFeishu(channel) ? "飞书" : "私域";
 
     /// <summary>短标签，用于会话列表里的小徽标。</summary>
     public static string Tag(string? channel)
-        => IsOfficial(channel) ? "官方" : IsLocal(channel) ? "本地" : "私域";
+        => IsOfficial(channel) ? "官方" : IsLocal(channel) ? "本地" : IsFeishu(channel) ? "飞书" : "私域";
 
     /// <summary>
     /// 会话 key 的排序/展示用副本：把 <c>group:123</c> 变成 <c>群 123</c>（脱敏在更外层做）。
     /// </summary>
     public static string Describe(string? sourceKey)
     {
+        if (!string.IsNullOrEmpty(sourceKey)
+            && sourceKey.StartsWith("v=1;", StringComparison.OrdinalIgnoreCase)
+            && ConversationIdCodec.TryParse(sourceKey, out var cid))
+        {
+            var body = (cid.Kind == ConversationKind.GroupChat ? "群 " : "私聊 ") + cid.NativeTargetId;
+            var tag = Tag(cid.PlatformId);
+            return string.IsNullOrEmpty(tag) || tag == "私域" ? body : tag + " " + body;
+        }
+
         var (isGroup, id) = Parse(sourceKey);
-        var body = id > 0 ? (isGroup ? "群 " + id : "私聊 " + id) : "(未知会话)";
+        var descBody = id > 0 ? (isGroup ? "群 " + id : "私聊 " + id) : "(未知会话)";
         var channel = ChannelOf(sourceKey);
-        return IsOfficial(channel) || IsLocal(channel) ? Tag(channel) + " " + body : body;
+        return IsOfficial(channel) || IsLocal(channel) || IsFeishu(channel) ? Tag(channel) + " " + descBody : descBody;
     }
 
     /// <summary>调试用：一串 key 里的通道分布（只报数量，不带内容）。</summary>
