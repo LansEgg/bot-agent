@@ -66,6 +66,7 @@ public sealed partial class ReplyPipeline
     /// <summary>决策轨迹（批次 C）：一轮一条，只有形状 —— 见 <see cref="TurnTraceStore" /> 的注释。</summary>
     private readonly TurnTraceStore _traces;
     private readonly ProtocolRiskBackoff? _riskBackoff;
+    private readonly ITenantQuotaLedger? _quotas;
     /// <summary>有限步进循环（批次 E）：默认 1 步 = 与改造前逐字一致。</summary>
     private readonly AgentTurnLoop _turnLoop;
     /// <summary>当场做掉只读工具（批次 E）：判定与冷却与“留给下一轮”那条路完全一致。</summary>
@@ -95,7 +96,8 @@ public sealed partial class ReplyPipeline
         IMoodRepository mood,
         ReplyHooks hooks,
         TurnTraceStore traces,
-        ProtocolRiskBackoff? riskBackoff = null)
+        ProtocolRiskBackoff? riskBackoff = null,
+        ITenantQuotaLedger? quotas = null)
     {
         _box = box;
         _source = source;
@@ -121,6 +123,7 @@ public sealed partial class ReplyPipeline
         _hooks = hooks;
         _traces = traces;
         _riskBackoff = riskBackoff;
+        _quotas = quotas;
         _turnLoop = new AgentTurnLoop(brain, traces);
         _inlineTools = new InlineTurnTools(research, approvals, participation, hooks.Log);
 
@@ -1198,6 +1201,15 @@ public sealed partial class ReplyPipeline
             return;
         }
 
+        if (_quotas?.IsEnergySaving(conversation.SourceKey) == true &&
+            (proactive || (triggerMessageId is not long directMentionId ||
+             conversation.Messages.FirstOrDefault(m => m.QqMessageId == directMentionId)?.MentionedBot != true)))
+        {
+            _hooks.Log($"[配额] 租户已达到当日 Token 配额上限，进入节能静默: {conversation.Name}");
+            _traces.Node(conversation.SourceKey, TurnNodeKind.Participation, "silent", reasonCode: "quota_energy_saving");
+            return;
+        }
+
         // 配置快照（V3 §5.3）：这一轮从开始到结束一律读它 —— 面板热更新只影响后续处理，
         // 不会让"请求已经在路上"的这一轮中途换开关（能力闸门另有 caps 快照）。
         // 频率门（语音/表情/戳的冷却）仍读实时值：那是限速，不是授权。
@@ -1220,6 +1232,7 @@ public sealed partial class ReplyPipeline
                 conversation.SourceKey, turn, caps, proactive, snapshot.MaxAgentSteps,
                 result2 => _inlineTools.RunAsync(conversation, turn.Snapshot, caps, result2));
             result = outcome.Result;
+            _quotas?.RecordUsage(conversation.SourceKey, result.PromptTokens, result.CompletionTokens);
         }
         catch (Exception ex)
         {
@@ -1504,7 +1517,7 @@ public sealed partial class ReplyPipeline
             var query = string.Join(" ", context.TakeLast(8).Select(m => m.Text));
             stickerChoices = _stickers
                 .Store
-                .PickCandidates(query, snapshot.StickerCandidates)
+                .PickCandidates(query, snapshot.StickerCandidates, -1, conversation.SourceKey)
                 .Select(s => new StickerChoice(s.Id, StickerText.Describe(s)))
                 .ToList();
         }

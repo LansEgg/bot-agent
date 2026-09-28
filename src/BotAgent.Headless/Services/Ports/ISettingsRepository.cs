@@ -26,4 +26,7 @@ public interface ISettingsRepository
 
     /// <summary>写入配置（整份覆盖）。</summary>
     void Save(AppSettings settings);
+
+    /// <summary>写入配置并可选在同一事务内写入审计记录。</summary>
+    void Save(AppSettings settings, Ops.AuditEvent? auditEvent, Ops.IAuditChain? auditChain) => Save(settings);
 }

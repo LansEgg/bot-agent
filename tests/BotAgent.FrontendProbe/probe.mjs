@@ -1791,6 +1791,44 @@ check("★ 保存请求带 maxAgentSteps（回填的是 1，发出去的也是 1
     const sent = calls.slice(beforeStepSave).filter((c) => String(c.url).includes("/api/settings") && c.method === "POST").pop();
     return sent ? "最后一次保存：" + sent.body : "没有保存请求";
   })());
+/* ─────────── S) 交互演练场（阶段一 §3.1） ─────────── */
+
+console.log("\n▶ 交互演练场（阶段一 §3.1）：playground.html 静态与结构完整性");
+
+const playgroundPath = path.join(root, "playground.html");
+check("playground.html 存在", fs.existsSync(playgroundPath));
+const pgHtml = fs.readFileSync(playgroundPath, "utf8");
+const pgScript = pgHtml.slice(pgHtml.indexOf("<script>") + 8, pgHtml.lastIndexOf("</script>"));
+
+check("★ playground.html 脚本区没有裸中文标识符",
+  !/[^\x00-\x7F]/.test(codeOnly(pgScript)),
+  "去注释与去字符串视图应无中文标识符");
+
+check("包含预设场景选择（技术交流群 / 资料讨论群 / 生活兴趣群）",
+  pgHtml.includes('id="sceneSelect"') &&
+  pgHtml.includes("技术交流群") &&
+  pgHtml.includes("资料讨论群") &&
+  pgHtml.includes("生活兴趣群"));
+
+check("包含三种触发模式模拟（普通文字 / @ 机器人 / 模拟引用回复）",
+  pgHtml.includes('name="triggerMode"') &&
+  pgHtml.includes('value="plain"') &&
+  pgHtml.includes('value="mention"') &&
+  pgHtml.includes('value="quote"'));
+
+check("包含六步治理节点时间轴契约（参与判断 / 上下文 / 模型 / 闸门 / 工具 / 净化）",
+  pgHtml.includes('"Participation"') &&
+  pgHtml.includes('"Context"') &&
+  pgHtml.includes('"Model"') &&
+  pgHtml.includes('"Gate"') &&
+  pgHtml.includes('"ToolExec"') &&
+  pgHtml.includes('"Outbound"'));
+
+check("包含人工审批卡片与批准/拒绝操作入口",
+  pgHtml.includes('id="approvalSection"') &&
+  pgHtml.includes('id="approveBtn"') &&
+  pgHtml.includes('id="rejectBtn"'));
+
 console.log("");
 if (failures.length === 0) {
   console.log(`通过 ${pass}，失败 0`);

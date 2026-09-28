@@ -63,6 +63,21 @@ public sealed class ProtocolRiskBackoff
         return false;
     }
 
+    /// <summary>读取当前是否有任何会话处于退避中。</summary>
+    public bool HasAnyActive()
+    {
+        var now = _now();
+        foreach (var entry in _entries.Values)
+        {
+            if (now < entry.Until)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// 决定文本是否可以发出。退避期间仅允许直接点名的消息，且强制单条短文本。
     /// </summary>

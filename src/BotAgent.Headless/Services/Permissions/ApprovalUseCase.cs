@@ -27,6 +27,7 @@ public sealed class ApprovalUseCase
     private readonly ApprovalHooks _hooks;
     private readonly SessionPolicyLedger _sessionPolicies;
     private readonly TurnTraceStore _traces;
+    private readonly IAuditChain? _audit;
 
     private readonly ApprovalStore _approvals = new();
     private readonly ToolCallBudget _toolBudget = new();
@@ -37,12 +38,13 @@ public sealed class ApprovalUseCase
 
     private DateTimeOffset _lastPrune = DateTimeOffset.MinValue;
 
-    public ApprovalUseCase(SettingsBox box, ApprovalHooks hooks, SessionPolicyLedger sessionPolicies, TurnTraceStore traces)
+    public ApprovalUseCase(SettingsBox box, ApprovalHooks hooks, SessionPolicyLedger sessionPolicies, TurnTraceStore traces, IAuditChain? audit = null)
     {
         _box = box;
         _hooks = hooks;
         _sessionPolicies = sessionPolicies;
         _traces = traces;
+        _audit = audit;
     }
 
     private AppSettings _settings => _box.Current;
@@ -145,6 +147,16 @@ public sealed class ApprovalUseCase
         if (!decision.Allow)
         {
             _hooks.Log($"[能力] 拒绝 {toolId}（{decision.ReasonCode}）: {conversation.Name}");
+            if (_audit is not null)
+            {
+                var detail = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    result = "blocked",
+                    tool = toolId,
+                    reason = decision.ReasonCode
+                });
+                _audit.Append(new AuditEvent("gate_block", "agent-gate", key, detail, caps.Policy.PolicyVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            }
         }
 
         return decision.Allow;
@@ -199,6 +211,18 @@ public sealed class ApprovalUseCase
         _hooks.Log($"[审批] {parsed.Kind} {parsed.RequestId} by {who} → {result.ReasonCode}"
                    + (result.ReasonCode == "not_an_approver" ? "（不是名单内的人，也不是群主/管理员）" : string.Empty)
                    + $"：{Channels.Describe(conversationKey)}");
+
+        if (_audit is not null && result.Handled)
+        {
+            var detail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                requestId = parsed.RequestId,
+                action = parsed.Kind.ToString().ToLowerInvariant(),
+                reason = result.ReasonCode,
+                shouldExecute = result.ShouldExecute
+            });
+            _audit.Append(new AuditEvent("approval_decision", who, conversationKey, detail, Capabilities.Policy.PolicyVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
 
         if (result.ShouldExecute && result.Ticket is { } ticket)
         {
@@ -262,6 +286,18 @@ public sealed class ApprovalUseCase
             currentPolicyVersion: Capabilities.Policy.PolicyVersion);
 
         _hooks.Log($"[审批] 面板 {requestId} → {result.ReasonCode}（{Channels.Describe(conversationKey)}）");
+
+        if (_audit is not null && result.Handled)
+        {
+            var detail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                requestId = requestId,
+                action = approve ? "approve" : "reject",
+                reason = result.ReasonCode,
+                shouldExecute = result.ShouldExecute
+            });
+            _audit.Append(new AuditEvent("approval_decision", "panel:owner", conversationKey, detail, Capabilities.Policy.PolicyVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
 
         if (result.ShouldExecute && result.Ticket is { } ticket)
         {

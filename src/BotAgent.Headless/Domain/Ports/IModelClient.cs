@@ -108,4 +108,7 @@ public interface IModelClient
 
     /// <summary>听一段音频，给出客观描述（听歌那条路用）。</summary>
     Task<string?> DescribeAudioAsync(byte[] audio, string format, string title, string? artist, CancellationToken ct);
+
+    /// <summary>当前熔断状态快照（只读无敏感凭据）。</summary>
+    IReadOnlyList<Domain.Ops.CircuitStatusSnapshot> CircuitSnapshots => Array.Empty<Domain.Ops.CircuitStatusSnapshot>();
 }
