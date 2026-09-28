@@ -5,6 +5,8 @@ namespace BotAgent.Adapters.Panel;
 
 public sealed partial class WebUiServer
 {
+    private const int MaxFeishuWebhookBodyBytes = 1_048_576;
+    private static readonly SemaphoreSlim FeishuWebhookSlots = new(16, 16);
     private async Task HandlePlatformsAsync(HttpListenerContext context)
     {
         var snapshots = _platformRegistry?.GetSnapshots() ?? Array.Empty<Domain.Ports.PlatformStatusSnapshot>();
@@ -34,10 +36,21 @@ public sealed partial class WebUiServer
             });
         }
 
+        var feishuLoaded = _feishuGateway is not null;
+        var feishuEnabled = _box.Current.FeishuEnabled;
+        var feishuConfigured = _feishuGateway?.IsConfigured
+            ?? (!string.IsNullOrWhiteSpace(_box.Current.FeishuAppId)
+                && !string.IsNullOrWhiteSpace(_box.Current.FeishuAppSecret)
+                && (!string.IsNullOrWhiteSpace(_box.Current.FeishuEncryptKey)
+                    || !string.IsNullOrWhiteSpace(_box.Current.FeishuVerificationToken)));
+        var feishuRestartRequired = feishuEnabled != feishuLoaded;
         var feishuObj = new JsonObject
         {
-            ["enabled"] = _box.Current.FeishuEnabled,
-            ["configured"] = !string.IsNullOrWhiteSpace(_box.Current.FeishuAppId),
+            ["enabled"] = feishuEnabled,
+            ["configured"] = feishuConfigured,
+            ["loaded"] = feishuLoaded,
+            ["effectiveEnabled"] = feishuEnabled && feishuLoaded,
+            ["restartRequired"] = feishuRestartRequired,
             ["connected"] = _feishuGateway?.IsConnected ?? false,
             ["outboxCount"] = _feishuGateway?.Outbox.Count ?? 0,
         };
@@ -51,7 +64,17 @@ public sealed partial class WebUiServer
 
     private async Task HandleFeishuWebhookAsync(HttpListenerContext context)
     {
-        if (_feishuGateway is null || !_box.Current.FeishuEnabled)
+        if (_feishuGateway is null)
+        {
+            await WriteJsonAsync(context, 503, new JsonObject
+            {
+                ["error"] = "feishu_gateway_not_loaded",
+                ["reason"] = "restart_required",
+            });
+            return;
+        }
+
+        if (!_box.Current.FeishuEnabled)
         {
             await WriteJsonAsync(context, 403, new JsonObject
             {
@@ -61,21 +84,78 @@ public sealed partial class WebUiServer
             return;
         }
 
-        string body;
-        using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? System.Text.Encoding.UTF8))
+        if (context.Request.ContentLength64 > MaxFeishuWebhookBodyBytes)
         {
-            body = await reader.ReadToEndAsync();
+            await WriteJsonAsync(context, 413, new JsonObject
+            {
+                ["error"] = "body_too_large",
+                ["maxBytes"] = MaxFeishuWebhookBodyBytes,
+            });
+            return;
         }
 
-        var sig = context.Request.Headers["X-Lark-Signature"];
-        var ts = context.Request.Headers["X-Lark-Request-Timestamp"];
-        var nonce = context.Request.Headers["X-Lark-Request-Nonce"];
+        if (!await FeishuWebhookSlots.WaitAsync(0, _cts.Token).ConfigureAwait(false))
+        {
+            await WriteJsonAsync(context, 429, new JsonObject
+            {
+                ["error"] = "webhook_overloaded",
+            });
+            return;
+        }
 
-        var (handled, statusCode, responseBody) = await _feishuGateway.HandleWebhookAsync(body, sig, ts, nonce);
-        context.Response.StatusCode = statusCode;
-        context.Response.ContentType = "application/json; charset=utf-8";
-        var bytes = System.Text.Encoding.UTF8.GetBytes(responseBody);
-        context.Response.ContentLength64 = bytes.Length;
-        await context.Response.OutputStream.WriteAsync(bytes);
+        try
+        {
+            var body = await ReadFeishuBodyAsync(context.Request.InputStream, context.Request.ContentEncoding, _cts.Token)
+                .ConfigureAwait(false);
+            if (body is null)
+            {
+                await WriteJsonAsync(context, 413, new JsonObject
+                {
+                    ["error"] = "body_too_large",
+                    ["maxBytes"] = MaxFeishuWebhookBodyBytes,
+                });
+                return;
+            }
+
+            var sig = context.Request.Headers["X-Lark-Signature"];
+            var ts = context.Request.Headers["X-Lark-Request-Timestamp"];
+            var nonce = context.Request.Headers["X-Lark-Request-Nonce"];
+            var verificationToken = context.Request.Headers["X-Lark-Verification-Token"];
+            var (_, statusCode, responseBody) = await _feishuGateway.HandleWebhookAsync(
+                body, sig, ts, nonce, verificationToken, _cts.Token).ConfigureAwait(false);
+            context.Response.StatusCode = statusCode;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            var bytes = System.Text.Encoding.UTF8.GetBytes(responseBody);
+            context.Response.ContentLength64 = bytes.Length;
+            await context.Response.OutputStream.WriteAsync(bytes, _cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            // 宿主停止时不再尝试写响应。
+        }
+        finally
+        {
+            FeishuWebhookSlots.Release();
+        }
+    }
+
+    private static async Task<string?> ReadFeishuBodyAsync(
+        Stream input,
+        System.Text.Encoding? encoding,
+        CancellationToken ct)
+    {
+        var buffer = new byte[8192];
+        var total = 0;
+        await using var memory = new MemoryStream();
+        while (true)
+        {
+            var read = await input.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
+            if (read == 0) break;
+            total += read;
+            if (total > MaxFeishuWebhookBodyBytes) return null;
+            await memory.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+        }
+
+        return (encoding ?? System.Text.Encoding.UTF8).GetString(memory.ToArray());
     }
 }

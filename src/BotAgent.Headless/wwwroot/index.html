@@ -546,7 +546,7 @@
                       <input type="range" id="setThreshold" min="0" max="60" step="5" />
                     </div>
                     <div class="field">
-                      <label>聊天步进循环上限<span class="hint">每次任务最多追加的模型调用轮数</span><b class="val" id="agentStepsVal">1</b></label>
+                      <label>聊天步进循环上限<span class="hint">每次任务最多模型调用次数：1 = 只调用一次；2/3 = 工具返回结果后最多再调用 1/2 次</span><b class="val" id="agentStepsVal">1</b></label>
                       <input type="range" id="setMaxAgentSteps" min="1" max="3" step="1" />
                     </div>
                     <label class="switch-row">
@@ -709,6 +709,39 @@
           </div>
 
           <pre id="deployLog" class="path-hint" style="white-space:pre-wrap;max-height:200px;overflow:auto;display:none"></pre>
+        </div>
+
+        <!-- 每日 Token 配额 -->
+        <div class="card" id="quotaCard">
+          <div class="card-head">
+            <h3>每日 Token 配额</h3>
+            <p>按会话来源隔离的 UTC 日预算；只控制每日总量，单次回复上限仍由模型设置里的 <code>maxTokens</code> 控制。</p>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label for="quotaTenant">会话租户</label>
+              <select id="quotaTenant" disabled>
+                <option value="">暂无已登记会话</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="quotaDailyLimit">每日上限 <span class="hint">1 - 1,000,000,000 Token</span></label>
+              <input type="number" id="quotaDailyLimit" min="1" max="1000000000" step="1" disabled />
+            </div>
+          </div>
+          <div class="quota-readouts" aria-live="polite">
+            <div class="quota-readout"><span>已用总量</span><strong id="quotaUsedTokens">—</strong></div>
+            <div class="quota-readout"><span>剩余</span><strong id="quotaRemainingTokens">—</strong></div>
+            <div class="quota-readout"><span>Prompt / Completion</span><strong id="quotaTokenSplit">—</strong></div>
+            <div class="quota-readout"><span>重置日期</span><strong id="quotaResetDate">—</strong></div>
+            <div class="quota-readout"><span>下次 UTC 重置</span><strong id="quotaNextResetAt">—</strong></div>
+            <div class="quota-readout"><span>节能状态</span><strong id="quotaEnergySaving">—</strong></div>
+            <div class="quota-readout"><span>静默原因</span><strong id="quotaSilentReason">—</strong></div>
+          </div>
+          <div class="sticker-actions">
+            <button class="ghost-btn" id="quotaSaveBtn" disabled>保存每日配额</button>
+            <span class="path-hint" id="quotaHint">先选择一个已登记会话</span>
+          </div>
         </div>
 
         <!-- 回复节奏 -->

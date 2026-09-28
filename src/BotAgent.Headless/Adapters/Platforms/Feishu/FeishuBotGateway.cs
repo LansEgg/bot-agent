@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using BotAgent.Adapters.Net;
+using BotAgent.Adapters.Persistence;
 using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Messaging;
 using BotAgent.Domain.Platforms;
@@ -23,6 +25,8 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 {
     private const int OutboxCapacity = 200;
     private const int SeenCapacity = 500;
+    private static readonly TimeSpan SignatureMaxAge = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan SeenTtl = TimeSpan.FromMinutes(10);
 
     private readonly SettingsBox _box;
     private readonly IHttpFetcher _http;
@@ -56,7 +60,13 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
     public PlatformCapabilities Capabilities { get; }
     public string? LastErrorCode { get; private set; }
 
-    public bool IsConnected => _box.Current.FeishuEnabled && !string.IsNullOrWhiteSpace(_box.Current.FeishuAppId);
+    public bool IsConnected => _box.Current.FeishuEnabled && IsConfigured;
+
+    public bool IsConfigured
+        => !string.IsNullOrWhiteSpace(_box.Current.FeishuAppId)
+           && !string.IsNullOrWhiteSpace(_box.Current.FeishuAppSecret)
+           && (!string.IsNullOrWhiteSpace(_box.Current.FeishuEncryptKey)
+               || !string.IsNullOrWhiteSpace(_box.Current.FeishuVerificationToken));
 
     public IReadOnlyList<FeishuOutboxItem> Outbox => _outbox.ToArray();
 
@@ -93,8 +103,11 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         string? signature,
         string? timestamp,
         string? nonce,
+        string? verificationToken = null,
         CancellationToken ct = default)
     {
+        var settings = _box.Current;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(body))
         {
             return (false, 400, "{\"error\":\"empty_body\"}");
@@ -110,62 +123,140 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
             return (false, 400, "{\"error\":\"invalid_json\"}");
         }
 
-        if (node is null) return (false, 400, "{\"error\":\"null_payload\"}");
-
-        // URL 挑战握手
-        var type = node["type"]?.GetValue<string>();
-        if (string.Equals(type, "url_verification", StringComparison.OrdinalIgnoreCase))
+        ct.ThrowIfCancellationRequested();
+        if (node is not JsonObject payload)
         {
-            var challenge = node["challenge"]?.GetValue<string>() ?? string.Empty;
-            var token = node["token"]?.GetValue<string>() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(_box.Current.FeishuVerificationToken)
-                && !string.Equals(token, _box.Current.FeishuVerificationToken, StringComparison.Ordinal))
-            {
-                return (false, 403, "{\"error\":\"token_mismatch\"}");
-            }
-            return (true, 200, $"{{\"challenge\":\"{challenge}\"}}");
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
         }
 
-        // 验签（若配置了签名密钥）
-        if (!string.IsNullOrWhiteSpace(_box.Current.FeishuEncryptKey))
+        if (!TryGetOptionalString(payload, "token", out var payloadToken)
+            || !TryGetOptionalString(payload, "type", out var type)
+            || !TryGetOptionalString(payload, "challenge", out var challenge))
         {
-            if (!VerifySignature(body, signature, timestamp, nonce, _box.Current.FeishuEncryptKey))
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
+        }
+
+        var configuredVerificationToken = settings.FeishuVerificationToken?.Trim() ?? string.Empty;
+        var suppliedVerificationToken = verificationToken?.Trim();
+        if (string.IsNullOrWhiteSpace(suppliedVerificationToken))
+        {
+            suppliedVerificationToken = payloadToken?.Trim();
+        }
+
+        // URL challenge 必须独立认证；没有配置 token 时默认拒绝外部 challenge。
+        if (string.Equals(type, "url_verification", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(configuredVerificationToken)
+                || !string.Equals(suppliedVerificationToken, configuredVerificationToken, StringComparison.Ordinal))
+            {
+                LastErrorCode = "verification_token_mismatch";
+                return (false, 403, "{\"error\":\"verification_token_mismatch\"}");
+            }
+
+            if (string.IsNullOrWhiteSpace(challenge))
+            {
+                return (false, 400, "{\"error\":\"missing_challenge\"}");
+            }
+
+            ct.ThrowIfCancellationRequested();
+            var escapedChallenge = JsonValue.Create(challenge)?.ToJsonString() ?? "\"\"";
+            return (true, 200, $"{{\"challenge\":{escapedChallenge}}}");
+        }
+
+        // 配置 Encrypt Key 时走签名 + 时间窗；否则普通事件必须带匹配的 Verification Token。
+        if (!string.IsNullOrWhiteSpace(settings.FeishuEncryptKey))
+        {
+            if (!VerifySignature(body, signature, timestamp, nonce, settings.FeishuEncryptKey))
             {
                 LastErrorCode = "signature_mismatch";
                 return (false, 401, "{\"error\":\"signature_mismatch\"}");
             }
         }
+        else if (string.IsNullOrWhiteSpace(configuredVerificationToken))
+        {
+            LastErrorCode = "verification_token_not_configured";
+            return (false, 403, "{\"error\":\"verification_token_not_configured\"}");
+        }
+        else if (!string.Equals(suppliedVerificationToken, configuredVerificationToken, StringComparison.Ordinal))
+        {
+            LastErrorCode = "verification_token_mismatch";
+            return (false, 401, "{\"error\":\"verification_token_mismatch\"}");
+        }
 
-        var header = node["header"];
-        var eventType = header?["event_type"]?.GetValue<string>();
-        var eventId = header?["event_id"]?.GetValue<string>() ?? string.Empty;
+        if (!TryGetOptionalObject(payload, "header", out var header)
+            || !TryGetOptionalString(header, "event_type", out var eventType)
+            || !TryGetOptionalString(header, "event_id", out var eventIdValue))
+        {
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
+        }
+
+        var eventId = eventIdValue?.Trim() ?? string.Empty;
 
         if (!string.Equals(eventType, "im.message.receive_v1", StringComparison.OrdinalIgnoreCase))
         {
             return (true, 200, "{\"code\":0,\"msg\":\"ignored_event_type\"}");
         }
 
-        var evt = node["event"];
-        var messageNode = evt?["message"];
-        var messageId = messageNode?["message_id"]?.GetValue<string>() ?? eventId;
-
-        // 去重
-        var dedupKey = string.IsNullOrEmpty(eventId) ? messageId : eventId;
-        if (!string.IsNullOrEmpty(dedupKey))
+        ct.ThrowIfCancellationRequested();
+        if (!string.IsNullOrWhiteSpace(settings.FeishuEncryptKey)
+            && !TryMarkSeen($"nonce:{nonce}"))
         {
-            if (_seen.ContainsKey(dedupKey))
-            {
-                return (true, 200, "{\"code\":0,\"msg\":\"duplicate\"}");
-            }
-            _seen[dedupKey] = Clock.Now;
-            if (_seen.Count > SeenCapacity) _seen.Clear();
+            return (true, 200, "{\"code\":0,\"msg\":\"duplicate\"}");
         }
 
-        var chatType = messageNode?["chat_type"]?.GetValue<string>() ?? "group";
+        if (!TryGetOptionalObject(payload, "event", out var evt)
+            || evt is null
+            || !TryGetOptionalObject(evt, "message", out var messageNode)
+            || messageNode is null
+            || !TryGetOptionalString(messageNode, "message_id", out var messageIdValue))
+        {
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
+        }
+
+        var messageId = messageIdValue?.Trim() ?? string.Empty;
+        var dedupKey = !string.IsNullOrWhiteSpace(eventId) ? $"event:{eventId}" : $"message:{messageId}";
+        if (string.IsNullOrWhiteSpace(eventId) && string.IsNullOrWhiteSpace(messageId))
+        {
+            return (false, 400, "{\"error\":\"missing_event_id\"}");
+        }
+
+        if (!TryMarkSeen(dedupKey))
+        {
+            return (true, 200, "{\"code\":0,\"msg\":\"duplicate\"}");
+        }
+
+        if (!TryGetOptionalString(messageNode, "chat_type", out var chatTypeValue)
+            || !TryGetOptionalString(messageNode, "chat_id", out var chatIdValue)
+            || !TryGetOptionalString(messageNode, "content", out var contentStr)
+            || !TryGetOptionalArray(messageNode, "mentions", out var mentions))
+        {
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
+        }
+
+        var chatType = chatTypeValue ?? "group";
         var isGroup = !string.Equals(chatType, "p2p", StringComparison.OrdinalIgnoreCase);
-        var chatId = messageNode?["chat_id"]?.GetValue<string>() ?? string.Empty;
-        var senderOpenId = evt?["sender"]?["sender_id"]?["open_id"]?.GetValue<string>()
-            ?? evt?["sender"]?["sender_id"]?["user_id"]?.GetValue<string>() ?? "unknown_user";
+        var chatId = chatIdValue ?? string.Empty;
+
+        if (!TryGetOptionalObject(evt, "sender", out var sender)
+            || !TryGetOptionalObject(sender, "sender_id", out var senderId))
+        {
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
+        }
+
+        if (!TryGetOptionalString(senderId, "open_id", out var senderOpenIdValue)
+            || !TryGetOptionalString(senderId, "user_id", out var senderUserIdValue))
+        {
+            LastErrorCode = "invalid_payload";
+            return (false, 400, "{\"error\":\"invalid_payload\"}");
+        }
+
+        var senderOpenId = senderOpenIdValue ?? senderUserIdValue ?? "unknown_user";
 
         var targetRaw = isGroup ? chatId : senderOpenId;
         if (string.IsNullOrWhiteSpace(targetRaw)) return (false, 400, "{\"error\":\"missing_target\"}");
@@ -173,14 +264,12 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         // 白名单检查
         if (!IsAllowed(targetRaw))
         {
-            _log?.Invoke($"[飞书] 忽略未在白名单中的消息（目标={targetRaw}）");
+            _log?.Invoke($"[飞书] 忽略未在白名单中的消息（目标长度={targetRaw.Length}）");
             return (true, 200, "{\"code\":0,\"msg\":\"not_whitelisted\"}");
         }
 
-        var contentStr = messageNode?["content"]?.GetValue<string>() ?? string.Empty;
-        var text = ExtractText(contentStr);
+        var text = ExtractText(contentStr ?? string.Empty);
 
-        var mentions = messageNode?["mentions"]?.AsArray();
         var mentioned = mentions is { Count: > 0 } || text.StartsWith('@');
 
         var internalTarget = AliasFor(targetRaw);
@@ -208,7 +297,9 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
             IsMentioned: mentioned);
 
         _log?.Invoke($"[飞书] 收到入站消息（会话={targetRaw}，字数={text.Length}）");
+        ct.ThrowIfCancellationRequested();
         MessageReceived?.Invoke(qqMsg);
+        ct.ThrowIfCancellationRequested();
         InboundReceived?.Invoke(inMsg);
         return (true, 200, "{\"code\":0}");
     }
@@ -240,10 +331,51 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         OutboundMessage message,
         CancellationToken ct = default)
     {
-        if (message is null) return DeliveryResult.Rejected("bad_request");
+        if (context is null || message is null)
+        {
+            LastErrorCode = "bad_request";
+            return DeliveryResult.Rejected("bad_request");
+        }
 
-        var targetRaw = message.Target.NativeTargetId;
-        var token = await GetTenantTokenAsync(ct).ConfigureAwait(false);
+        var expectedPlatform = PlatformId.Normalize(Context.PlatformId);
+        if (!string.Equals(PlatformId.Normalize(context.PlatformId), expectedPlatform, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(PlatformId.Normalize(message.Target.PlatformId), expectedPlatform, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(context.AccountScope, Context.AccountScope, StringComparison.Ordinal)
+            || !string.Equals(message.Target.AccountScope, Context.AccountScope, StringComparison.Ordinal)
+            || message.Target.Kind is not (ConversationKind.GroupChat or ConversationKind.PrivateChat)
+            || string.IsNullOrWhiteSpace(message.Target.NativeTargetId))
+        {
+            LastErrorCode = "context_mismatch";
+            return DeliveryResult.Rejected("context_mismatch");
+        }
+
+        var rawTarget = message.Target.NativeTargetId;
+        string token;
+        try
+        {
+            token = await GetTenantTokenAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            LastErrorCode = "cancelled";
+            return DeliveryResult.Transient("cancelled");
+        }
+        catch (Exception ex)
+        {
+            LastErrorCode = "network_error";
+            _log?.Invoke($"[飞书] token 请求异常（类型={ex.GetType().Name}）");
+            return DeliveryResult.Transient("network_error");
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            var reason = LastErrorCode == "feishu_token_invalid"
+                ? LastErrorCode
+                : "feishu_not_configured";
+            LastErrorCode = reason;
+            return DeliveryResult.Transient(reason);
+        }
+
         var baseUri = string.IsNullOrWhiteSpace(_box.Current.FeishuApiBase)
             ? "https://open.feishu.cn"
             : _box.Current.FeishuApiBase.TrimEnd('/');
@@ -261,7 +393,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         };
         if (string.IsNullOrWhiteSpace(message.ReplyToMessageId))
         {
-            payload["receive_id"] = targetRaw;
+            payload["receive_id"] = rawTarget;
         }
 
         var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
@@ -273,35 +405,47 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
         try
         {
-            var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            var respText = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            JsonNode? respNode = null;
+            try { respNode = JsonNode.Parse(respText); } catch (JsonException) { }
+            var code = respNode?["code"]?.GetValue<int>();
+
             if ((int)resp.StatusCode == 429)
             {
                 LastErrorCode = "throttled";
                 return DeliveryResult.Throttled(5, "feishu_rate_limited");
             }
 
-            var respText = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            var respNode = JsonNode.Parse(respText);
-            var code = respNode?["code"]?.GetValue<int>() ?? (resp.IsSuccessStatusCode ? 0 : -1);
-
-            if (code == 0)
+            if (!resp.IsSuccessStatusCode)
             {
-                var mid = respNode?["data"]?["message_id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N");
-                var key = ConversationIdCodec.Encode(message.Target);
-                _outbox.Enqueue(new FeishuOutboxItem(AliasFor(mid), key, message.Text, Clock.Now));
-                while (_outbox.Count > OutboxCapacity) _outbox.TryDequeue(out _);
-                _log?.Invoke($"[飞书] 消息已投递（会话={targetRaw}，长度={message.Text.Length}）");
-                return DeliveryResult.Ok(mid);
+                LastErrorCode = $"http_{(int)resp.StatusCode}";
+                return DeliveryResult.Transient("feishu_http_error");
             }
 
-            LastErrorCode = $"feishu_err_{code}";
-            return DeliveryResult.Transient($"feishu_err_{code}", respText);
+            if (code != 0)
+            {
+                LastErrorCode = $"feishu_err_{code?.ToString() ?? "unknown"}";
+                return DeliveryResult.Transient(LastErrorCode);
+            }
+
+            var mid = respNode?["data"]?["message_id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N");
+            var key = ConversationIdCodec.Encode(message.Target);
+            _outbox.Enqueue(new FeishuOutboxItem(AliasFor(mid), key, message.Text, Clock.Now));
+            while (_outbox.Count > OutboxCapacity) _outbox.TryDequeue(out _);
+            _log?.Invoke($"[飞书] 消息已投递（目标长度={rawTarget.Length}，长度={message.Text.Length}）");
+            return DeliveryResult.Ok(mid);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            LastErrorCode = "cancelled";
+            return DeliveryResult.Transient("cancelled");
         }
         catch (Exception ex)
         {
             LastErrorCode = "network_error";
-            _log?.Invoke($"[飞书] 出站请求异常: {ex.Message}");
-            return DeliveryResult.Transient("network_error", ex.Message);
+            _log?.Invoke($"[飞书] 出站请求异常（类型={ex.GetType().Name}）");
+            return DeliveryResult.Transient("network_error");
         }
     }
 
@@ -322,9 +466,11 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
     private bool IsAllowed(string target)
     {
         var wl = _box.Current.FeishuWhitelist;
-        if (string.IsNullOrWhiteSpace(wl)) return true; // 空白按全接受
+        if (string.IsNullOrWhiteSpace(wl)) return false;
         var tokens = wl.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return tokens.Contains(target, StringComparer.OrdinalIgnoreCase);
+        if (tokens.Contains(target, StringComparer.OrdinalIgnoreCase)) return true;
+        var alias = AliasFor(target).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return tokens.Contains(alias, StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<string> GetTenantTokenAsync(CancellationToken ct)
@@ -353,17 +499,34 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
                 ["app_secret"] = _box.Current.FeishuAppSecret,
             };
 
-            var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            var resp = await _http.PostAsync(url, content, ct).ConfigureAwait(false);
+            using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var resp = await _http.PostAsync(url, content, ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return string.Empty;
 
-            var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
-            var token = json?["tenant_access_token"]?.GetValue<string>();
-            var expire = json?["expire"]?.GetValue<int>() ?? 7200;
+            JsonObject? json;
+            try
+            {
+                json = JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false)) as JsonObject;
+            }
+            catch (JsonException)
+            {
+                LastErrorCode = "feishu_token_invalid";
+                return string.Empty;
+            }
+
+            if (json is null
+                || !TryGetOptionalString(json, "tenant_access_token", out var token)
+                || string.IsNullOrWhiteSpace(token)
+                || !TryGetOptionalInt(json, "expire", out var expire))
+            {
+                LastErrorCode = "feishu_token_invalid";
+                return string.Empty;
+            }
+
             if (!string.IsNullOrEmpty(token))
             {
                 _tenantToken = token;
-                _tokenExpires = Clock.Now.AddSeconds(Math.Max(60, expire - 300));
+                _tokenExpires = Clock.Now.AddSeconds(Math.Max(60, (expire ?? 7200) - 300));
                 ConnectionChanged?.Invoke(true);
                 return token;
             }
@@ -390,17 +553,113 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         }
     }
 
+    private static bool TryGetOptionalString(JsonNode? parent, string name, out string? value)
+    {
+        value = null;
+        if (parent is null) return true;
+        if (parent is not JsonObject obj) return false;
+        if (!obj.TryGetPropertyValue(name, out var child) || child is null) return true;
+        if (child is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var raw)) return false;
+        value = raw;
+        return true;
+    }
+
+    private static bool TryGetOptionalInt(JsonNode? parent, string name, out int? value)
+    {
+        value = null;
+        if (parent is null) return true;
+        if (parent is not JsonObject obj) return false;
+        if (!obj.TryGetPropertyValue(name, out var child) || child is null) return true;
+        if (child is not JsonValue jsonValue || !jsonValue.TryGetValue<int>(out var raw)) return false;
+        value = raw;
+        return true;
+    }
+
+    private static bool TryGetOptionalObject(JsonNode? parent, string name, out JsonObject? value)
+    {
+        value = null;
+        if (parent is null) return true;
+        if (parent is not JsonObject obj) return false;
+        if (!obj.TryGetPropertyValue(name, out var child) || child is null) return true;
+        if (child is not JsonObject childObject) return false;
+        value = childObject;
+        return true;
+    }
+
+    private static bool TryGetOptionalArray(JsonNode? parent, string name, out JsonArray? value)
+    {
+        value = null;
+        if (parent is null) return true;
+        if (parent is not JsonObject obj) return false;
+        if (!obj.TryGetPropertyValue(name, out var child) || child is null) return true;
+        if (child is not JsonArray childArray) return false;
+        value = childArray;
+        return true;
+    }
+
     private static bool VerifySignature(string body, string? signature, string? timestamp, string? nonce, string encryptKey)
     {
-        if (string.IsNullOrEmpty(signature) || string.IsNullOrEmpty(timestamp) || string.IsNullOrEmpty(nonce))
+        if (string.IsNullOrWhiteSpace(signature)
+            || string.IsNullOrWhiteSpace(timestamp)
+            || string.IsNullOrWhiteSpace(nonce)
+            || !long.TryParse(timestamp, out var unixSeconds))
+        {
+            return false;
+        }
+
+        DateTimeOffset signedAt;
+        try
+        {
+            signedAt = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+
+        if ((Clock.UtcNow - signedAt).Duration() > SignatureMaxAge)
         {
             return false;
         }
 
         var raw = timestamp + nonce + encryptKey + body;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
-        var hex = Convert.ToHexString(hash).ToLowerInvariant();
-        return string.Equals(hex, signature.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
+        var expected = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        byte[] supplied;
+        try
+        {
+            supplied = Convert.FromHexString(signature.Trim());
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        return supplied.Length == expected.Length && CryptographicOperations.FixedTimeEquals(expected, supplied);
+    }
+
+    private bool TryMarkSeen(string key)
+    {
+        var now = Clock.UtcNow;
+        foreach (var pair in _seen)
+        {
+            if (now - pair.Value > SeenTtl)
+            {
+                _seen.TryRemove(new KeyValuePair<string, DateTimeOffset>(pair.Key, pair.Value));
+            }
+        }
+
+        if (_seen.TryGetValue(key, out var existing) && now - existing <= SeenTtl)
+        {
+            return false;
+        }
+
+        if (!AppDatabase.TryRegisterFeishuWebhook(key, now, SeenTtl))
+        {
+            return false;
+        }
+
+        _seen.TryAdd(key, now);
+        return true;
     }
 
     public void Dispose()

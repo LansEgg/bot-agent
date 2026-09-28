@@ -1780,6 +1780,10 @@ check("★ app.js 回填它（loadSettings 与 saveSettings 字段集合必须�
   js.includes('$("setMaxAgentSteps").value = r.maxAgentSteps') &&
   js.includes("maxAgentSteps: Number("));
 
+check("★ 拖动步进滑块时同步更新数值徽标",
+  js.includes('$("setMaxAgentSteps").addEventListener("input"') &&
+  js.includes('$("agentStepsVal").textContent = e.target.value'));
+
 const beforeStepSave = calls.length;
 await sandbox.probe.saveSettings();
 check("★ 保存请求带 maxAgentSteps（回填的是 1，发出去的也是 1）",

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -98,6 +99,7 @@ public static partial class Program
 
         var eventJson = $$"""
         {
+            "token": "{{verifyToken}}",
             "header": {
                 "event_id": "evt_harness_001",
                 "event_type": "im.message.receive_v1"
@@ -118,6 +120,46 @@ public static partial class Program
             }
         }
         """;
+
+        var invalidTokenJson = eventJson.Replace($"\"token\": \"{verifyToken}\"", "\"token\": \"wrong_synthetic_token\"");
+        using var invalidTokenContent = new StringContent(invalidTokenJson, Encoding.UTF8, "application/json");
+        using var invalidTokenResp = await http.PostAsync($"{panelUrl}/api/webhooks/feishu", invalidTokenContent, cts.Token);
+        Check("★ 错误 Verification Token 的普通事件被拒绝", (int)invalidTokenResp.StatusCode == 401,
+            $"HTTP {(int)invalidTokenResp.StatusCode}");
+
+        using var oversizedContent = new StringContent(new string('x', 1_048_577), Encoding.UTF8, "application/json");
+        using var oversizedResp = await http.PostAsync($"{panelUrl}/api/webhooks/feishu", oversizedContent, cts.Token);
+        Check("★ 超限 Webhook body 在解析前返回 413", (int)oversizedResp.StatusCode == 413,
+            $"HTTP {(int)oversizedResp.StatusCode}");
+
+        var overloadGate = new BlockingBodyGate(16);
+        var heldRequests = Enumerable.Range(0, 16).Select(async _ =>
+        {
+            using var heldRequest = new HttpRequestMessage(HttpMethod.Post, $"{panelUrl}/api/webhooks/feishu")
+            {
+                Content = new BlockingWebhookContent(overloadGate)
+            };
+            return await http.SendAsync(heldRequest, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+        }).ToArray();
+        try
+        {
+            await overloadGate.AllStarted.WaitAsync(TimeSpan.FromSeconds(10), cts.Token);
+            await Task.Delay(250, cts.Token);
+            using var overloadedContent = new StringContent("{}", Encoding.UTF8, "application/json");
+            using var overloadedResp = await http.PostAsync($"{panelUrl}/api/webhooks/feishu", overloadedContent, cts.Token);
+            Check("★ 第 17 个并发 Webhook 请求被 16 槽位闸门限流为 429",
+                (int)overloadedResp.StatusCode == 429,
+                $"HTTP {(int)overloadedResp.StatusCode}");
+        }
+        finally
+        {
+            overloadGate.Release();
+            var heldResponses = await Task.WhenAll(heldRequests);
+            foreach (var heldResponse in heldResponses)
+            {
+                heldResponse.Dispose();
+            }
+        }
 
         using var eventContent = new StringContent(eventJson, Encoding.UTF8, "application/json");
         using var eventResp = await http.PostAsync($"{panelUrl}/api/webhooks/feishu", eventContent, cts.Token);
@@ -155,5 +197,53 @@ public static partial class Program
             $"去重回执: {dupBody}, 消息计数: {feishuServer.Messages.Count}");
 
         await bot.StopAsync();
+    }
+
+    private sealed class BlockingBodyGate
+    {
+        private int _started;
+        private readonly TaskCompletionSource _allStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public BlockingBodyGate(int expected)
+        {
+            Expected = expected;
+        }
+
+        public int Expected { get; }
+        public Task AllStarted => _allStarted.Task;
+        public Task ReleaseTask => _release.Task;
+
+        public void MarkStarted()
+        {
+            if (Interlocked.Increment(ref _started) == Expected)
+            {
+                _allStarted.TrySetResult();
+            }
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class BlockingWebhookContent : HttpContent
+    {
+        private readonly BlockingBodyGate _gate;
+
+        public BlockingWebhookContent(BlockingBodyGate gate) => _gate = gate;
+
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            await stream.WriteAsync(new byte[] { (byte)'{' });
+            await stream.FlushAsync();
+            _gate.MarkStarted();
+            await _gate.ReleaseTask;
+            await stream.WriteAsync(new byte[] { (byte)'}' });
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 }

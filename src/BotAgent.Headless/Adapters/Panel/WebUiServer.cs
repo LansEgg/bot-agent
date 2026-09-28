@@ -112,6 +112,7 @@ public sealed partial class WebUiServer : IDisposable
     private readonly ReplyPipeline _reply;
     private readonly ParticipationUseCase _participation;
     private readonly AgentCommandService _agentCmds;
+    private readonly ITenantQuotaLedger _quotas;
     private readonly DateTimeOffset _startedAt = Clock.Now;
     private readonly CancellationTokenSource _cts = new();
 
@@ -148,7 +149,8 @@ public sealed partial class WebUiServer : IDisposable
         ReplyPipeline reply,
         ParticipationUseCase participation,
         AgentCommandService agentCmds,
-        AgentBridgeServer? agentBridge = null,
+        ITenantQuotaLedger quotas,
+         AgentBridgeServer? agentBridge = null,
         HealthReportService? healthReports = null,
         SessionPolicyLedger? sessionPolicies = null,
         TurnTraceStore? traces = null,
@@ -187,7 +189,8 @@ public sealed partial class WebUiServer : IDisposable
         _reply = reply;
         _participation = participation;
         _agentCmds = agentCmds;
-        _agentBridge = agentBridge;
+        _quotas = quotas;
+         _agentBridge = agentBridge;
         _healthReports = healthReports;
         _sessionPolicies = sessionPolicies;
         _traces = traces;

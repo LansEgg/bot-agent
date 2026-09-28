@@ -125,6 +125,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
             ? HandleSettingsSaveAsync(r.Context)
             : WriteJsonAsync(r.Context, 200, BuildSettingsPayload())),
 
+        // ─────────── 每日 Token 配额（按已登记 SourceKey 隔离） ───────────
+        new("GET", PanelMatch.Exact, "/api/quotas", (r) => HandleQuotaGetAsync(r.Context)),
+        new("POST", PanelMatch.Exact, "/api/quotas", (r) => HandleQuotaSaveAsync(r.Context)),
+
         // ─────────── 服务器健康日报 ───────────
         new("*", PanelMatch.Exact, "/api/health-report", (r) => r.Method == "POST"
             ? HandleHealthReportAsync(r.Context)

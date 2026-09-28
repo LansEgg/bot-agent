@@ -756,7 +756,38 @@ textarea { resize: vertical; line-height: 1.5; }
 }
 .fold-toggle:hover { text-decoration: underline; }
 
-.field { display: flex; flex-direction: column; gap: 6px; }
+.quota-readouts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+.quota-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--card-bg-secondary);
+}
+.quota-readout span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.quota-readout strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quota-readout strong.warn { color: #d97706; }
+.quota-readout strong.ok { color: #16803c; }
+
+
 .field > label {
   font-size: 12px; color: var(--text-secondary);
   display: flex; flex-wrap: wrap; align-items: baseline;
@@ -1195,6 +1226,7 @@ input[type="range"] {
 }
 @media (max-width: 860px) {
   .grid-2 { grid-template-columns: 1fr; }
+  .quota-readouts { grid-template-columns: 1fr 1fr; }
   .settings-inner { padding: 18px 18px 24px; }
   .settings-footer { padding: 12px 18px 14px; }
   .login-card { flex-direction: column; align-items: stretch; margin: 12px 14px 0; }
