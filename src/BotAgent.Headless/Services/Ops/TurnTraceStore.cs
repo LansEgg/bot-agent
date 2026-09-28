@@ -95,7 +95,7 @@ public sealed class TurnTraceStore
             }
 
             if (_archive is not null && (trace.TotalMs >= 5000 || !string.Equals(outcome, "done", StringComparison.OrdinalIgnoreCase)
-                || trace.Nodes.Any(n => n.Status is "failed" or "error" or "blocked")))
+                || trace.Nodes.Any(n => n.Status is "failed" or "error" or "blocked" or "partial")))
             {
                 _archive.Append(trace);
             }

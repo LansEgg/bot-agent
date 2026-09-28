@@ -1956,14 +1956,20 @@ public sealed partial class ReplyPipeline
         var sent = voiceSent;
         var sendDirect = directAddress && triggerMessageId is long mentionTrigger &&
             conversation.Messages.FirstOrDefault(m => m.QqMessageId == mentionTrigger)?.MentionedBot == true;
-        var sentText = textReply is not null && await _plain.SendWithCadenceAsync(isGroup, targetId, textReply, replyTo,
-            _riskBackoff?.IsActive(conversation.SourceKey) == true ? sendDirect : directAddress);
+        // 分句发送的**逐段**结果（issue #14）：前几段成功、后面失败时，
+        // 只有真正发出去的段落才写进会话历史 —— 不能因为"整条返回 false"就把已发的当成没发。
+        var sendReport = textReply is not null
+            ? await _plain.SendWithCadenceAsync(isGroup, targetId, textReply, replyTo,
+                _riskBackoff?.IsActive(conversation.SourceKey) == true ? sendDirect : directAddress)
+            : CadenceSendReport.None;
+        var sentText = sendReport.AnySent;
         if (sentText)
         {
             sent = true;
         }
         _traces.Node(conversation.SourceKey, TurnNodeKind.Outbound,
-            textReply is null ? "silent" : sentText ? "sent" : "blocked", count: textReply?.Length);
+            textReply is null ? "silent" : sendReport.AllSent ? "sent" : sentText ? "partial" : "blocked",
+            reasonCode: sendReport.FailureReasonCode, count: textReply?.Length);
 
         var sentImage = false;
         if (sticker is not null)
@@ -1974,49 +1980,18 @@ public sealed partial class ReplyPipeline
             if (sentImage) _stickers.Store.MarkUsed(sticker.Id);
         }
 
-        // 戳一戳（模型的可选动作）。只在“这个号码确实出现在本次上下文里”时才发 ——
-        // 否则模型随口报个号也能戳到陌生人（同 replyTo 的防编造思路）。
-        var pokeSent = false;
-        if (pokeTarget is long pokeUserId)
-        {
-            var known = context.Any(m => m.SenderId == pokeUserId) ||
-                        _poke.IsRecentPoker(conversation.SourceKey, pokeUserId);
-            if (!known)
-            {
-                _hooks.Log($"模型想戳 {pokeUserId}，但这个人没在本次上下文里出现过 → 忽略（防编造号码）");
-            }
-            else if (!_mood.WillPokeBack(Clock.Now, out var moodWhy))
-            {
-                // “不必每次被戳都回戳”：被戳太频繁时心情不好，代码侧直接拦下（不听模型的）
-                _hooks.Log($"这次不戳 {pokeUserId}（{moodWhy}）");
-            }
-            else if (!_poke.AllowPokeBack(conversation.SourceKey, pokeUserId, out var pokeWhy))
-            {
-                _hooks.Log($"这次不戳 {pokeUserId}（{pokeWhy}）");
-            }
-            else if (!_approvals.AllowCapability(conversation, "poke.send", null, out var pokeCapWhy, pinned: caps))
-            {
-                _hooks.Log($"这次不戳 {pokeUserId}（能力闸门拒绝：{pokeCapWhy}）");
-            }
-            else
-            {
-                pokeSent = await _source.SendPokeAsync(isGroup, targetId, pokeUserId);
-                if (pokeSent)
-                {
-                    _poke.NotePokedBack(conversation.SourceKey, pokeUserId, Clock.Now);
-                }
-                else
-                {
-                    _hooks.Log($"戳 {pokeUserId} 失败（协议端可能不支持戳一戳）");
-                }
-            }
-        }
+        var pokeSent = pokeTarget is long pokeUserId &&
+            await TrySendPokeAsync(conversation, context, caps, isGroup, targetId, pokeUserId);
 
         if (sent || pokeSent)
         {
+            // 文字那一段：全部发出 → 记原文（与改造前逐字一致）；部分成功 → 只记**实际发出**的段落。
+            var recordedTextBody = sentText
+                ? sendReport.AllSent ? textReply! : sendReport.Text
+                : null;
             var recordedText = voiceSent
-                ? sentText ? $"{textReply}（同时用语音说：{voiceText}）" : $"[语音] {voiceText}"
-                : sentText ? textReply!
+                ? recordedTextBody is not null ? $"{recordedTextBody}（同时用语音说：{voiceText}）" : $"[语音] {voiceText}"
+                : recordedTextBody is not null ? recordedTextBody
                 : sentImage ? "[表情包]"
                 : "[戳一戳]";
             var appended = new ChatMessage
@@ -2069,11 +2044,49 @@ public sealed partial class ReplyPipeline
             $"{(sent ? "已回复" : "回复失败")} {conversation.Name}（{elapsed:F0}ms 生成" +
             $"{(result.Suitability is int sc ? $"，自评 {sc}" : string.Empty)}" +
             (reply.Length > 0 ? $"，{reply.Length} 字" : string.Empty) +
+            (sentText && !sendReport.AllSent ? $"，部分发出（{sendReport.SentSegments.Count}/{TextRules.SplitSentences(reply).Count} 段）" : string.Empty) +
             (voiceSent ? $"，语音 {voiceText.Length} 字" : string.Empty) +
             (sticker is not null ? $"，表情包 #{sticker.Id}（{StickerText.Describe(sticker)}）" : string.Empty) +
             (pokeSent ? $"，戳了 {pokeTarget}" : string.Empty) +
             $"{quoteNote}）" +
             (reply.Length > 0 ? $": {reply}" : string.Empty));
+    }
+
+    /// <summary>戳一戳发送与前置闸门裁决：仅在目标出现于当前上下文且心情/能力闸门放行时发出。</summary>
+    private async Task<bool> TrySendPokeAsync(
+        BotConversation conversation,
+        IReadOnlyList<ChatMessage> context,
+        Domain.Permissions.ChatCapabilitySet caps,
+        bool isGroup,
+        long targetId,
+        long pokeUserId)
+    {
+        var known = context.Any(m => m.SenderId == pokeUserId) ||
+                    _poke.IsRecentPoker(conversation.SourceKey, pokeUserId);
+        if (!known)
+        {
+            _hooks.Log($"模型想戳 {pokeUserId}，但这个人没在本次上下文里出现过 → 忽略（防编造号码）");
+            return false;
+        }
+        if (!_mood.WillPokeBack(Clock.Now, out var moodWhy))
+        {
+            _hooks.Log($"这次不戳 {pokeUserId}（{moodWhy}）");
+            return false;
+        }
+        if (!_poke.AllowPokeBack(conversation.SourceKey, pokeUserId, out var pokeWhy))
+        {
+            _hooks.Log($"这次不戳 {pokeUserId}（{pokeWhy}）");
+            return false;
+        }
+        if (!_approvals.AllowCapability(conversation, "poke.send", null, out var pokeCapWhy, pinned: caps))
+        {
+            _hooks.Log($"这次不戳 {pokeUserId}（能力闸门拒绝：{pokeCapWhy}）");
+            return false;
+        }
+        var sent = await _source.SendPokeAsync(isGroup, targetId, pokeUserId);
+        if (sent) _poke.NotePokedBack(conversation.SourceKey, pokeUserId, Clock.Now);
+        else _hooks.Log($"戳 {pokeUserId} 失败（协议端可能不支持戳一戳）");
+        return sent;
     }
 
     /// <summary>

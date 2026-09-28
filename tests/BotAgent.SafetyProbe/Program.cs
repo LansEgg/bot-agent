@@ -2200,7 +2200,8 @@ public static partial class Program
 
     private sealed class FakeQqMessageSender : IQqMessageSender
     {
-        public Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false) => Task.FromResult(true);
+        public Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
+            => Task.FromResult(new CadenceSendReport(new[] { reply }));
         public Task SendPlainAsync(BotConversation conversation, string text) => Task.CompletedTask;
         public Task SendApprovalReplyAsync(QqChatMessage msg, string text) => Task.CompletedTask;
     }
@@ -2292,6 +2293,17 @@ public static partial class Program
         // ④ 假模型客户端：拿它替代真客户端（这就是 IModelClient 存在的理由）
         IModelClient asPort = new FakeModelClient();
         Check("假客户端可当 IModelClient 用", asPort.ChatTimeout == TimeSpan.FromSeconds(1));
+
+        // ⑤ 分句发送逐段记账契约（CadenceSendReport · issue #14）
+        var noneReport = CadenceSendReport.None;
+        Check("CadenceSendReport · None 未发送且标原因码", !noneReport.AnySent && !noneReport.AllSent && noneReport.FailureReasonCode == "not_attempted");
+        var allSentReport = new CadenceSendReport(new[] { "第一句。", "第二句。" });
+        Check("CadenceSendReport · 全部成功：AnySent=true 且 AllSent=true", allSentReport.AnySent && allSentReport.AllSent && allSentReport.Text == "第一句。\n第二句。");
+        var partialReport = new CadenceSendReport(new[] { "第一句。" }, "segment_failed");
+        Check("CadenceSendReport · 部分成功：AnySent=true、AllSent=false 且 Text 只含已发出段落",
+            partialReport.AnySent && !partialReport.AllSent && partialReport.Text == "第一句。" && partialReport.FailureReasonCode == "segment_failed");
+        var failedReport = new CadenceSendReport(Array.Empty<string>(), "segment_failed");
+        Check("CadenceSendReport · 首段即败：AnySent=false 且 AllSent=false", !failedReport.AnySent && !failedReport.AllSent);
     }
 
     private static void Section(string title)

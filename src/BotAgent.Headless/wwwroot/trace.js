@@ -26,13 +26,13 @@
   const STATUS_CLASS = {
     ok: "ok", allowed: "ok", sent: "ok", done: "ok",
     silent: "mute",
-    approval_required: "warn", pending: "warn",
+    approval_required: "warn", pending: "warn", partial: "warn",
     denied: "bad", blocked: "bad", failed: "bad", error: "bad"
   };
   const STATUS_TEXT = {
     ok: "正常", allowed: "放行", sent: "已发出", done: "完成",
     silent: "沉默",
-    approval_required: "待审批", pending: "待审批",
+    approval_required: "待审批", pending: "待审批", partial: "部分发出",
     denied: "拒绝", blocked: "拦截", failed: "失败", error: "出错"
   };
 
