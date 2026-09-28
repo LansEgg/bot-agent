@@ -70,6 +70,9 @@ public sealed class AgentTurnLoop
         var feed = turn.SearchText;
         var inline = 0;
         var used = 0;
+        var totalPromptTokens = 0;
+        var totalCompletionTokens = 0;
+        var maxFallbackHops = 0;
         string? declaredIntent = null;
         CompletionResult result;
 
@@ -105,6 +108,11 @@ public sealed class AgentTurnLoop
                 toolList: ToolPromptText.Render(caps),
                 sampling: sampling);
 
+            totalPromptTokens += result.PromptTokens;
+            totalCompletionTokens += result.CompletionTokens;
+            maxFallbackHops = Math.Max(maxFallbackHops, result.FallbackHops);
+            _traces?.RecordTokens(conversationKey, result.PromptTokens, result.CompletionTokens, result.FallbackHops);
+
             _traces?.Node(conversationKey, TurnNodeKind.Model, "ok", reasonCode: sampling.Intent.ToString().ToLowerInvariant(), count: used);
 
             if (!string.IsNullOrWhiteSpace(result.Intent))
@@ -129,6 +137,12 @@ public sealed class AgentTurnLoop
             feed = string.IsNullOrWhiteSpace(feed) ? note : feed + "\n\n" + note;
         }
 
-        return new LoopOutcome(result, used, inline);
+        var aggregatedResult = result with
+        {
+            PromptTokens = totalPromptTokens,
+            CompletionTokens = totalCompletionTokens,
+            FallbackHops = maxFallbackHops
+        };
+        return new LoopOutcome(aggregatedResult, used, inline);
     }
 }

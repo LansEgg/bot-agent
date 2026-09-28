@@ -12,6 +12,8 @@ public sealed class TraceArchiveStore : ITraceArchive
     private readonly object _gate = new();
     private readonly List<int> _fallbackDurations = new();
     private int _fallbackCount;
+    private int _fallbackPromptTokens;
+    private int _fallbackCompletionTokens;
 
     public void Append(TurnTrace trace)
     {
@@ -26,11 +28,15 @@ public sealed class TraceArchiveStore : ITraceArchive
             count = n.Count
         }));
 
+        var promptTokens = Math.Max(0, trace.PromptTokens);
+        var completionTokens = Math.Max(0, trace.CompletionTokens);
+        var fallbackHops = Math.Max(0, trace.FallbackHops);
+
         AppDatabase.Write(conn => AppDatabase.Exec(conn, """
             INSERT OR REPLACE INTO trace_archive
               (trace_id, tenant_id, status_code, reason_code, total_ms, stage_timings_json,
                prompt_tokens, completion_tokens, fallback_hops)
-            VALUES ($id, $tenant, $status, $reason, $total, $stages, 0, 0, 0);
+            VALUES ($id, $tenant, $status, $reason, $total, $stages, $prompt, $completion, $hops);
             DELETE FROM trace_archive
             WHERE rowid IN (
                 SELECT rowid FROM trace_archive
@@ -44,11 +50,16 @@ public sealed class TraceArchiveStore : ITraceArchive
             ("$status", trace.Outcome),
             ("$reason", trace.Nodes.FirstOrDefault(n => !string.IsNullOrEmpty(n.ReasonCode))?.ReasonCode),
             ("$total", trace.TotalMs),
-            ("$stages", stageTimings)));
+            ("$stages", stageTimings),
+            ("$prompt", promptTokens),
+            ("$completion", completionTokens),
+            ("$hops", fallbackHops)));
 
         lock (_gate)
         {
             _fallbackCount++;
+            _fallbackPromptTokens = (int)Math.Clamp((long)_fallbackPromptTokens + promptTokens, 0, int.MaxValue);
+            _fallbackCompletionTokens = (int)Math.Clamp((long)_fallbackCompletionTokens + completionTokens, 0, int.MaxValue);
             _fallbackDurations.Add(trace.TotalMs);
             if (_fallbackDurations.Count > 5000)
             {
@@ -85,8 +96,8 @@ public sealed class TraceArchiveStore : ITraceArchive
                 return new TraceArchiveSummary(
                     _fallbackCount,
                     _fallbackDurations.OrderBy(x => x).ToArray(),
-                    0,
-                    0);
+                    _fallbackPromptTokens,
+                    _fallbackCompletionTokens);
             }
         }
     }

@@ -24,4 +24,32 @@ public static class ModelJson
             return false;
         }
     }
+
+    /// <summary>从 OpenAI 兼容响应中提取 token 用量（纯函数）。未提供或非标准时返回 (0, 0)。</summary>
+    public static (int PromptTokens, int CompletionTokens) ReadUsage(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return (0, 0);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("usage", out var usage) &&
+                usage.ValueKind == JsonValueKind.Object)
+            {
+                var p = usage.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt32(out var pv) ? pv : 0;
+                var c = usage.TryGetProperty("completion_tokens", out var ct) && ct.TryGetInt32(out var cv) ? cv : 0;
+                return (Math.Max(0, p), Math.Max(0, c));
+            }
+        }
+        catch (JsonException)
+        {
+            // 忽略非标准或损坏的 JSON
+        }
+
+        return (0, 0);
+    }
 }

@@ -103,7 +103,9 @@ public sealed partial class WebUiServer
         }
 
         // 注入 = 与协议端推上来的是同一种东西；收不收由白名单闸门说了算（这里不判）。
-        var msg = _localChannel.Inject(isGroup, id, sender, text);
+        var mentioned = body?["mentioned"]?.GetValue<bool>();
+        var replyTo = body?["replyTo"]?.GetValue<long>();
+        var msg = _localChannel.Inject(isGroup, id, sender, text, mentioned: mentioned, replyToMessageId: replyTo);
         await WriteJsonAsync(context, 202, new JsonObject
         {
             ["accepted"] = true,

@@ -54,7 +54,16 @@ public readonly record struct CompletionResult(int? Suitability, string? Reply, 
     bool Malformed = false,
 
     /// <summary>认知意图（理性 / 感性 / 均衡）；仅供内部超参数与步进循环调度，不外溢。</summary>
-    string? Intent = null);
+    string? Intent = null,
+
+    /// <summary>本轮消耗的 Prompt Tokens 计数（未返回时为 0）。</summary>
+    int PromptTokens = 0,
+
+    /// <summary>本轮生成的 Completion Tokens 计数（未返回时为 0）。</summary>
+    int CompletionTokens = 0,
+
+    /// <summary>本轮 Provider 故障转移跳数（0 为主通道直出）。</summary>
+    int FallbackHops = 0);
 
 /// <summary>
 /// 解析器要"说给日志听"的一件事（<see cref="ModelOutputParser" /> 是纯函数，不自己写日志）。

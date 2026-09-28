@@ -99,8 +99,10 @@ internal static class CompositionRoot
         var (gateway, source, official, local) = BuildChannelLayer(settings, settingsBox, riskBackoff);
 
         // ② 模型与媒体层（模型客户端 / 表情包 / 桥 / 语音 / 音乐与链接 / 联网研究）：见 BuildModelAndMediaLayer
+        var ttsBreaker = new ToolCircuitBreaker("tts");
+        var searchBreaker = new ToolCircuitBreaker("search");
         var (brain, store, profiles, stickers, agentBridge, voice, music, links, research) =
-            BuildModelAndMediaLayer(settings, settingsBox, source, secrets, providerStore);
+            BuildModelAndMediaLayer(settings, settingsBox, source, secrets, providerStore, ttsBreaker, searchBreaker);
 
         // ---------------- 用例层：谁依赖谁，只在这里看得到 ----------------
         // 共享状态先建：登录号 / 收摊标记 / 事件聚合 / 白名单闸门（其余组件都要问它们）
@@ -159,7 +161,8 @@ internal static class CompositionRoot
                 return target is null ? Task.CompletedTask : plain.SendPlainAsync(target, text);
             }),
             sessionPolicies,
-            traces);
+            traces,
+            audit);
 
         // agent 命令（//）：会话台账 + 内置/外部两路后端
         var sessions = new AgentSessionStore(
@@ -182,7 +185,8 @@ internal static class CompositionRoot
                 Log: ui.EmitLog,
                 SelfId: () => identity.SelfId,
                 IsDisposed: () => lifetime.IsDisposed),
-            traces, riskBackoff);
+            traces, riskBackoff,
+            quotas: new TenantQuotaStore());
         poke.RequestReply = conversation => reply.RequestReply(conversation, null);
 
         // 后台巡检（静默兜底 / 画像巡检 / 表情包巡检 / 账号在线探测）
@@ -232,6 +236,8 @@ internal static class CompositionRoot
         var panelHttp = new HttpFetcher(TimeSpan.FromSeconds(20), msg => FileLog.Write("Net", msg), "panel-models");
         var neteaseHttp = new HttpFetcher(TimeSpan.FromSeconds(15), msg => FileLog.Write("Net", msg), "panel-netease");
 
+        var circuitStatusProvider = BuildCircuitStatusProvider(brain, ttsBreaker, searchBreaker, riskBackoff);
+
         var web = new WebUiServer(settings.HealthPort, settingsBox, gateway, source, agent, loginQr, panelHttp, neteaseHttp,
             settingsHotReload, ui, stickers, mood, voice, music, research, registry, profiles, secrets, settingsStore, identity, scheduler,
             reply, participation, agentCmds, agentBridge, healthReports,
@@ -257,7 +263,8 @@ internal static class CompositionRoot
                 }
 
                 Environment.Exit(0);
-            });
+            },
+            circuitStatusProvider: circuitStatusProvider);
 
         return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web);
     }
@@ -333,7 +340,8 @@ internal static class CompositionRoot
     /// </summary>
     private static (OpenAiClient Brain, ConversationStore Store, MemberProfileStore Profiles, StickerService Stickers,
         AgentBridgeServer AgentBridge, VoiceUseCase Voice, MusicUseCase Music, LinkPreviewer Links, ResearchUseCase Research)
-        BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets, ModelProviderStore providerStore)
+        BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets, ModelProviderStore providerStore,
+            ToolCircuitBreaker ttsBreaker, ToolCircuitBreaker searchBreaker)
     {
         // 模型那条路的出网：辅助调用 60 秒、聊天按 QQCHAT_MODEL_TIMEOUT_SECONDS（默认 120）、图片下载 8 秒
         var modelAuxHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "model-aux");
@@ -398,7 +406,7 @@ internal static class CompositionRoot
         // 语音（TTS）：客户端、频率门、面板试听都在这个用例里（HttpClient 也只在这里造一个）
         var voiceHttp = new HttpFetcher(TimeSpan.FromSeconds(30), msg => FileLog.Write("Net", msg), "voice");
         var voice = new VoiceUseCase(
-            new VoiceService(voiceHttp, () => settingsBox.Current, secrets, msg => FileLog.Write("Voice", msg), new ToolCircuitBreaker("tts")),
+            new VoiceService(voiceHttp, () => settingsBox.Current, secrets, msg => FileLog.Write("Voice", msg), ttsBreaker),
             settingsBox,
             msg => FileLog.Write("Voice", msg));
 
@@ -428,7 +436,7 @@ internal static class CompositionRoot
         // 联网研究（搜索 / 读页面）：它自己的 HttpClient 超时给宽松点（检索要等上游模型回话）
         var researchHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "search");
         var research = new ResearchUseCase(
-            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg), new ToolCircuitBreaker("search")),
+            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg), searchBreaker),
             msg => FileLog.Write("Search", msg));
 
 
@@ -493,4 +501,18 @@ internal static class CompositionRoot
     private static ProviderCircuitSnapshot ToCircuitSnapshot(PersistedModelProvider provider)
         => new(provider.Id, provider.CircuitState, provider.ConsecutiveHardFailures,
             provider.CooldownUntil, ProbeInFlight: false);
+
+    private static Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>> BuildCircuitStatusProvider(
+        Domain.Ports.IModelClient brain,
+        ToolCircuitBreaker ttsBreaker,
+        ToolCircuitBreaker searchBreaker,
+        ProtocolRiskBackoff riskBackoff) => () =>
+    {
+        var list = new List<Domain.Ops.CircuitStatusSnapshot>();
+        list.AddRange(brain.CircuitSnapshots);
+        list.Add(new Domain.Ops.CircuitStatusSnapshot("tool", "tts", ttsBreaker.Snapshot().State.ToString().ToLowerInvariant()));
+        list.Add(new Domain.Ops.CircuitStatusSnapshot("tool", "search", searchBreaker.Snapshot().State.ToString().ToLowerInvariant()));
+        list.Add(new Domain.Ops.CircuitStatusSnapshot("protocol", "onebot", riskBackoff.HasAnyActive() ? "open" : "closed"));
+        return list;
+    };
 }

@@ -25,11 +25,11 @@ public sealed partial class WebUiServer
         return WriteJsonAsync(context, result.Valid ? 200 : 409, payload);
     }
 
-    private void AppendSettingsAudit(JsonNode body)
+    private AuditEvent? BuildSettingsAuditEvent(JsonNode body)
     {
         if (_auditChain is null)
         {
-            return;
+            return null;
         }
 
         var fields = body.AsObject().Select(pair => pair.Key).OrderBy(key => key, StringComparer.Ordinal).ToArray();
@@ -40,6 +40,21 @@ public sealed partial class WebUiServer
             ["fieldCount"] = fields.Length,
             ["fields"] = new JsonArray(fields.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray())
         }.ToJsonString();
-        _auditChain.Append(new AuditEvent("config_change", "panel", "panel", detail, "2.1"));
+        return new AuditEvent("config_change", "panel", "panel", detail, "2.1");
+    }
+
+    private void AppendSecretRotateAudit(string secretName, string action)
+    {
+        if (_auditChain is null)
+        {
+            return;
+        }
+
+        var detail = new JsonObject
+        {
+            ["result"] = action,
+            ["resource"] = secretName
+        }.ToJsonString();
+        _auditChain.Append(new AuditEvent("secret_rotate", "panel", "panel", detail, "2.1"));
     }
 }

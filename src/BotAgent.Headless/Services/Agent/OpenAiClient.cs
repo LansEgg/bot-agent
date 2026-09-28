@@ -93,6 +93,14 @@ public sealed class OpenAiClient : IModelClient
     /// <summary>聊天那次请求的超时（面板/日志要如实显示；值来自装配点那个出网客户端）。</summary>
     public TimeSpan ChatTimeout { get; }
 
+    /// <summary>当前 Provider L1 熔断器状态快照（只读无敏感凭据）。</summary>
+    public IReadOnlyList<Domain.Ops.CircuitStatusSnapshot> CircuitSnapshots
+        => _providerFailover is null
+            ? Array.Empty<Domain.Ops.CircuitStatusSnapshot>()
+            : _providerFailover.Snapshots()
+                .Select(s => new Domain.Ops.CircuitStatusSnapshot("model", s.ProviderId, s.State.ToString().ToLowerInvariant()))
+                .ToArray();
+
     /// <summary>本机登录的机器人 QQ 号（注入模型上下文，帮助理解 @ 与身份）。</summary>
     public string? BotIdentity { get; set; }
 
@@ -202,7 +210,8 @@ public sealed class OpenAiClient : IModelClient
             return new CompletionResult(null, null, null, ReasonCode: "provider_unavailable", Malformed: true, UpstreamEmpty: true);
         }
 
-        var (json, textOnlyRetry) = outcome.Value;
+        var (json, textOnlyRetry, fallbackHops) = outcome.Value;
+        var (promptTokens, completionTokens) = ModelJson.ReadUsage(json);
 
         using var doc = JsonDocument.Parse(json);
 
@@ -210,7 +219,8 @@ public sealed class OpenAiClient : IModelClient
         {
             Services.FileLog.Write("Agent",
                 $"上游连续两次都没给 choices（带图 {built.AttachedImages} 张）→ 本轮按沉默处理：{Truncate(json, 200)}");
-            return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true);
+            return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true,
+                PromptTokens: promptTokens, CompletionTokens: completionTokens, FallbackHops: fallbackHops);
         }
 
         if (textOnlyRetry)
@@ -233,12 +243,18 @@ public sealed class OpenAiClient : IModelClient
             // 判定用的开关取**调用方传进来的快照**，不再读实时设置 —— 否则配置热更新会改到在途请求（V3 §5.3）
             var parsed = ModelOutputParser.Parse(rawReply, questionsEnabled: enableAsk);
             LogParseNotices(parsed.Notices);
-            return parsed.Result;
+            return parsed.Result with
+            {
+                PromptTokens = promptTokens,
+                CompletionTokens = completionTokens,
+                FallbackHops = fallbackHops
+            };
         }
 
         // 有 choices 但里面没有 message.content：同样按沉默处理，不招异常
         Services.FileLog.Write("Agent", $"模型返回里没有 message.content → 本轮按沉默处理：{Truncate(json, 200)}");
-        return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true);
+        return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true,
+            PromptTokens: promptTokens, CompletionTokens: completionTokens, FallbackHops: fallbackHops);
     }
 private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, CancellationToken ct)
     {
@@ -283,7 +299,7 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
             FileLog.Write("Agent", $"Provider 已故障转移（hops={result.FallbackHops}，provider={result.ProviderId}）");
         }
 
-        return result.Value;
+        return result.Value with { FallbackHops = result.FallbackHops };
     }
     private readonly List<long> _imageFilterSuspectOrder = new();
 
@@ -474,7 +490,7 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
     public async Task<(List<string> Delete, string? Reason)> CurateStickersAsync(string libraryTable, int maxDelete, CancellationToken ct = default)
     {
         var empty = (new List<string>(), (string?)null);
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey) || string.IsNullOrWhiteSpace(libraryTable) || maxDelete <= 0)
+        if ((_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey)) || string.IsNullOrWhiteSpace(libraryTable) || maxDelete <= 0)
         {
             return empty;
         }
@@ -502,19 +518,12 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
                 ["temperature"] = 0.2
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
-            {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-            using var response = await _auxHttp.SendAsync(request, ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+            if (json is null)
             {
                 return empty;
             }
 
-            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var raw = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
             return ParseCuration(raw, maxDelete);
@@ -532,6 +541,66 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
         {
             _stickerGate.Release();
         }
+    }
+
+    private async Task<string?> SendAuxPayloadAsync(JsonObject payload, CancellationToken ct, bool keepRequestedModel = false)
+    {
+        if (_providerFailover is null)
+        {
+            if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+            {
+                return null;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+            {
+                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+
+            using var response = await _auxHttp.SendAsync(request, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return ModelJson.HasChoices(json) ? json : null;
+        }
+
+        var result = await _providerFailover.RunAsync(async (candidate, token) =>
+        {
+            var route = _providerRouteResolver?.Invoke(candidate.Id);
+            if (route is null && !_providerRoutes.TryGetValue(candidate.Id, out route))
+            {
+                return ProviderCallResult<string>.Failure("provider_route_unavailable", hardFailure: false);
+            }
+
+            var cloned = JsonNode.Parse(payload.ToJsonString())!.AsObject();
+            if (!keepRequestedModel && !string.IsNullOrWhiteSpace(route.ModelName))
+            {
+                cloned["model"] = route.ModelName;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(route.BaseUrl))
+            {
+                Content = new StringContent(cloned.ToJsonString(), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", route.ApiKey.Trim());
+
+            using var response = await _auxHttp.SendAsync(request, token).ConfigureAwait(false);
+            var json = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+            var code = (int)response.StatusCode;
+            if (!response.IsSuccessStatusCode || !ModelJson.HasChoices(json))
+            {
+                var hard = code >= 500 || code == 429 || !ModelJson.HasChoices(json);
+                return ProviderCallResult<string>.Failure($"aux_http_{code}", hardFailure: hard);
+            }
+
+            return ProviderCallResult<string>.Success(json);
+        }, ct).ConfigureAwait(false);
+
+        return result.Succeeded ? result.Value : null;
     }
 
     /// <summary>解析巡检结果（只收合法 id，并强制不得超过上限）。</summary>
@@ -602,7 +671,7 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
     /// </summary>
     public async Task<(string? Desc, List<string>? Tags, bool? IsSticker)> DescribeStickerAsync(byte[] image, string mime, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey) || image.Length == 0)
+        if ((_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey)) || image.Length == 0)
         {
             return (null, null, null);
         }
@@ -641,19 +710,12 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
                 ["temperature"] = 0.2
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
-            {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-            using var response = await _auxHttp.SendAsync(request, ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+            if (json is null)
             {
                 return (null, null, null);
             }
 
-            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var raw = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
             return ParseStickerDescription(raw);
@@ -735,7 +797,7 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
     /// </summary>
     public async Task<string?> SummarizeSessionTitleAsync(string digest, string? previousTitle, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(digest) || string.IsNullOrWhiteSpace(_settings.ApiKey))
+        if (string.IsNullOrWhiteSpace(digest) || (_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey)))
         {
             return null;
         }
@@ -765,17 +827,10 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
                 ["temperature"] = 0.2
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+            var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+            if (json is null)
             {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-            using var response = await _auxHttp.SendAsync(request, ct);
-            var json = await response.Content.ReadAsStringAsync(ct);
-            if (!response.IsSuccessStatusCode || !ModelJson.HasChoices(json))
-            {
-                Services.FileLog.Warn("Agent", $"[会话标题] 没拿到标题（HTTP {(int)response.StatusCode}），本次不改名");
+                Services.FileLog.Warn("Agent", "[会话标题] 没拿到标题，本次不改名");
                 return null;
             }
 
@@ -874,20 +929,12 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
             ["temperature"] = 0.3
         };
 
-        var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+        var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+        if (json is null)
         {
-            Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-        using var response = await _auxHttp.SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var detail = await response.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"画像摘要返回 {(int)response.StatusCode}：{Truncate(detail, 200)}");
+            return null;
         }
 
-        var json = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(json);
         var contentNode = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content");
         var text = contentNode.ValueKind == JsonValueKind.Array
@@ -985,16 +1032,10 @@ private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, C
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+            var body = await SendAuxPayloadAsync(payload, ct, keepRequestedModel: true).ConfigureAwait(false);
+            if (body is null)
             {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-            using var response = await _auxHttp.SendAsync(request, ct);
-            var body = await response.Content.ReadAsStringAsync(ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                Services.FileLog.Warn("Agent", $"[Music] 音频识别模型 {model} 返回 {(int)response.StatusCode}：{Truncate(body, 160)}");
+                Services.FileLog.Warn("Agent", $"[Music] 音频识别模型 {model} 未返回有效响应");
                 return null;
             }
 

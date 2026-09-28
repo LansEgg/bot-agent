@@ -36,7 +36,30 @@ public sealed partial class WebUiServer
             .Append("botagent_trace_archive_prompt_tokens ").AppendLine((summary?.PromptTokens ?? 0).ToString(CultureInfo.InvariantCulture))
             .AppendLine("# HELP botagent_trace_archive_completion_tokens Archived completion token count.")
             .AppendLine("# TYPE botagent_trace_archive_completion_tokens gauge")
-            .Append("botagent_trace_archive_completion_tokens ").AppendLine((summary?.CompletionTokens ?? 0).ToString(CultureInfo.InvariantCulture));
+            .Append("botagent_trace_archive_completion_tokens ").AppendLine((summary?.CompletionTokens ?? 0).ToString(CultureInfo.InvariantCulture))
+            .AppendLine("# HELP botagent_prompt_tokens_total Cumulative prompt tokens consumed since process start.")
+            .AppendLine("# TYPE botagent_prompt_tokens_total counter")
+            .Append("botagent_prompt_tokens_total ").AppendLine((_traces?.PromptTokensTotal ?? 0).ToString(CultureInfo.InvariantCulture))
+            .AppendLine("# HELP botagent_completion_tokens_total Cumulative completion tokens produced since process start.")
+            .AppendLine("# TYPE botagent_completion_tokens_total counter")
+            .Append("botagent_completion_tokens_total ").AppendLine((_traces?.CompletionTokensTotal ?? 0).ToString(CultureInfo.InvariantCulture));
+
+        var circuits = _circuitStatusProvider?.Invoke();
+        if (circuits is { Count: > 0 })
+        {
+            body.AppendLine("# HELP botagent_circuit_breaker_state Current state of circuit breakers.")
+                .AppendLine("# TYPE botagent_circuit_breaker_state gauge");
+            foreach (var c in circuits)
+            {
+                body.Append("botagent_circuit_breaker_state{type=\"")
+                    .Append(c.Type)
+                    .Append("\",id=\"")
+                    .Append(c.Id)
+                    .Append("\",state=\"")
+                    .Append(c.State)
+                    .AppendLine("\"} 1");
+            }
+        }
 
         return WriteBytesAsync(context, 200, "text/plain; version=0.0.4; charset=utf-8", Encoding.UTF8.GetBytes(body.ToString()));
     }

@@ -76,6 +76,8 @@ public sealed partial class WebUiServer
     {
         // ─────────── 静态资源 ───────────
         new("*", PanelMatch.ExactFile, "", (r) => WriteAssetAsync(r.Context, "index.html", "text/html; charset=utf-8")),
+        new("*", PanelMatch.ExactFile, "/playground", (r) => WriteAssetAsync(r.Context, "playground.html", "text/html; charset=utf-8")),
+        new("*", PanelMatch.ExactFile, "/playground.html", (r) => WriteAssetAsync(r.Context, "playground.html", "text/html; charset=utf-8")),
         new("*", PanelMatch.ExactFile, "/app.css", (r) => WriteAssetAsync(r.Context, "app.css", "text/css; charset=utf-8")),
         new("*", PanelMatch.ExactFile, "/app.js", (r) => WriteAssetAsync(r.Context, "app.js", "application/javascript; charset=utf-8")),
         // 追踪页（批次 H）：只读页面的脚本与样式 —— 与 app.js/app.css 同一套路（嵌进程序集，不引 CDN）

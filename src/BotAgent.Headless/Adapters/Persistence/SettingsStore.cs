@@ -53,7 +53,9 @@ public sealed class SettingsStore : ISettingsRepository
         }
     }
 
-    public void Save(AppSettings settings)
+    public void Save(AppSettings settings) => Save(settings, null, null);
+
+    public void Save(AppSettings settings, BotAgent.Services.Ops.AuditEvent? auditEvent, BotAgent.Services.Ops.IAuditChain? auditChain)
     {
         try
         {
@@ -69,10 +71,25 @@ public sealed class SettingsStore : ISettingsRepository
                 TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
             });
 
-            AppDatabase.Write(conn => AppDatabase.Exec(conn,
-                "INSERT INTO settings(id, json, updated_unix) VALUES(1, $json, $now) " +
-                "ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_unix = excluded.updated_unix",
-                ("$json", json), ("$now", Clock.Now.ToUnixTimeSeconds())));
+            AppDatabase.Write(conn =>
+            {
+                AppDatabase.Exec(conn,
+                    "INSERT INTO settings(id, json, updated_unix) VALUES(1, $json, $now) " +
+                    "ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_unix = excluded.updated_unix",
+                    ("$json", json), ("$now", Clock.Now.ToUnixTimeSeconds()));
+
+                if (auditEvent is not null)
+                {
+                    if (auditChain is AuditLogStore concreteStore)
+                    {
+                        concreteStore.AppendInTransaction(conn, auditEvent);
+                    }
+                    else
+                    {
+                        auditChain?.Append(auditEvent);
+                    }
+                }
+            });
         }
         catch (Exception ex)
         {

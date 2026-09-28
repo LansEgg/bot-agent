@@ -107,20 +107,45 @@ public sealed partial class WebUiServer
         }
 
         // 只接受运行时可改的字段（协议端地址、QQ 号这些仍属于容器环境变量职责）
+        var auditEvent = BuildSettingsAuditEvent(body);
         _settingsHotReload.ApplyRuntimeSettings(s =>
         {
             // 三段分开：行为/阈值 · 通道与 agent · 报表与模型。顺序与措辞一字未改（§5.3 兼容红线）。
             ApplyBehaviorSettings(body, s);
             ApplyChannelAndAgentSettings(body, s);
             ApplyReportingAndModelSettings(body, s, newBaseUrl);
-        });
+        }, auditEvent, _auditChain);
 
         // 定时类功能：开关/时刻/收件人变了一定要重排定时器，否则“改了不生效”（要重启才变）
         _healthReports?.Reapply();
 
-        AppendSettingsAudit(body);
+        AuditSecretRotations(body);
 
         await WriteJsonAsync(context, 200, BuildSettingsPayload());
+    }
+
+    private void AuditSecretRotations(JsonNode body)
+    {
+        if (body["apiKey"] is not null)
+        {
+            var raw = body["apiKey"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("model_api_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["ttsKey"] is not null)
+        {
+            var raw = body["ttsKey"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("tts_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["officialAppSecret"] is not null)
+        {
+            var raw = body["officialAppSecret"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("official_secret", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["agentServerKey"] is not null)
+        {
+            var raw = body["agentServerKey"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("agent_server_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
     }
 
     /// <summary>行为与阈值：人设 / 三份白名单 / 欲望与阈值 / 各种冷却 / 上下文窗口 / 画像 / 表情包。</summary>
