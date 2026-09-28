@@ -156,8 +156,25 @@ public sealed partial class WebUiServer
 
     private JsonArray BuildChannelStatus()
     {
-        var registry = _source as IChannelRegistry;
         var arr = new JsonArray();
+        if (_platformRegistry is not null)
+        {
+            foreach (var s in _platformRegistry.GetSnapshots())
+            {
+                arr.Add(new JsonObject
+                {
+                    ["channel"] = s.PlatformId,
+                    ["name"] = s.DisplayName,
+                    ["tag"] = s.Tag,
+                    ["enabled"] = s.Enabled,
+                    ["connected"] = s.Connected,
+                });
+            }
+
+            return arr;
+        }
+
+        var registry = _source as IChannelRegistry;
         foreach (var channel in new[] { Domain.Qq.Channels.Private, Domain.Qq.Channels.Official })
         {
             var src = registry?.Get(channel);

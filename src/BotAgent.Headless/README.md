@@ -2,11 +2,10 @@
 
 [English](README.en.md) | 简体中文
 
-**无界面、跨平台、可容器部署**的 QQ 聊天机器人常驻服务：接 OneBot v11 协议端（NapCat 等），
-用 OpenAI 兼容模型自动回复 QQ 私聊与群聊，自带 Web 面板。
+**无界面、可容器部署、支持可插拔多平台**的通用聊天平台 Agent 常驻运行时：支持 QQ 私域 (OneBot v11/NapCat)、QQ 开放平台官方通道、飞书应用机器人及本地无依赖测试通道，用 OpenAI 兼容模型自动回复私聊与群聊/频道消息，自带轻量 Web 面板。
 
 ```
-QQ 客户端 (Linux)  ←被注入—  NapCat (容器)  ←—OneBot v11 WS——  Bot Agent (容器)  ——→  模型 API
+聊天平台 (QQ / 飞书 / 本地)  ←——适配器 Seam——  Bot Agent (核心容器)  ——→  模型 API
 ```
 
 - **无 UI、无 Windows 依赖**：`net8.0`，Docker 镜像约 80MB（运行阶段基于 `dotnet/runtime:8.0`）

@@ -460,7 +460,9 @@ public sealed partial class ReplyPipeline
         // 本地通道（批次 F）跟**私域**那个总开关（同属“自己的入口”；官方开关是专给开放平台的）。
         var channelEnabled = Channels.IsOfficial(msg.Channel)
             ? _settings.OfficialChatEnabled
-            : _settings.PrivateChatEnabled;
+            : Channels.IsFeishu(msg.Channel)
+                ? _settings.FeishuEnabled
+                : _settings.PrivateChatEnabled;
         if (!channelEnabled)
         {
             var label = Channels.Tag(msg.Channel) + (msg.IsGroup ? " 群 " + msg.GroupId : " 私聊 " + msg.UserId);

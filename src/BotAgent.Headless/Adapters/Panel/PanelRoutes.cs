@@ -125,6 +125,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
             ? HandleSettingsSaveAsync(r.Context)
             : WriteJsonAsync(r.Context, 200, BuildSettingsPayload())),
 
+        // ─────────── 每日 Token 配额（按已登记 SourceKey 隔离） ───────────
+        new("GET", PanelMatch.Exact, "/api/quotas", (r) => HandleQuotaGetAsync(r.Context)),
+        new("POST", PanelMatch.Exact, "/api/quotas", (r) => HandleQuotaSaveAsync(r.Context)),
+
         // ─────────── 服务器健康日报 ───────────
         new("*", PanelMatch.Exact, "/api/health-report", (r) => r.Method == "POST"
             ? HandleHealthReportAsync(r.Context)
@@ -177,6 +181,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         // 两道前置 fail-closed：名单非空 + 面板令牌已配（见 WebUiServer.Local.cs）。
         new("GET", PanelMatch.Exact, "/api/local", (r) => WriteJsonAsync(r.Context, 200, BuildLocalChannelPayload())),
         new("POST", PanelMatch.Exact, "/api/local/message", (r) => HandleLocalMessageAsync(r.Context)),
+
+        // ─────────── 多平台注册表与飞书 Webhook（多平台演进 · 阶段 2/4）───────────
+        new("GET", PanelMatch.Exact, "/api/platforms", (r) => HandlePlatformsAsync(r.Context)),
+        new("POST", PanelMatch.Exact, "/api/webhooks/feishu", (r) => HandleFeishuWebhookAsync(r.Context)),
 
         // ─────────── AI 总开关 ───────────
         new("POST", PanelMatch.Exact, "/api/ai-mode", HandleAiModeAsync),

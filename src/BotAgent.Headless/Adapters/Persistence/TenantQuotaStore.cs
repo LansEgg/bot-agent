@@ -37,7 +37,7 @@ public sealed class TenantQuotaStore : ITenantQuotaLedger
 
             if (row.TenantId is null)
             {
-                var initial = new TenantQuotaSnapshot(tenant, 50000, 0, 0, today, false);
+                var initial = new TenantQuotaSnapshot(tenant, TenantQuotaPolicy.DefaultDailyTokenLimit, 0, 0, today, false);
                 Save(initial);
                 return initial;
             }
@@ -59,6 +59,30 @@ public sealed class TenantQuotaStore : ITenantQuotaLedger
         }
     }
 
+    public TenantQuotaSnapshot SetDailyTokenLimit(string tenantId, int dailyTokenLimit)
+    {
+        if (!TenantQuotaPolicy.IsValidDailyTokenLimit(dailyTokenLimit))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(dailyTokenLimit),
+                dailyTokenLimit,
+                $"DailyTokenLimit must be between {TenantQuotaPolicy.MinimumDailyTokenLimit} and {TenantQuotaPolicy.MaximumDailyTokenLimit}.");
+        }
+
+        var tenant = NormalizeTenant(tenantId);
+        lock (_gate)
+        {
+            var quota = GetQuota(tenant);
+            var updated = quota with
+            {
+                DailyTokenLimit = dailyTokenLimit,
+                EnergySaving = quota.UsedTotalTokens >= dailyTokenLimit
+            };
+            Save(updated);
+            return updated;
+        }
+    }
+
     public TenantQuotaSnapshot RecordUsage(string tenantId, int promptTokens, int completionTokens)
     {
         var tenant = NormalizeTenant(tenantId);
@@ -67,7 +91,7 @@ public sealed class TenantQuotaStore : ITenantQuotaLedger
             var quota = GetQuota(tenant);
             var newPrompt = checked(quota.UsedPromptTokens + Math.Max(0, promptTokens));
             var newCompletion = checked(quota.UsedCompletionTokens + Math.Max(0, completionTokens));
-            var total = newPrompt + newCompletion;
+            var total = (long)newPrompt + newCompletion;
             var energySaving = total >= quota.DailyTokenLimit;
 
             var updated = quota with

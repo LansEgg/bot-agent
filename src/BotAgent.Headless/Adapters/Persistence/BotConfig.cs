@@ -49,23 +49,25 @@ public static class BotConfig
     /// <summary>基础设施与密钥：环境变量始终覆盖（改这些要重启容器）。</summary>
     private static void ApplyInfrastructureEnvironment(AppSettings s)
     {
-        s.ApiKey = Secret("QQCHAT_API_KEY", "OPENAI_API_KEY") ?? s.ApiKey;
-        s.ModelBaseUrl = Str("QQCHAT_BASE_URL", "OPENAI_BASE_URL") ?? s.ModelBaseUrl;
-        s.Model = Str("QQCHAT_MODEL", "OPENAI_MODEL") ?? s.Model;
+        s.ApiKey = Secret("BOTAGENT_API_KEY", "QQCHAT_API_KEY", "OPENAI_API_KEY") ?? s.ApiKey;
+        s.ModelBaseUrl = Str("BOTAGENT_BASE_URL", "QQCHAT_BASE_URL", "OPENAI_BASE_URL") ?? s.ModelBaseUrl;
+        s.Model = Str("BOTAGENT_MODEL", "QQCHAT_MODEL", "OPENAI_MODEL") ?? s.Model;
         // 思考档位：快速回复（聊天用轻量模型）。这两个是“可由面板改”的，所以只在面板没改过时才播种 ——
         // 严格说它们属于“运行时可改”那类，放在这里是为了跟模型名挨着（真值以 settings 为准）。
-        s.FastModel = Str("QQCHAT_FAST_MODEL") ?? s.FastModel;
-        s.FastReply = Bool("QQCHAT_FAST_REPLY") ?? s.FastReply;
-        s.OneBotToken = Secret("QQCHAT_ONEBOT_TOKEN") ?? s.OneBotToken;
-        s.QuickLoginUin = Str("QQCHAT_UIN", "QQCHAT_QUICK_LOGIN_UIN") ?? s.QuickLoginUin;
-        s.OneBotProtocol = Str("QQCHAT_ONEBOT_PROTOCOL") ?? s.OneBotProtocol;
-        s.OneBotAddress = Str("QQCHAT_ONEBOT_URL", "QQCHAT_ONEBOT_ADDRESS") ?? s.OneBotAddress;
-        s.HealthPort = Int("QQCHAT_HEALTH_PORT") ?? s.HealthPort;
-        s.PanelToken = Str("QQCHAT_PANEL_TOKEN") ?? s.PanelToken;
-        s.AgentToken = Secret("QQCHAT_AGENT_TOKEN") ?? s.AgentToken;
-        s.NapCatWebUiUrl = Str("QQCHAT_NAPCAT_WEBUI_URL") ?? s.NapCatWebUiUrl;
-        s.NapCatWebUiToken = Secret("QQCHAT_NAPCAT_WEBUI_TOKEN") ?? s.NapCatWebUiToken;
-        s.VerboseLog = Bool("QQCHAT_VERBOSE") ?? s.VerboseLog;
+        s.FastModel = Str("BOTAGENT_FAST_MODEL", "QQCHAT_FAST_MODEL") ?? s.FastModel;
+        s.FastReply = Bool("BOTAGENT_FAST_REPLY", "QQCHAT_FAST_REPLY") ?? s.FastReply;
+        s.OneBotToken = Secret("BOTAGENT_QQ_ONEBOT_TOKEN", "QQCHAT_ONEBOT_TOKEN") ?? s.OneBotToken;
+        s.QuickLoginUin = Str("BOTAGENT_QQ_UIN", "QQCHAT_UIN", "QQCHAT_QUICK_LOGIN_UIN") ?? s.QuickLoginUin;
+        s.OneBotProtocol = Str("BOTAGENT_QQ_ONEBOT_PROTOCOL", "QQCHAT_ONEBOT_PROTOCOL") ?? s.OneBotProtocol;
+        s.OneBotAddress = Str("BOTAGENT_QQ_ONEBOT_URL", "QQCHAT_ONEBOT_URL", "QQCHAT_ONEBOT_ADDRESS") ?? s.OneBotAddress;
+        s.HealthPort = Int("BOTAGENT_HEALTH_PORT") ?? Int("QQCHAT_HEALTH_PORT") ?? s.HealthPort;
+        s.PanelToken = Str("BOTAGENT_PANEL_TOKEN", "QQCHAT_PANEL_TOKEN") ?? s.PanelToken;
+        s.AgentToken = Secret("BOTAGENT_AGENT_TOKEN", "QQCHAT_AGENT_TOKEN") ?? s.AgentToken;
+        s.NapCatWebUiUrl = Str("BOTAGENT_NAPCAT_WEBUI_URL", "QQCHAT_NAPCAT_WEBUI_URL") ?? s.NapCatWebUiUrl;
+        s.NapCatWebUiToken = Secret("BOTAGENT_NAPCAT_WEBUI_TOKEN", "QQCHAT_NAPCAT_WEBUI_TOKEN") ?? s.NapCatWebUiToken;
+        s.FeishuAppSecret = Secret("BOTAGENT_FEISHU_APP_SECRET", "QQCHAT_FEISHU_APP_SECRET") ?? s.FeishuAppSecret;
+        s.FeishuEncryptKey = Secret("BOTAGENT_FEISHU_ENCRYPT_KEY", "QQCHAT_FEISHU_ENCRYPT_KEY") ?? s.FeishuEncryptKey;
+        s.VerboseLog = Bool("BOTAGENT_VERBOSE", "QQCHAT_VERBOSE") ?? s.VerboseLog;
     }
 
     /// <summary>
@@ -184,6 +186,11 @@ public static class BotConfig
     [nameof(AppSettings.OfficialWhitelistPrivates)] = new[] { "QQCHAT_OFFICIAL_WHITELIST_PRIVATES" },
     [nameof(AppSettings.OfficialApiBase)] = new[] { "QQCHAT_OFFICIAL_API_BASE" },
     [nameof(AppSettings.OfficialTokenUrl)] = new[] { "QQCHAT_OFFICIAL_TOKEN_URL" },
+    [nameof(AppSettings.FeishuEnabled)] = new[] { "BOTAGENT_FEISHU", "QQCHAT_FEISHU" },
+    [nameof(AppSettings.FeishuAppId)] = new[] { "BOTAGENT_FEISHU_APP_ID", "QQCHAT_FEISHU_APP_ID" },
+    [nameof(AppSettings.FeishuVerificationToken)] = new[] { "BOTAGENT_FEISHU_VERIFICATION_TOKEN", "QQCHAT_FEISHU_VERIFICATION_TOKEN" },
+    [nameof(AppSettings.FeishuWhitelist)] = new[] { "BOTAGENT_FEISHU_WHITELIST", "QQCHAT_FEISHU_WHITELIST" },
+    [nameof(AppSettings.FeishuApiBase)] = new[] { "BOTAGENT_FEISHU_API_BASE", "QQCHAT_FEISHU_API_BASE" },
     [nameof(AppSettings.LinkPreviewTimeoutSeconds)] = new[] { "QQCHAT_LINK_PREVIEW_TIMEOUT" },
     [nameof(AppSettings.LinkPreviewMax)] = new[] { "QQCHAT_LINK_PREVIEW_MAX" },
     [nameof(AppSettings.MusicBitrate)] = new[] { "QQCHAT_MUSIC_BITRATE" },
@@ -383,6 +390,11 @@ public static class BotConfig
     s.OfficialWhitelistPrivates = Str("QQCHAT_OFFICIAL_WHITELIST_PRIVATES") ?? s.OfficialWhitelistPrivates;
     s.OfficialApiBase = Str("QQCHAT_OFFICIAL_API_BASE") ?? s.OfficialApiBase;
     s.OfficialTokenUrl = Str("QQCHAT_OFFICIAL_TOKEN_URL") ?? s.OfficialTokenUrl;
+    s.FeishuEnabled = Bool("BOTAGENT_FEISHU") ?? Bool("QQCHAT_FEISHU") ?? s.FeishuEnabled;
+    s.FeishuAppId = Str("BOTAGENT_FEISHU_APP_ID", "QQCHAT_FEISHU_APP_ID") ?? s.FeishuAppId;
+    s.FeishuVerificationToken = Str("BOTAGENT_FEISHU_VERIFICATION_TOKEN", "QQCHAT_FEISHU_VERIFICATION_TOKEN") ?? s.FeishuVerificationToken;
+    s.FeishuWhitelist = Str("BOTAGENT_FEISHU_WHITELIST", "QQCHAT_FEISHU_WHITELIST") ?? s.FeishuWhitelist;
+    s.FeishuApiBase = Str("BOTAGENT_FEISHU_API_BASE", "QQCHAT_FEISHU_API_BASE") ?? s.FeishuApiBase;
         s.LinkPreviewTimeoutSeconds = Int("QQCHAT_LINK_PREVIEW_TIMEOUT") ?? s.LinkPreviewTimeoutSeconds;
         s.LinkPreviewMax = Int("QQCHAT_LINK_PREVIEW_MAX") ?? s.LinkPreviewMax;
         s.MusicBitrate = Int("QQCHAT_MUSIC_BITRATE") ?? s.MusicBitrate;
@@ -659,20 +671,25 @@ public static class BotConfig
         return null;
     }
 
-    private static bool? Bool(string name)
+    private static bool? Bool(params string[] names)
     {
-        var raw = Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(raw))
+        foreach (var name in names)
         {
-            return null;
+            var raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            return raw.Trim().ToLowerInvariant() switch
+            {
+                "1" or "true" or "yes" or "y" or "on" => true,
+                "0" or "false" or "no" or "n" or "off" => false,
+                _ => Warn(name, raw)
+            };
         }
 
-        return raw.Trim().ToLowerInvariant() switch
-        {
-            "1" or "true" or "yes" or "y" or "on" => true,
-            "0" or "false" or "no" or "n" or "off" => false,
-            _ => Warn(name, raw)
-        };
+        return null;
 
         static bool? Warn(string n, string v)
         {

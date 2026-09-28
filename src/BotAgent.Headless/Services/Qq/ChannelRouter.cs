@@ -161,9 +161,11 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
 
         return Channels.IsLocalId(id)
             ? Channels.Local
-            : Channels.IsAliasId(id)
-                ? Channels.Official
-                : Channels.Private;
+            : Channels.IsFeishuId(id)
+                ? Channels.Feishu
+                : Channels.IsAliasId(id)
+                    ? Channels.Official
+                    : Channels.Private;
     }
 
     private IQqChatSource Resolve(bool isGroup, long id)

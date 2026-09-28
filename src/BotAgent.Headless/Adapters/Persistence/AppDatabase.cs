@@ -68,8 +68,7 @@ public static class AppDatabase
 
             using (var conn = Open())
             {
-                Exec(conn, "PRAGMA journal_mode=WAL;");      // 读写不互相阻塞（容器里只有一个进程，但线程很多）
-                Exec(conn, "PRAGMA synchronous=NORMAL;");    // WAL 下够安全，写入快很多
+                Exec(conn, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"); // WAL 下减少读写互相阻塞并提升写入稳定性
                 Migrate(conn);
             }
 
@@ -111,6 +110,31 @@ public static class AppDatabase
         }
 
         return cmd.ExecuteNonQuery();
+    }
+
+    public static bool TryRegisterFeishuWebhook(string eventKey, DateTimeOffset seenAt, TimeSpan ttl)
+    {
+        var inserted = false;
+        var cutoff = seenAt.ToUnixTimeSeconds() - Math.Max(1, (long)ttl.TotalSeconds);
+        Write(conn =>
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS feishu_webhook_dedup(
+                  event_key TEXT PRIMARY KEY,
+                  seen_unix INTEGER NOT NULL
+                );
+                DELETE FROM feishu_webhook_dedup WHERE seen_unix < $cutoff;
+                INSERT OR IGNORE INTO feishu_webhook_dedup(event_key, seen_unix)
+                VALUES($key, $seen)
+                RETURNING event_key;
+                """;
+            cmd.Parameters.AddWithValue("$cutoff", cutoff);
+            cmd.Parameters.AddWithValue("$key", eventKey);
+            cmd.Parameters.AddWithValue("$seen", seenAt.ToUnixTimeSeconds());
+            inserted = cmd.ExecuteScalar() is not null;
+        });
+        return inserted;
     }
 
     /// <summary>写事务（同步）：回调里做若干条写操作，异常整体回滚。</summary>
@@ -442,6 +466,7 @@ public static class AppDatabase
             );
             CREATE INDEX IF NOT EXISTS idx_security_audit_log_time
               ON security_audit_log(created_at, id);
+
             """);
         CreateModelProviderTable(conn);
     }
@@ -575,6 +600,8 @@ public static class AppDatabase
                 PRAGMA user_version = 7;
                 """));
         }
+
+        // v8：飞书 Webhook event_id / nonce 去重持久化。
     }
 
     /// <summary>
