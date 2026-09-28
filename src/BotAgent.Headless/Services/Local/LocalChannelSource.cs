@@ -63,7 +63,7 @@ public sealed class LocalChannelSource : IQqChatSource
     /// 把一条本地消息**注入**成入站消息（与协议端推上来的是同一种东西）。
     /// 面板端点只做参数形状检查；"收不收"由白名单闸门说了算（这里不判，保持与另两条路一致）。
     /// </summary>
-    public QqChatMessage Inject(bool isGroup, long id, string senderName, string text, long? messageId = null)
+    public QqChatMessage Inject(bool isGroup, long id, string senderName, string text, long? messageId = null, bool? mentioned = null, long? replyToMessageId = null)
     {
         var msg = new QqChatMessage(
             MessageId: messageId ?? Interlocked.Increment(ref _nextMessageId),
@@ -73,7 +73,8 @@ public sealed class LocalChannelSource : IQqChatSource
             SenderName: string.IsNullOrWhiteSpace(senderName) ? "本地用户" : senderName.Trim(),
             Text: text ?? string.Empty,
             Time: Clock.Now,
-            MentionedSelf: true,          // 本地通道的每一条都是"直接对机器人说的"
+            MentionedSelf: mentioned ?? true,
+            ReplyToMessageId: replyToMessageId,
             SenderRole: "member",
             Channel: Channels.Local);
 

@@ -44,8 +44,12 @@ public interface IStickerRepository
     /// <summary>按容量上限淘汰（用得少 + 最久没用优先），返回被淘汰的条目。</summary>
     List<StickerRecord> EnforceLimit(int max);
 
-    /// <summary>按语境挑候选（关键词命中 + 随机兜底）。</summary>
+    /// <summary>按语境与租户作用域挑候选（关键词命中 + 随机兜底）。</summary>
     List<StickerRecord> PickCandidates(string query, int count, int excludeUsedWithinSeconds = -1);
+
+    /// <summary>按语境与租户作用域挑候选（按 scope_tenant_id 隔离）。</summary>
+    List<StickerRecord> PickCandidates(string query, int count, int excludeUsedWithinSeconds, string? tenantId)
+        => PickCandidates(query, count, excludeUsedWithinSeconds);
 
     /// <summary>读图片字节（发送 / 面板取图都走它）。文件不在时抛 —— 由调用方决定怎么降级。</summary>
     Task<byte[]> ReadBytesAsync(StickerRecord item, CancellationToken ct = default);

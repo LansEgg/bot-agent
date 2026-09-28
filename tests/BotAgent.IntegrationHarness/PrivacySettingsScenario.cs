@@ -156,6 +156,7 @@ public static partial class Program
         Check("★ 任务正文照旧是用户那句话（提示词是附加，不是替换）",
             agentAi.Requests.Count > 0 && UserTexts(agentAi.Requests[0]).Any(t => t.Contains("看看磁盘剩多少")),
             agentAi.Requests.Count == 0 ? "(没有请求)" : Snippet(UserTexts(agentAi.Requests[0]).LastOrDefault() ?? "(空)", "看看磁盘"));
+        await WaitUntilAsync(() => Sent().Any(t => t.Contains("默认提示词那轮看完了")), TimeSpan.FromSeconds(20));
 
         // ── ⑥ 面板改成自定义值 → 下一轮就用新的 ──
         const string customPrompt = "自定义提示词：只准看 /tmp，不许读聊天记录";
@@ -170,6 +171,7 @@ public static partial class Program
         Check("★ 换成自定义提示词后，系统提示词立刻跟着变（不用重启）",
             system2.Contains(customPrompt) && !system2.Contains("隐私红线"),
             Snippet(system2, customPrompt));
+        await WaitUntilAsync(() => Sent().Any(t => t.Contains("自定义提示词那轮看完了")), TimeSpan.FromSeconds(20));
 
         // ── ⑦ 清空 → 明确“不带”，不是回落到默认 ──
         var (clearCode, _) = await PanelPostJsonAsync($"{panel}/api/settings", """{"agentPrompt":""}""");

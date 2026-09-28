@@ -156,7 +156,8 @@ public sealed partial class WebUiServer : IDisposable
          IAuditChain? audit = null,
         ApprovalUseCase? approvals = null,
         LocalChannelSource? localChannel = null,
-        Action? onRestart = null)
+        Action? onRestart = null,
+        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? circuitStatusProvider = null)
     {
         _port = port;
         _box = box;
@@ -194,6 +195,7 @@ public sealed partial class WebUiServer : IDisposable
         _approvals = approvals;
         _localChannel = localChannel;
         _onRestart = onRestart;
+        _circuitStatusProvider = circuitStatusProvider;
 
         // 启动时把密钥库里那份 TTS 密钥重新写给 tts 容器（容器可能刚被重建、
         // 或者上次写文件前我们就重启了）——否则面板里存着 key，语音却发不出去。
@@ -239,6 +241,7 @@ public sealed partial class WebUiServer : IDisposable
     /// 为 null 时（例如集成测试里）只记一条日志，不真的退。
     /// </summary>
     private readonly Action? _onRestart;
+    private readonly Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? _circuitStatusProvider;
 
     /// <summary>实际监听的前缀（启动失败为 null）。</summary>
     public string? ListeningOn { get; private set; }
@@ -324,7 +327,8 @@ public sealed partial class WebUiServer : IDisposable
                 path.Equals("/api/auth/login", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/agent-bridge", StringComparison.OrdinalIgnoreCase) ||
                 (method == "GET" && (path == "/" || path == "/app.css" || path == "/app.js" ||
-                    path == "/trace.css" || path == "/trace.js" || path == "/dash.js" || path == "/favicon.ico"));
+                    path == "/trace.css" || path == "/trace.js" || path == "/dash.js" || path == "/favicon.ico" ||
+                    path.Equals("/playground", StringComparison.OrdinalIgnoreCase) || path.Equals("/playground.html", StringComparison.OrdinalIgnoreCase)));
             if (!publicPath && !(path.Equals("/api/auth/change-password", StringComparison.OrdinalIgnoreCase) && HasPendingSession(context)))
             {
                 if (!IsAuthorized(context))

@@ -403,7 +403,8 @@ public static class AppDatabase
               tags              TEXT,
               is_sticker        INTEGER,
               described         INTEGER NOT NULL DEFAULT 0,
-              describe_attempts INTEGER NOT NULL DEFAULT 0
+              describe_attempts INTEGER NOT NULL DEFAULT 0,
+              scope_tenant_id   TEXT NOT NULL DEFAULT 'global_approved'
             );
 
             -- 机器人自己发出去的消息（id → 原话 + 时间）：认出"别人引用回复了我说的哪一句"。
@@ -459,6 +460,15 @@ public static class AppDatabase
               consecutive_hard_failures  INTEGER NOT NULL DEFAULT 0,
               cooldown_until             TEXT,
               updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS tenant_quotas(
+              tenant_id              TEXT PRIMARY KEY,
+              daily_token_limit      INTEGER NOT NULL DEFAULT 50000,
+              used_prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+              used_completion_tokens INTEGER NOT NULL DEFAULT 0,
+              reset_date             TEXT NOT NULL DEFAULT '',
+              energy_saving          INTEGER NOT NULL DEFAULT 0,
+              updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
             );
             """);
 
@@ -539,5 +549,74 @@ public static class AppDatabase
             Write(CreateModelProviderTable);
             Write(conn2 => Exec(conn2, "PRAGMA user_version = 6;"));
         }
+
+        // v7：多租户隔离与配额（stickers 补 scope_tenant_id、新增 tenant_quotas 表）
+        if (version < 7)
+        {
+            var hasScopeTenant = Scalar<long>(
+                "SELECT COUNT(1) FROM pragma_table_info('stickers') WHERE name = 'scope_tenant_id'") > 0;
+            if (!hasScopeTenant)
+            {
+                Write(conn2 => Exec(conn2,
+                    "-- add scope_tenant_id\nALTER TABLE stickers ADD COLUMN scope_tenant_id TEXT NOT NULL DEFAULT 'global_approved';"));
+            }
+
+            Write(conn2 => Exec(conn2, """
+                -- v7 tenant quotas
+                CREATE TABLE IF NOT EXISTS tenant_quotas(
+                    tenant_id              TEXT PRIMARY KEY,
+                    daily_token_limit      INTEGER NOT NULL DEFAULT 50000,
+                    used_prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                    used_completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    reset_date             TEXT NOT NULL DEFAULT '',
+                    energy_saving          INTEGER NOT NULL DEFAULT 0,
+                    updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                PRAGMA user_version = 7;
+                """));
+        }
+    }
+
+    /// <summary>
+    /// 在线备份 SQLite 数据库（VACUUM INTO），默认保留最近 3 份。
+    /// </summary>
+    public static string VacuumIntoBackup(string? backupDir = null, int maxRetained = 3)
+    {
+        var targetDir = backupDir ?? Path.Combine(AppPaths.DataDir, "backups");
+        var dirInfo = new DirectoryInfo(targetDir);
+        if (!dirInfo.Exists)
+        {
+            dirInfo.Create();
+        }
+
+        var timestamp = Clock.UtcNow.ToString("yyyyMMdd_HHmmss_fff", System.Globalization.CultureInfo.InvariantCulture)
+            + "_" + Guid.NewGuid().ToString("N")[..6];
+        var backupPath = Path.Combine(targetDir, $"qqchat_daily_{timestamp}.db");
+        var escapedPath = backupPath.Replace("'", "''");
+
+        using (var conn = Open())
+        {
+            Exec(conn, $"VACUUM INTO '{escapedPath}';");
+        }
+
+        try
+        {
+            var files = dirInfo.GetFiles("qqchat_daily_*.db")
+                .OrderByDescending(f => f.CreationTimeUtc)
+                .ToList();
+            if (files.Count > maxRetained)
+            {
+                foreach (var old in files.Skip(maxRetained))
+                {
+                    try { old.Delete(); } catch { }
+                }
+            }
+        }
+        catch
+        {
+            // 清理旧备份失败不阻碍本次备份成果
+        }
+
+        return backupPath;
     }
 }

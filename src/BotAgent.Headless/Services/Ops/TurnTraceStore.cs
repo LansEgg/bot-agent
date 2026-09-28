@@ -29,6 +29,8 @@ public sealed class TurnTraceStore
     private long _seq;
     private long _startedTotal;
     private long _completedTotal;
+    private long _promptTokensTotal;
+    private long _completionTokensTotal;
 
     public TurnTraceStore(Func<DateTimeOffset>? clock = null, ITraceArchive? archive = null)
     {
@@ -44,6 +46,20 @@ public sealed class TurnTraceStore
             _seq++;
             _startedTotal++;
             _active[conversationKey ?? string.Empty] = new Turn("t" + _seq, _now());
+        }
+    }
+
+    /// <summary>为当前轮记录 token 用量与故障转移跳数（可在一轮中多次调用累加）。</summary>
+    public void RecordTokens(string conversationKey, int promptTokens, int completionTokens, int fallbackHops = 0)
+    {
+        lock (_gate)
+        {
+            if (_active.TryGetValue(conversationKey ?? string.Empty, out var turn))
+            {
+                turn.PromptTokens += Math.Max(0, promptTokens);
+                turn.CompletionTokens += Math.Max(0, completionTokens);
+                turn.FallbackHops = Math.Max(turn.FallbackHops, Math.Max(0, fallbackHops));
+            }
         }
     }
 
@@ -70,7 +86,7 @@ public sealed class TurnTraceStore
     }
 
     /// <summary>收尾并归档。没有在跑的一轮就什么也不做（返回 null）。</summary>
-    public TurnTrace? Complete(string conversationKey, string outcome)
+    public TurnTrace? Complete(string conversationKey, string outcome, int? promptTokens = null, int? completionTokens = null, int? fallbackHops = null)
     {
         lock (_gate)
         {
@@ -79,15 +95,24 @@ public sealed class TurnTraceStore
                 return null;
             }
 
+            var pt = promptTokens.HasValue ? Math.Max(0, promptTokens.Value) : turn.PromptTokens;
+            var ct = completionTokens.HasValue ? Math.Max(0, completionTokens.Value) : turn.CompletionTokens;
+            var hops = fallbackHops.HasValue ? Math.Max(0, fallbackHops.Value) : turn.FallbackHops;
+
             var trace = new TurnTrace(
                 turn.RunId,
                 conversationKey ?? string.Empty,
                 turn.StartedAt,
                 outcome,
                 (int)Math.Max(0, (_now() - turn.StartedAt).TotalMilliseconds),
-                turn.Nodes.ToArray());
+                turn.Nodes.ToArray(),
+                pt,
+                ct,
+                hops);
 
             _completedTotal++;
+            _promptTokensTotal += pt;
+            _completionTokensTotal += ct;
             _done.Add(trace);
             if (_done.Count > Capacity)
             {
@@ -95,7 +120,8 @@ public sealed class TurnTraceStore
             }
 
             if (_archive is not null && (trace.TotalMs >= 5000 || !string.Equals(outcome, "done", StringComparison.OrdinalIgnoreCase)
-                || trace.Nodes.Any(n => n.Status is "failed" or "error" or "blocked" or "partial")))
+                || trace.FallbackHops > 0
+                || trace.Nodes.Any(n => n.Status is "failed" or "error" or "blocked" or "partial" or "fallback")))
             {
                 _archive.Append(trace);
             }
@@ -137,6 +163,31 @@ public sealed class TurnTraceStore
             }
         }
     }
+
+    /// <summary>进程启动以来累计消耗的 Prompt Tokens。</summary>
+    public long PromptTokensTotal
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _promptTokensTotal;
+            }
+        }
+    }
+
+    /// <summary>进程启动以来累计生成的 Completion Tokens。</summary>
+    public long CompletionTokensTotal
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _completionTokensTotal;
+            }
+        }
+    }
+
     public int DoneCount
     {
         get
@@ -178,5 +229,11 @@ public sealed class TurnTraceStore
         public DateTimeOffset LastTick { get; set; } = startedAt;
 
         public List<TurnNode> Nodes { get; } = new();
+
+        public int PromptTokens { get; set; }
+
+        public int CompletionTokens { get; set; }
+
+        public int FallbackHops { get; set; }
     }
 }
