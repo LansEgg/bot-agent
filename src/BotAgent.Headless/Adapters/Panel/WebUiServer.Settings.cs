@@ -324,6 +324,7 @@ public sealed partial class WebUiServer
             if (body["proactiveCooldownSeconds"] is JsonNode pcd) s.ProactiveCooldownSeconds = Math.Clamp(pcd.GetValue<int>(), 60, 86400);
             if (body["proactiveQuietSeconds"] is JsonNode pq) s.ProactiveQuietSeconds = Math.Clamp(pq.GetValue<int>(), 1, 3600);
             if (body["ignoreBracketMessages"] is JsonNode ibm) s.IgnoreBracketMessages = ibm.GetValue<bool>();
+            if (body["filterActionNarration"] is JsonNode fan) s.FilterActionNarration = fan.GetValue<bool>();
             if (body["segmentDelayMs"] is JsonNode sd) s.SegmentDelayMs = Math.Max(0, sd.GetValue<int>());
             if (body["maxContextMessages"] is JsonNode mc) s.MaxContextMessages = Math.Clamp(mc.GetValue<int>(), 10, 1000);
             if (body["profileLookupCount"] is JsonNode pl) s.ProfileLookupCount = Math.Clamp(pl.GetValue<int>(), 0, 50);
@@ -766,6 +767,7 @@ public sealed partial class WebUiServer
                 ["proactiveCooldownSeconds"] = s.ProactiveCooldownSeconds,
                 ["proactiveQuietSeconds"] = s.ProactiveQuietSeconds,
                 ["ignoreBracketMessages"] = s.IgnoreBracketMessages,
+                ["filterActionNarration"] = s.FilterActionNarration,
                 ["segmentDelayMs"] = s.SegmentDelayMs,
                 ["maxContextMessages"] = s.MaxContextMessages,
                 ["profileLookupCount"] = s.ProfileLookupCount,
