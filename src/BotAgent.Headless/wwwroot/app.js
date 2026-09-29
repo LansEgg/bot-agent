@@ -1507,11 +1507,12 @@ function renderChannelStatus(channels) {
     const platformEl = $("quotaPlatform");
     if (platformEl) {
       platformEl.replaceChildren();
-      const tenantConv = state.conversations.find((c) => c && c.key === snapshot.tenant);
+      const tenantKey = String(snapshot.tenant || "");
+      const tenantConv = state.conversations.find((c) => c && c.key === tenantKey);
       const ch = tenantConv ? conversationChannel(tenantConv) : (
-        snapshot.tenant.startsWith("feishu:") ? "feishu" :
-        snapshot.tenant.startsWith("official:") ? "official" :
-        snapshot.tenant.startsWith("local:") ? "local" : "private"
+        tenantKey.startsWith("feishu:") ? "feishu" :
+        tenantKey.startsWith("official:") ? "official" :
+        tenantKey.startsWith("local:") ? "local" : "private"
       );
       const badge = document.createElement("span");
       badge.className = "chan-badge chan-" + ch;
