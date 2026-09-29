@@ -213,7 +213,7 @@ public sealed partial class WebUiServer
     private static bool IsPolicyKeyChar(char value)
         => char.IsAsciiLetterOrDigit(value) || value is '.' or '_' or '-';
 
-    private static void ApplyMultiPlatformSettings(
+    private void ApplyMultiPlatformSettings(
         JsonNode body,
         AppSettings s,
         List<Domain.Platforms.PlatformPolicySettings>? platformPolicies)
@@ -228,6 +228,40 @@ public sealed partial class WebUiServer
         if (body["feishuVerificationToken"] is JsonNode fvt) s.FeishuVerificationToken = fvt.GetValue<string>().Trim();
         if (body["feishuWhitelist"] is JsonNode fwl) s.FeishuWhitelist = fwl.GetValue<string>().Trim();
         if (body["feishuApiBase"] is JsonNode fab) s.FeishuApiBase = fab.GetValue<string>().Trim();
+
+        // 飞书 AppSecret：与官方通道 AppSecret / TTS Key 相同口径
+        if (body["clearFeishuAppSecret"] is JsonValue clearFas && clearFas.TryGetValue<bool>(out var clearFasOk) && clearFasOk)
+        {
+            _secrets.SaveFeishuSecret(null);
+            s.FeishuAppSecret = (Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_APP_SECRET")
+                ?? Environment.GetEnvironmentVariable("QQCHAT_FEISHU_APP_SECRET") ?? string.Empty).Trim();
+            FileLog.Write("Web", "面板清空了飞书通道 AppSecret（回退环境变量）");
+        }
+        else if (body["feishuAppSecret"] is JsonValue fas && fas.TryGetValue<string>(out var rawFeishuSecret)
+                 && !string.IsNullOrWhiteSpace(rawFeishuSecret))
+        {
+            var newSecret = rawFeishuSecret.Trim();
+            _secrets.SaveFeishuSecret(newSecret);
+            s.FeishuAppSecret = newSecret;
+            FileLog.Write("Web", "面板更新了飞书通道 AppSecret（已掩码保存；重启后生效）");
+        }
+
+        // 飞书 EncryptKey
+        if (body["clearFeishuEncryptKey"] is JsonValue clearFek && clearFek.TryGetValue<bool>(out var clearFekOk) && clearFekOk)
+        {
+            _secrets.SaveFeishuEncryptKey(null);
+            s.FeishuEncryptKey = (Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_ENCRYPT_KEY")
+                ?? Environment.GetEnvironmentVariable("QQCHAT_FEISHU_ENCRYPT_KEY") ?? string.Empty).Trim();
+            FileLog.Write("Web", "面板清空了飞书通道 EncryptKey（回退环境变量）");
+        }
+        else if (body["feishuEncryptKey"] is JsonValue fek && fek.TryGetValue<string>(out var rawFeishuKey)
+                 && !string.IsNullOrWhiteSpace(rawFeishuKey))
+        {
+            var newKey = rawFeishuKey.Trim();
+            _secrets.SaveFeishuEncryptKey(newKey);
+            s.FeishuEncryptKey = newKey;
+            FileLog.Write("Web", "面板更新了飞书通道 EncryptKey（已掩码保存；重启后生效）");
+        }
     }
 
     /// <summary>行为与阈值：人设 / 三份白名单 / 欲望与阈值 / 各种冷却 / 上下文窗口 / 画像 / 表情包。</summary>
@@ -732,14 +766,6 @@ public sealed partial class WebUiServer
         // 对话总开关（分通道静音）：与顶部那个全局 AI 开关不同，这里能只关一条通道。
         ["privateChatEnabled"] = s.PrivateChatEnabled,
         ["officialChatEnabled"] = s.OfficialChatEnabled,
-        ["feishuEnabled"] = s.FeishuEnabled,
-        ["platformPolicies"] = JsonSerializer.SerializeToNode(s.PlatformPolicies ?? new(), Json) ?? new JsonArray(),
-        ["feishuAppId"] = s.FeishuAppId,
-        ["feishuSecretConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuAppSecret),
-        ["feishuSecretMasked"] = MaskSecret(s.FeishuAppSecret),
-        ["feishuVerificationToken"] = s.FeishuVerificationToken,
-        ["feishuWhitelist"] = s.FeishuWhitelist,
-        ["feishuApiBase"] = s.FeishuApiBase,
         // 官方通道**见过的会话**（别名号 + 名字）——面板上点一下就能填进官方白名单，
         // 不必再让人去猜“别名号长什么样”（填真实号 = 官方通道静默全拦，今天刚踩过）。
         ["officialConversations"] = BuildOfficialConversations(),
@@ -877,6 +903,29 @@ public sealed partial class WebUiServer
         runtime["ttsModel"] = s.TtsModel;
         runtime["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey());
         runtime["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey());
+        PopulatePlatformSettings(runtime, s);
+    }
+
+    private void PopulatePlatformSettings(JsonObject runtime, AppSettings s)
+    {
+        runtime["feishuEnabled"] = s.FeishuEnabled;
+        runtime["platformPolicies"] = JsonSerializer.SerializeToNode(s.PlatformPolicies ?? new(), Json) ?? new JsonArray();
+        runtime["feishuAppId"] = s.FeishuAppId;
+        runtime["feishuSecretConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuAppSecret);
+        runtime["feishuSecretMasked"] = MaskSecret(s.FeishuAppSecret);
+        runtime["feishuSecretSource"] = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_APP_SECRET"))
+            || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("QQCHAT_FEISHU_APP_SECRET"))
+            ? "env"
+            : (string.IsNullOrWhiteSpace(_secrets.LoadFeishuSecret()) ? "none" : "panel");
+        runtime["feishuVerificationToken"] = s.FeishuVerificationToken;
+        runtime["feishuEncryptKeyConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuEncryptKey);
+        runtime["feishuEncryptKeyMasked"] = MaskSecret(s.FeishuEncryptKey);
+        runtime["feishuEncryptKeySource"] = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_ENCRYPT_KEY"))
+            || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("QQCHAT_FEISHU_ENCRYPT_KEY"))
+            ? "env"
+            : (string.IsNullOrWhiteSpace(_secrets.LoadFeishuEncryptKey()) ? "none" : "panel");
+        runtime["feishuWhitelist"] = s.FeishuWhitelist;
+        runtime["feishuApiBase"] = s.FeishuApiBase;
     }
 
     /// <summary>
