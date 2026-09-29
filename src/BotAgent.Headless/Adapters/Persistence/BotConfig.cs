@@ -423,6 +423,14 @@ public static class BotConfig
     {
         s.OfficialAppSecret = storedSecret;
     }
+    if (string.IsNullOrWhiteSpace(s.FeishuAppSecret) && new SecretsStore().LoadFeishuSecret() is { Length: > 0 } storedFeishuSecret)
+    {
+        s.FeishuAppSecret = storedFeishuSecret;
+    }
+    if (string.IsNullOrWhiteSpace(s.FeishuEncryptKey) && new SecretsStore().LoadFeishuEncryptKey() is { Length: > 0 } storedFeishuKey)
+    {
+        s.FeishuEncryptKey = storedFeishuKey;
+    }
         s.ApiKeyOverride ??= new SecretsStore().LoadApiKey();
         s.AgentServerApiKeyOverride ??= new SecretsStore().LoadAgentServerKey();
 

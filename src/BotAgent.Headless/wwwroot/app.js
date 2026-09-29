@@ -419,7 +419,7 @@
 
   function normalizeChannelFilter(value) {
     const filter = String(value || "all").trim().toLowerCase();
-    return filter === "private" || filter === "official" ? filter : "all";
+    return filter === "private" || filter === "official" || filter === "feishu" ? filter : "all";
   }
 
   function syncChannelTabs() {
@@ -442,15 +442,19 @@
     // /api/state 与 /api/events 的会话 DTO 都由服务端写入 channel；优先使用该契约。
     const raw = String(conversation?.channel || "").trim().toLowerCase();
     if (raw === "official") return "official";
+    if (raw === "feishu") return "feishu";
     if (raw === "private" || raw === "local") return "private";
 
     // 兼容旧缓存或反向代理，最后才使用显示标签与 key 前缀兜底。
     const tag = String(conversation?.channelTag || "").trim().toLowerCase();
     if (tag === "官方" || tag === "official") return "official";
+    if (tag === "飞书" || tag === "feishu") return "feishu";
     if (tag === "私域" || tag === "本地" || tag === "private" || tag === "local") return "private";
 
     const key = String(conversation?.key || conversation?.sourceKey || "").trim().toLowerCase();
-    return key.startsWith("official:") ? "official" : "private";
+    if (key.startsWith("official:")) return "official";
+    if (key.startsWith("feishu:")) return "feishu";
+    return "private";
   }
 
   function createConvNode(c) {
@@ -558,24 +562,33 @@
     }
   }
 
-  // 两条通道的状态一行字。**只在官方通道启用时才显示**：
-// 没启用时这行只会重复“私域在线”（顶栏已经有连接状态了），反而显得吵。
+// 通道的状态一行字。**在官方或飞书通道启用时显示**：
 function renderChannelStatus(channels) {
   state.channels = channels || [];
   const box = $("chanStatus");
-  const official = state.channels.find((c) => c.channel === "official");
+  const official = state.channels.find((c) => c.channel === "official" || c.channel === "qq.official");
+  const feishu = state.channels.find((c) => c.channel === "feishu");
+  const hasExtra = (official && official.enabled) || (feishu && feishu.enabled);
   const parts = state.channels.map((c) => {
     const st = !c.enabled ? "未启用" : (c.connected ? "在线" : "离线");
     return `${c.name} ${st}`;
   });
   box.textContent = parts.join(" · ");
-  box.hidden = !official || !official.enabled;
-  const tab = $("chanTabOfficial");
-  tab.title = !official || !official.enabled
-    ? "官方通道未启用（面板设置里开一下，并配好 appid/secret）"
-    : (official.connected ? "官方通道在线" : "官方通道已启用，但还没连上");
-  // 没启用时把 Tab 淡一点，但仍旧可点（点进去是空列表 + 一行说明，比直接藏起来好理解）
-  tab.classList.toggle("chan-off", !official || !official.enabled);
+  box.hidden = !hasExtra;
+  const tabOfficial = $("chanTabOfficial");
+  if (tabOfficial) {
+    tabOfficial.title = !official || !official.enabled
+      ? "官方通道未启用（面板设置里开一下，并配好 appid/secret）"
+      : (official.connected ? "官方通道在线" : "官方通道已启用，但还没连上");
+    tabOfficial.classList.toggle("chan-off", !official || !official.enabled);
+  }
+  const tabFeishu = $("chanTabFeishu");
+  if (tabFeishu) {
+    tabFeishu.title = !feishu || !feishu.enabled
+      ? "飞书通道未启用（面板设置里开一下，并配置 App ID/Secret）"
+      : (feishu.connected ? "飞书通道在线" : "飞书通道已启用，但尚未完成首次配置");
+    tabFeishu.classList.toggle("chan-off", !feishu || !feishu.enabled);
+  }
 }
 
   function renderConversations(force) {
@@ -1870,6 +1883,21 @@ function renderChannelStatus(channels) {
     $("setTtsProvider").value = (r.ttsProvider || "minimax").toLowerCase() === "openai" ? "openai" : "minimax";
     $("setTtsApiBase").value = r.ttsApiBase || "";
     $("setTtsModel").value = r.ttsModel || "";
+    // 飞书通道（企业协作平台）
+    $("setFeishuEnabled").checked = r.feishuEnabled === true;
+    $("setFeishuAppId").value = r.feishuAppId || "";
+    $("setFeishuAppSecret").value = "";
+    $("setFeishuAppSecret").placeholder = r.feishuSecretConfigured
+      ? `${r.feishuSecretMasked}（已设置${r.feishuSecretSource === "env" ? "，来自环境变量" : ""}，留空即不修改）`
+      : "还没配 App Secret，在这里填一个";
+    $("setFeishuVerificationToken").value = r.feishuVerificationToken || "";
+    $("setFeishuEncryptKey").value = "";
+    $("setFeishuEncryptKey").placeholder = r.feishuEncryptKeyConfigured
+      ? `${r.feishuEncryptKeyMasked}（已设置${r.feishuEncryptKeySource === "env" ? "，来自环境变量" : ""}，留空即不修改）`
+      : "未开启加密可留空（留空即不修改）";
+    $("setFeishuWhitelist").value = r.feishuWhitelist || "";
+    $("setFeishuApiBase").value = r.feishuApiBase || "";
+
     // 官方通道（与私域并存）；secret 不回填（它只从环境变量读，面板不接也不存）
     $("setOfficialEnabled").checked = r.officialEnabled === true;
     $("setOfficialAppId").value = r.officialAppId || "";
@@ -2053,6 +2081,14 @@ function renderChannelStatus(channels) {
       ttsProvider: $("setTtsProvider").value,
       ttsApiBase: $("setTtsApiBase").value.trim(),
       ttsModel: $("setTtsModel").value.trim(),
+      // 飞书通道（Feishu Bot）
+      feishuEnabled: $("setFeishuEnabled").checked,
+      feishuAppId: $("setFeishuAppId").value.trim(),
+      feishuAppSecret: $("setFeishuAppSecret").value.trim(),
+      feishuVerificationToken: $("setFeishuVerificationToken").value.trim(),
+      feishuEncryptKey: $("setFeishuEncryptKey").value.trim(),
+      feishuWhitelist: $("setFeishuWhitelist").value.trim(),
+      feishuApiBase: $("setFeishuApiBase").value.trim(),
       // 官方通道（QQ 开放平台）
       officialEnabled: $("setOfficialEnabled").checked,
       officialAppId: $("setOfficialAppId").value.trim(),
