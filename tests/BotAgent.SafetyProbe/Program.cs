@@ -13,6 +13,7 @@ using BotAgent.Domain.Profiles;
 using BotAgent.Services;
 using BotAgent.Domain.Ports;
 using BotAgent.Domain.Permissions;
+using BotAgent.Domain.Platforms;
 using BotAgent.Domain.Qq;
 using BotAgent.Domain.Ops;
 using BotAgent.Domain.Tools;
@@ -61,6 +62,8 @@ public static partial class Program
         GateAndQuestionTests();
         ToolDirectoryTests();
         SessionPolicyTests();
+        PlatformPolicyActionTests();
+        ServerActionOutcomeTests();
         ReplyAuditTests();
         MessageMarkerTests();
         TurnTraceTests();
@@ -526,13 +529,13 @@ public static partial class Program
             && Channels.IsLocalId(Channels.LocalTarget(7)) && !Channels.IsAliasId(Channels.LocalTarget(7))
             && Channels.IsAliasId(Channels.AliasBase + 1) && !Channels.IsLocalId(Channels.AliasBase + 1));
 
-        Check("★ 自报通道 → 内部通道归一（认不出来的归私域，与改造前一致）",
+        Check("★ 自报通道 → 内部通道归一（未知通道拒绝，空值兼容旧私域）",
             Channels.Declared(Channels.Local) == Channels.Local
             && Channels.Declared(Channels.Official) == Channels.Official
             && Channels.Declared(Channels.Private) == Channels.Private
             && Channels.Declared("") == Channels.Private
             && Channels.Declared(null) == Channels.Private
-            && Channels.Declared("胡写的通道") == Channels.Private);
+            && Channels.Declared("胡写的通道") == string.Empty);
 
         Check("★ 本地会话 key 带前缀且能反推回通道（隔离就靠它）",
             Channels.Key(Channels.Local, isGroup: true, 7) == "local:group:7"
@@ -548,21 +551,22 @@ public static partial class Program
         // 白名单：本地通道**空 = 全拦**（与官方那条“空 = 全收”故意不同）
         var settings = new AppSettings { LocalChannelIds = "1, 2" };
         var box = new Services.SettingsBox(settings);
-        var gate = new WhitelistGate(box);
+        var gate = new WhitelistGate(box, new BotAgent.Services.Platforms.PlatformPolicyResolver(box));
         Check("★ 名单里的本地 id 收（配置写短 id，内部换算后对上）",
             gate.AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(1)))
             && gate.AllowsKey(Channels.Key(Channels.Local, false, Channels.LocalTarget(2))));
         Check("★★ 名单外的本地 id 一律不收（失败关闭）",
             !gate.AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(3))));
 
-        var empty = new WhitelistGate(new Services.SettingsBox(new AppSettings()));
+        var emptyBox = new Services.SettingsBox(new AppSettings());
+        var empty = new WhitelistGate(emptyBox, new BotAgent.Services.Platforms.PlatformPolicyResolver(emptyBox));
         Check("★★ 本地名单留空 = **全拦**（不能像官方那样默认全收）",
             !empty.AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(1))));
 
         Check("★ 超范围的配置项被丢掉（失败关闭，不会撞进官方号段）",
-            new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "1,9999999999999999" }))
+            new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "1,9999999999999999" }), new BotAgent.Services.Platforms.PlatformPolicyResolver(new Services.SettingsBox(new AppSettings { LocalChannelIds = "1,9999999999999999" })))
                 .AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(1)))
-            && !new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "9999999999999999" }))
+            && !new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "9999999999999999" }), new BotAgent.Services.Platforms.PlatformPolicyResolver(new Services.SettingsBox(new AppSettings { LocalChannelIds = "9999999999999999" })))
                 .AllowsKey(Channels.Key(Channels.Local, true, Channels.AliasBase + 1)));
     }
 
@@ -813,7 +817,7 @@ public static partial class Program
 
         TurnInputs Turn(string? searchText = null) => new(
             Started: new DateTime(2026, 9, 24, 12, 0, 0, DateTimeKind.Local),
-            Snapshot: settings, Caps: caps, Context: Array.Empty<ChatMessage>(),
+            Snapshot: settings, Caps: caps, PlatformPolicy: new EffectivePlatformPolicy(new PlatformContext(PlatformId.QqPrivate, AccountScope.Legacy), true, true, true, true, PlatformCapabilities.QqOneBot, new HashSet<string>(), new Dictionary<string, bool>(), Array.Empty<string>()), Context: Array.Empty<ChatMessage>(),
             Profiles: new List<string>(), ProfileChars: 0, StickerChoices: new List<StickerChoice>(), RoleCount: 0,
             GroupRoles: null, VibeHint: null, PreviousVibe: "中性", PokeContext: false, MoodText: null,
             MusicText: null, RecallText: null, SearchText: searchText, LinkText: null);
@@ -2184,11 +2188,17 @@ public static partial class Program
 
     private sealed class FakeQqActions : IQqActions
     {
+        public int LikeCalls { get; private set; }
+
         public Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null)
             => Task.FromResult(new SendResult(true, 1));
 
         public Task<bool> SendPokeAsync(bool isGroup, long targetId, long userId, CancellationToken ct = default) => Task.FromResult(true);
-        public Task<bool> SendLikeAsync(long userId, int times, CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> SendLikeAsync(long userId, int times, CancellationToken ct = default)
+        {
+            LikeCalls++;
+            return Task.FromResult(true);
+        }
         public Task<bool> SetMessageEmojiLikeAsync(long messageId, string emojiId, CancellationToken ct = default) => Task.FromResult(true);
         public Task<bool> DeleteMessageAsync(long messageId, CancellationToken ct = default) => Task.FromResult(true);
         public Task<bool> SetGroupBanAsync(long groupId, long userId, int seconds, CancellationToken ct = default) => Task.FromResult(true);

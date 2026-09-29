@@ -76,9 +76,9 @@ public static class Channels
 
     public static string ChannelOf(string? sourceKey)
     {
-        if (string.IsNullOrEmpty(sourceKey))
+        if (string.IsNullOrWhiteSpace(sourceKey))
         {
-            return Private;
+            return string.Empty;
         }
 
         if (sourceKey.StartsWith(OfficialPrefix, StringComparison.OrdinalIgnoreCase))
@@ -104,11 +104,15 @@ public static class Channels
                 PlatformId.QqOfficial => Official,
                 PlatformId.Local => Local,
                 PlatformId.Feishu => Feishu,
-                _ => Private,
+                PlatformId.QqPrivate => Private,
+                _ => string.Empty,
             };
         }
 
-        return Private;
+        return sourceKey.StartsWith("group:", StringComparison.OrdinalIgnoreCase)
+               || sourceKey.StartsWith("private:", StringComparison.OrdinalIgnoreCase)
+            ? Private
+            : string.Empty;
     }
 
     public static bool IsOfficial(string? channel)
@@ -118,16 +122,18 @@ public static class Channels
         => string.Equals(channel, Feishu, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// 上行**自报**的通道名 → 内部通道常量（认不出来的一律归私域，与改造前一致）。
+    /// 上行自报的通道名 → 内部通道常量；未知值返回空，由入口拒绝。
     ///
-    /// 为什么单独一个函数：“不是官方就是私域”这句话以前写在**两处**（路由器的入站标签、会话登记表的 key），
-    /// 第三条通道一上来就会被贴成私域 —— 于是白名单、key、上下文全走错路。收在这里，下次加通道只改一处。
+    /// 空标签为兼容旧 OneBot 消息仍归私域；显式未知通道不可回退。
     /// </summary>
     public static string Declared(string? channel)
         => IsOfficial(channel) || string.Equals(channel, PlatformId.QqOfficial, StringComparison.OrdinalIgnoreCase) ? Official
             : IsLocal(channel) || string.Equals(channel, PlatformId.Local, StringComparison.OrdinalIgnoreCase) ? Local
             : IsFeishu(channel) || string.Equals(channel, PlatformId.Feishu, StringComparison.OrdinalIgnoreCase) ? Feishu
-            : Private;
+            : string.IsNullOrWhiteSpace(channel)
+                || string.Equals(channel, Private, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(channel, PlatformId.QqPrivate, StringComparison.OrdinalIgnoreCase)
+                ? Private : string.Empty;
 
     /// <summary>是不是本地通道（批次 F）。</summary>
     public static bool IsLocal(string? channel)
@@ -147,8 +153,11 @@ public static class Channels
     public static (bool IsGroup, long Id) Parse(string? sourceKey)
     {
         var parts = Strip(sourceKey).Split(':');
-        return parts.Length == 2 && long.TryParse(parts[1], out var id) && id > 0
-            ? (parts[0] == "group", id)
+        return parts.Length == 2
+            && (string.Equals(parts[0], "group", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(parts[0], "private", StringComparison.OrdinalIgnoreCase))
+            && long.TryParse(parts[1], out var id) && id > 0
+            ? (string.Equals(parts[0], "group", StringComparison.OrdinalIgnoreCase), id)
             : (false, 0);
     }
 

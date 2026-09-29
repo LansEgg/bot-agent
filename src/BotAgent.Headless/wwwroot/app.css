@@ -2272,3 +2272,13 @@ input:focus, textarea:focus, select:focus { padding-bottom: 7px; border-bottom-w
   .agent-message-stream { flex: 1 0 120px; min-height: 120px; }
   .agent-compose-card { position: relative; bottom: auto; }
 }
+
+.platform-policy-list { display: grid; gap: 12px; }
+.platform-policy-row { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 10px; }
+.platform-policy-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
+.platform-policy-state { color: var(--muted); font-size: 12px; font-weight: 400; }
+.platform-policy-switches, .platform-policy-features { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.platform-policy-switches label, .platform-policy-features label { display: inline-flex; align-items: center; gap: 6px; }
+.platform-policy-whitelists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.platform-policy-whitelists input { width: 100%; }
+@media (max-width: 760px) { .platform-policy-whitelists { grid-template-columns: minmax(0, 1fr); } }

@@ -96,6 +96,14 @@ public sealed partial class WebUiServer
             return;
         }
 
+        List<Domain.Platforms.PlatformPolicySettings>? platformPolicies = null;
+        if (body["platformPolicies"] is JsonNode platformPoliciesNode
+            && !TryParsePlatformPolicies(platformPoliciesNode, out platformPolicies))
+        {
+            await WriteJsonAsync(context, 400, new JsonObject { ["error"] = "invalid platformPolicies" });
+            return;
+        }
+
         // 模型端点：先校验再应用 —— 无效 URL 直接 400，不然一次手滑就把配置写坏、连不上模型。
         var newBaseUrl = body["modelBaseUrl"] is JsonNode mbu ? (mbu.GetValue<string>() ?? string.Empty).Trim() : null;
         if (newBaseUrl is { Length: > 0 } &&
@@ -113,7 +121,7 @@ public sealed partial class WebUiServer
             // 三段分开：行为/阈值 · 通道与 agent · 报表与模型 · 多平台设置。
             ApplyBehaviorSettings(body, s);
             ApplyChannelAndAgentSettings(body, s);
-            ApplyMultiPlatformSettings(body, s);
+            ApplyMultiPlatformSettings(body, s, platformPolicies);
             ApplyReportingAndModelSettings(body, s, newBaseUrl);
         }, auditEvent, _auditChain);
 
@@ -154,8 +162,67 @@ public sealed partial class WebUiServer
         }
     }
 
-    private static void ApplyMultiPlatformSettings(JsonNode body, AppSettings s)
+    private static bool TryParsePlatformPolicies(
+        JsonNode node,
+        out List<Domain.Platforms.PlatformPolicySettings>? policies)
     {
+        policies = null;
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<Domain.Platforms.PlatformPolicySettings>>(node.ToJsonString(), Json);
+            if (parsed is null || parsed.Count > 32) return false;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var policy in parsed)
+            {
+                if (policy is null) return false;
+                var platform = Domain.Platforms.PlatformId.Normalize(policy.PlatformId);
+                var account = (policy.AccountScope ?? string.Empty).Trim();
+                if (platform.Length is 0 or > 80 || account.Length is 0 or > 80
+                    || !platform.All(IsPolicyKeyChar) || !account.All(IsPolicyKeyChar)
+                    || !seen.Add(platform + "|" + account)
+                    || (policy.GroupWhitelist?.Length ?? 0) > 4096
+                    || (policy.PrivateWhitelist?.Length ?? 0) > 4096)
+                {
+                    return false;
+                }
+
+                policy.PlatformId = platform;
+                policy.AccountScope = account;
+                policy.GroupWhitelist ??= string.Empty;
+                policy.PrivateWhitelist ??= string.Empty;
+                policy.FeatureOverrides ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                policy.AllowedActions ??= new List<string>();
+                if (policy.FeatureOverrides.Count > 32 || policy.AllowedActions.Count > 64
+                    || policy.FeatureOverrides.Keys.Any(k => k.Length > 64 || !k.All(IsPolicyKeyChar))
+                    || policy.AllowedActions.Any(a => string.IsNullOrWhiteSpace(a) || a.Length > 80))
+                {
+                    return false;
+                }
+            }
+
+            policies = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPolicyKeyChar(char value)
+        => char.IsAsciiLetterOrDigit(value) || value is '.' or '_' or '-';
+
+    private static void ApplyMultiPlatformSettings(
+        JsonNode body,
+        AppSettings s,
+        List<Domain.Platforms.PlatformPolicySettings>? platformPolicies)
+    {
+        if (body["platformPolicies"] is not null && platformPolicies is not null)
+        {
+            s.PlatformPolicies = platformPolicies;
+        }
+
         if (body["feishuEnabled"] is JsonNode fe) s.FeishuEnabled = fe.GetValue<bool>();
         if (body["feishuAppId"] is JsonNode fai) s.FeishuAppId = fai.GetValue<string>().Trim();
         if (body["feishuVerificationToken"] is JsonNode fvt) s.FeishuVerificationToken = fvt.GetValue<string>().Trim();
@@ -666,6 +733,7 @@ public sealed partial class WebUiServer
         ["privateChatEnabled"] = s.PrivateChatEnabled,
         ["officialChatEnabled"] = s.OfficialChatEnabled,
         ["feishuEnabled"] = s.FeishuEnabled,
+        ["platformPolicies"] = JsonSerializer.SerializeToNode(s.PlatformPolicies ?? new(), Json) ?? new JsonArray(),
         ["feishuAppId"] = s.FeishuAppId,
         ["feishuSecretConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuAppSecret),
         ["feishuSecretMasked"] = MaskSecret(s.FeishuAppSecret),

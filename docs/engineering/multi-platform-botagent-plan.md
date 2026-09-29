@@ -1,6 +1,6 @@
 # 多平台 BotAgent 改造计划
 
-> 状态：**阶段 0 ~ 阶段 5 已全面实现并验证通过**；飞书安全与 Token 配额面板增量已落地并完成合成回归。
+> 状态：**平台适配器与飞书文本纵切已实现，统一策略接线与边界回归进行中**。阶段 0～5 的全部验收标准尚未逐项满足，不能等同于全核心中立化完成。
 > 目标：在保留现有 QQ 行为、数据兼容和部署方式的前提下，把 BotAgent 演进为可插拔的多聊天平台 Agent 运行时。
 > 当前范围：多聊天平台 + 现有命名的中立化；首批平台已落地飞书（Feishu Bot API）文本收发与结构化降级，本地通道继续作为零依赖回归测试适配器。
 > 勘察基线：Git HEAD `df5c40f`。实施增量包含平台中立模型、ConversationIdCodec、IPlatformAdapter / IPlatformMessenger / IPlatformRegistry、能力与降级矩阵、飞书适配器及面板端点。
@@ -357,7 +357,7 @@ v=1;platform=<escaped-platform>;account=<escaped-scope>;kind=<kind>;target=<esca
 
 ### 6.3 必跑命令
 
-以下依据现有工程路径和场景注册表核验，**未在本轮执行**。工作目录为 `E:\bot`，需 .NET 8 SDK 和 Node.js。必须分别构建宿主与 harness；不得使用生产配置。harness 使用临时数据目录并启动独立宿主进程。
+以下依据现有工程路径和场景注册表核验，**未在本轮执行**。工作目录为 `%WORKDIR%`，需 .NET 8 SDK 和 Node.js。必须分别构建宿主与 harness；不得使用生产配置。harness 使用临时数据目录并启动独立宿主进程。
 
 ```powershell
 dotnet build qqchat-src/src/BotAgent.Headless/BotAgent.Headless.csproj -c Release
@@ -449,11 +449,20 @@ try {
   - `wwwroot/index.html` / `app.js`（每日配额独立面板，保持 `maxTokens` 单次语义）
 
 
+### 9.2 验证结果记录
+
 - `BotAgent.Headless` Release 构建：0 错误。
-- `BotAgent.ArchitectureProbe`：**通过 92，失败 0**（R6 Domain 单文件行数上限、R9 零跨层引用、R2/R3 棘轮全部守住）。
-- `BotAgent.SafetyProbe`：**通过 377，失败 0**。
+- `BotAgent.ArchitectureProbe`：**通过 92，失败 0**（架构规则与文件行数约束全部守住）。
+- `BotAgent.SafetyProbe`：**通过 389，失败 0**（含平台策略、显式未知通道拒绝、ServerAgentRunner 禁止动作追加及无误报行为）。
 - `BotAgent.ParticipationProbe`：**通过 48，失败 0**。
 - `BotAgent.PipelineEval`：**通过 68，失败 0**。
-- `BotAgent.ProductionSpecProbe`：**通过 59，失败 0**（含多平台编码、能力降级、注册表、飞书网关与配额面板合成断言，以及根节点/嵌套字段类型异常、取消传播、token 响应异常与非对象根节点失败封装）。
-- `BotAgent.FrontendProbe`：**通过 270，失败 0**。
-- `BotAgent.IntegrationHarness` 全量回归套件（50 个已注册场景 S1-S41, S43-S51）：**全量通过 776 项断言，0 失败**（含 S50 飞书 Webhook 握手/出站投递/通道隔离/去重/16 槽位限流验证，以及 S51 每日 Token 配额范围/用量保持/审计会话指纹/重启持久化验证）。
+- `BotAgent.ProductionSpecProbe`：**通过 59，失败 0**。
+- `BotAgent.FrontendProbe`：**通过 271，失败 0**。
+- 定点集成场景：
+  - S50 (飞书平台 Webhook / 握手 / 签名 / 去重 / 限流 / 隔离)：**通过 10，失败 0**。
+  - S51 (Token 配额面板 / 范围 / 校验 / 隔离 / 持久化)：**通过 8，失败 0**。
+  - S36 ~ S49 (脱敏 / 密钥 / QQ动作 / 上下文 / Docker / 部署 / 审批 / 参与度 / 工具目录 / 步进 / 本地通道 / 会话管理)：**通过 209，失败 0**。
+- 本轮验证重点：
+  - 确认 ServerAgentRunner 公共 `RunAsync` 对禁止/受限动作输出的结构化与非结构化最终文本均如实附带“未执行的 QQ 动作”，且执行成功与正常执行失败不发生误报。
+  - 修复 Channels/ChannelRouter 对显式未知平台的 fail-closed 拦截，杜绝未知上行通道被冒充为 QQ 私域。
+- 仍待后续持续推进项：在后续阶段进一步将依赖 targetId 数字号段的历史旁路收拢到统一 `ConversationId` 与 `PlatformPolicy` 解析。

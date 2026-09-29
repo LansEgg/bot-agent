@@ -1524,6 +1524,139 @@ function renderChannelStatus(channels) {
     }
   }
 
+  async function loadPlatformPolicies(policies, runtime) {
+    const host = $("platformPolicyRows");
+    const empty = $("platformPolicyEmpty");
+    host.replaceChildren();
+    let snapshots = [];
+    try {
+      const status = await api("/api/platforms");
+      snapshots = Array.isArray(status.platforms) ? status.platforms : [];
+    } catch (err) {
+      empty.textContent = "平台状态暂不可用，现有策略不会被清空。";
+      console.warn("加载平台策略状态失败：", err);
+      return;
+    }
+
+    const read = (obj, lower, upper) => obj?.[lower] ?? obj?.[upper];
+    const policyByKey = new Map((Array.isArray(policies) ? policies : []).map((p) => [
+      `${read(p, "platformId", "PlatformId")}|${read(p, "accountScope", "AccountScope") || "default"}`,
+      p
+    ]));
+    const snapshotByKey = new Map(snapshots.map((s) => [`${s.platformId}|${s.accountScope}`, s]));
+    for (const s of snapshots) {
+      const key = `${s.platformId}|${s.accountScope}`;
+      if (!policyByKey.has(key)) policyByKey.set(key, null);
+    }
+    for (const [key, p] of policyByKey) {
+      const snapshot = snapshotByKey.get(key);
+      const [platformId, accountScope] = key.split("|");
+      const existing = p || {};
+      const featureOverrides = read(existing, "featureOverrides", "FeatureOverrides") || {};
+      const allowedActions = read(existing, "allowedActions", "AllowedActions") || [];
+      const row = document.createElement("section");
+      row.className = "platform-policy-row";
+      row.dataset.platformId = platformId;
+      row.dataset.accountScope = accountScope;
+      row.dataset.allowedActions = JSON.stringify(allowedActions);
+
+      const title = document.createElement("div");
+      title.className = "platform-policy-title";
+      const name = document.createElement("span");
+      name.textContent = `${snapshot?.displayName || platformId} · ${accountScope}`;
+      const stateText = document.createElement("span");
+      stateText.className = "platform-policy-state";
+      stateText.textContent = snapshot
+        ? `${snapshot.connected ? "已连接" : "未连接"} · ${snapshot.capabilities?.supportsText ? "支持文本" : "不支持文本"}`
+        : "未注册实例";
+      title.append(name, stateText);
+      row.append(title);
+
+      const switches = document.createElement("div");
+      switches.className = "platform-policy-switches";
+      for (const [keyName, labelText, fallback] of [
+        ["enabled", "启用平台", snapshot?.effectiveEnabled ?? snapshot?.enabled ?? false],
+        ["chatEnabled", "启用聊天", snapshot?.chatEnabled ?? true]
+      ]) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.policy = keyName;
+        const configured = read(existing, keyName, keyName === "enabled" ? "Enabled" : "ChatEnabled");
+        input.checked = configured == null ? !!fallback : configured === true;
+        label.append(input, document.createTextNode(labelText));
+        switches.append(label);
+      }
+      row.append(switches);
+
+      const lists = document.createElement("div");
+      lists.className = "platform-policy-whitelists";
+      for (const [keyName, labelText, placeholder] of [
+        ["groupWhitelist", "群/频道白名单", "留空时按平台默认规则处理"],
+        ["privateWhitelist", "私聊白名单", "留空时按平台默认规则处理"]
+      ]) {
+        const label = document.createElement("label");
+        label.textContent = labelText;
+        const input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 4096;
+        input.placeholder = placeholder;
+        input.dataset.policy = keyName;
+        input.value = read(existing, keyName, keyName === "groupWhitelist" ? "GroupWhitelist" : "PrivateWhitelist") || "";
+        label.append(input);
+        lists.append(label);
+      }
+      row.append(lists);
+
+      const features = document.createElement("div");
+      features.className = "platform-policy-features";
+      const globalFeatureDefaults = {
+        voice: runtime.enableVoice === true,
+        music: runtime.enableMusic === true,
+        stickers: runtime.enableStickers === true,
+        poke: runtime.enablePoke === true,
+        linkpreview: runtime.enableLinkPreview === true,
+        websearch: runtime.enableWebSearch === true
+      };
+      for (const [feature, labelText] of Object.entries({ voice: "语音", music: "音乐", stickers: "表情包", poke: "戳一戳", linkpreview: "链接预览", websearch: "联网搜索" })) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.feature = feature;
+        const configured = featureOverrides[feature] ?? featureOverrides[feature.toLowerCase()];
+        input.checked = configured == null ? globalFeatureDefaults[feature] : configured === true;
+        const capName = `supports${feature[0].toUpperCase()}${feature.slice(1)}`;
+        if (snapshot?.capabilities && ["voice", "music", "stickers", "poke"].includes(feature)) {
+          input.disabled = snapshot.capabilities[capName] !== true;
+        }
+        label.append(input, document.createTextNode(labelText));
+        features.append(label);
+      }
+      row.append(features);
+      host.append(row);
+    }
+    empty.hidden = policyByKey.size > 0;
+    empty.textContent = policyByKey.size > 0 ? "" : "尚无平台实例。新平台完成注册后会自动出现在这里。";
+  }
+
+  function collectPlatformPolicies() {
+    return [...$("platformPolicyRows").querySelectorAll(".platform-policy-row")].map((row) => {
+      const featureOverrides = {};
+      for (const input of row.querySelectorAll("[data-feature]")) featureOverrides[input.dataset.feature] = input.checked;
+      const values = Object.fromEntries([...row.querySelectorAll("[data-policy]")].map((input) => [input.dataset.policy, input.type === "checkbox" ? input.checked : input.value.trim()]));
+      return {
+        PlatformId: row.dataset.platformId,
+        AccountScope: row.dataset.accountScope,
+        Enabled: values.enabled,
+        ChatEnabled: values.chatEnabled,
+        GroupWhitelist: values.groupWhitelist,
+        PrivateWhitelist: values.privateWhitelist,
+        FeatureOverrides: featureOverrides,
+        AllowedActions: JSON.parse(row.dataset.allowedActions || "[]")
+      };
+    });
+  }
+
   async function loadSettings() {
     state.settingsLoaded = false; // 重新加载期间先封住保存
     const data = await api("/api/settings");
@@ -1752,6 +1885,7 @@ function renderChannelStatus(channels) {
     $("setPrivateChatEnabled").checked = r.privateChatEnabled !== false;
     renderOfficialConversations(r.officialConversations);
     renderChannelStatus(r.channels);
+    await loadPlatformPolicies(r.platformPolicies, r);
     $("setLinkPreviewTimeout").value = r.linkPreviewTimeoutSeconds;
     $("setLinkPreviewMax").value = r.linkPreviewMax;
 
@@ -1929,6 +2063,7 @@ function renderChannelStatus(channels) {
       officialWhitelistPrivates: $("setOfficialWhitelistPrivates").value.trim(),
       officialChatEnabled: $("setOfficialChatEnabled").checked,
       privateChatEnabled: $("setPrivateChatEnabled").checked,
+      platformPolicies: collectPlatformPolicies(),
       linkPreviewTimeoutSeconds: Number($("setLinkPreviewTimeout").value),
       linkPreviewMax: Number($("setLinkPreviewMax").value)
     };

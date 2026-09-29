@@ -1,5 +1,7 @@
 using System.Text.Json;
 using BotAgent.Domain.Conversation;
+using BotAgent.Domain.Qq;
+using BotAgent.Domain.Platforms;
 using BotAgent.Domain.Ops;
 using BotAgent.Domain.Rendering;
 using BotAgent.Services.Conversations;
@@ -9,6 +11,7 @@ using BotAgent.Services.Panel;
 using BotAgent.Services.Qq;
 using BotAgent.Services.Ports;
 using BotAgent.Services.Resilience;
+using BotAgent.Services.Platforms;
 
 namespace BotAgent.Services.Reply;
 
@@ -32,6 +35,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
     private readonly TurnTraceStore _traces;
     private readonly IAuditChain? _audit;
     private readonly ProtocolRiskBackoff? _riskBackoff;
+    private readonly PlatformPolicyResolver? _platformPolicies;
 
     public PlainSender(
         SettingsBox box,
@@ -42,7 +46,8 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         Action<string> log,
         TurnTraceStore traces,
         IAuditChain? audit = null,
-        ProtocolRiskBackoff? riskBackoff = null)
+        ProtocolRiskBackoff? riskBackoff = null,
+         PlatformPolicyResolver? platformPolicies = null)
     {
         _box = box;
         _source = source;
@@ -53,6 +58,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         _traces = traces;
         _audit = audit;
         _riskBackoff = riskBackoff;
+        _platformPolicies = platformPolicies;
     }
 
     private AppSettings _settings => _box.Current;
@@ -64,6 +70,14 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
     /// </summary>
     public async Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
     {
+        var policy = ResolveTargetPolicy(isGroup, targetId);
+        var textDecision = policy?.Feature("text", globallyEnabled: true);
+        if (textDecision is { Enabled: false })
+        {
+            _log($"文本出站被平台策略拒绝（{textDecision.ReasonCode}，target={(isGroup ? "group" : "private")}）");
+            return new CadenceSendReport(Array.Empty<string>(), textDecision.ReasonCode);
+        }
+
         // P4（V3 §10）：发送前把 Markdown 降级成 QQ 纯文本。
         // 批次 C 的回复审计：凭据形状、或（聊天这一路）本机/服务器路径形状 → **整条不发**。
         // 记的是原因码与字数，**不记正文** —— 审计本身不能变成新的隐私面。
@@ -169,6 +183,14 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         }
 
         var (isGroup, targetId) = conversation.Target;
+        var textDecision = ResolveTargetPolicy(isGroup, targetId)?.Feature("text", globallyEnabled: true);
+        if (textDecision is { Enabled: false })
+        {
+            _log($"agent 文本出站被平台策略拒绝（{textDecision.ReasonCode}）");
+            _traces.Node(conversation.SourceKey, TurnNodeKind.Outbound, "blocked", reasonCode: textDecision.ReasonCode);
+            return;
+        }
+
         var index = 0;
         foreach (var segment in SplitForChat(text, Math.Clamp(_settings.AgentReplyMaxChars, 200, 3000)))
         {
@@ -192,6 +214,23 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
 
         _registry.Touch(conversation);
         _registry.Save();
+    }
+
+    private EffectivePlatformPolicy? ResolveTargetPolicy(bool isGroup, long targetId)
+    {
+        if (_platformPolicies is null || targetId <= 0)
+        {
+            return null;
+        }
+
+        var channel = Channels.IsAliasId(targetId)
+            ? Channels.Official
+            : Channels.IsLocalId(targetId)
+                ? Channels.Local
+                : Channels.IsFeishuId(targetId)
+                    ? Channels.Feishu
+                    : Channels.Private;
+        return _platformPolicies.ResolveForChannel(channel);
     }
 
     private void RecordDlpBlock(ReplyAuditVerdict verdict, string route, int length)

@@ -83,6 +83,10 @@ public sealed class ConversationRegistry
     public BotConversation GetOrCreate(QqChatMessage msg)
     {
         var channel = Channels.Declared(msg.Channel);
+        if (string.IsNullOrEmpty(channel))
+        {
+            throw new ArgumentException("Unknown inbound platform channel", nameof(msg));
+        }
         var key = Channels.Key(channel, msg.IsGroup, msg.IsGroup ? msg.GroupId : msg.UserId);
         _source.RegisterTarget(channel, msg.IsGroup, msg.IsGroup ? msg.GroupId : msg.UserId);
 

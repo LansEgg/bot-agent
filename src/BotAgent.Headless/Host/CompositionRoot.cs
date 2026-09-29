@@ -101,6 +101,7 @@ internal static class CompositionRoot
         // ① 上行通道层（协议端 + 可选的官方通道 + 本地通道 + 飞书通道 + 平台注册表）：见 BuildChannelLayer
         var riskBackoff = new ProtocolRiskBackoff(msg => FileLog.Write("OneBot", msg));
         var (gateway, source, official, local, feishu, platformRegistry) = BuildChannelLayer(settings, settingsBox, riskBackoff);
+        var platformPolicies = new PlatformPolicyResolver(settingsBox, platformRegistry);
 
         // ② 模型与媒体层（模型客户端 / 表情包 / 桥 / 语音 / 音乐与链接 / 联网研究）：见 BuildModelAndMediaLayer
         var ttsBreaker = new ToolCircuitBreaker("tts");
@@ -113,7 +114,7 @@ internal static class CompositionRoot
         var identity = new BotIdentity();
         var lifetime = new BotLifetime();
         var ui = new PanelNotifier();
-        var whitelist = new WhitelistGate(settingsBox);
+        var whitelist = new WhitelistGate(settingsBox, platformPolicies);
 
         // 数据侧
         var registry = new ConversationRegistry(store, settingsBox, source, whitelist.AllowsKey, ui.EmitLog);
@@ -129,7 +130,8 @@ internal static class CompositionRoot
         // 决策轨迹（批次 C）：一轮一条、只有形状；回复链 / 发送层 / 能力闸门三处往上记节点。
         var traces = new TurnTraceStore(archive: new TraceArchiveStore());
         var audit = new AuditLogStore();
-        var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit, riskBackoff);
+        var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit, riskBackoff,
+            platformPolicies);
 
         // 各域用例
         var vibes = new VibeTracker();
@@ -180,7 +182,9 @@ internal static class CompositionRoot
                 Log: ui.EmitLog,
                 SelfId: () => identity.SelfId,
                 IsOfficialUserAllowed: whitelist.IsOfficialPrivateExplicit,
-                SendPlainAsync: plain.SendPlainAsync));
+                SendPlainAsync: plain.SendPlainAsync),
+             actionGateway: gateway,
+             platformPolicies: platformPolicies);
 
         // 回复主链（要用到上面所有用例）→ 建好之后把"戳一戳请求一轮回复"这条边接上
         var quotas = new TenantQuotaStore();
@@ -191,7 +195,8 @@ internal static class CompositionRoot
                 SelfId: () => identity.SelfId,
                 IsDisposed: () => lifetime.IsDisposed),
             traces, riskBackoff,
-            quotas: quotas);
+            quotas: quotas,
+            platformPolicies: platformPolicies);
         poke.RequestReply = conversation => reply.RequestReply(conversation, null);
 
         // 后台巡检（静默兜底 / 画像巡检 / 表情包巡检 / 账号在线探测）
@@ -271,7 +276,8 @@ internal static class CompositionRoot
             },
             circuitStatusProvider: circuitStatusProvider,
             platformRegistry: platformRegistry,
-            feishuGateway: feishu);
+            feishuGateway: feishu,
+             platformPolicies: platformPolicies);
 
         return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web);
     }

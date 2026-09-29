@@ -131,6 +131,8 @@ public sealed class ServerAgentRunner : BotAgent.Services.Tools.IToolExecutor
             : null;
         var qqHost = task.QqHost;
         var qqUsed = 0;
+        var prohibitedQqActions = new List<string>();
+        var failedQqActions = new List<string>();
 
         var system = BuildSystemPrompt(workDir, allowed, qqAllowed, qqHost);
 
@@ -195,9 +197,8 @@ public sealed class ServerAgentRunner : BotAgent.Services.Tools.IToolExecutor
                         continue;
                     }
 
-                    // 还是不说人话：把这段当结论，别再空转
                     messages.Add(("assistant", raw.Trim()));
-                    task.Succeeded(raw.Trim());
+                    task.Succeeded(AppendQqActionOutcomes(raw.Trim(), prohibitedQqActions, failedQqActions));
                     return;
                 }
 
@@ -208,14 +209,14 @@ public sealed class ServerAgentRunner : BotAgent.Services.Tools.IToolExecutor
                     // 结论也要进对话：否则下一轮上下文里只剩下“用户问了什么 + 一堆工具输出”，
                     // 模型看不到自己上轮得出了什么（会话记忆缺一半，标题综结也拿不到结论）。
                     messages.Add(("assistant", step0.Final.Trim()));
-                    task.Succeeded(step0.Final.Trim());
+                    task.Succeeded(AppendQqActionOutcomes(step0.Final.Trim(), prohibitedQqActions, failedQqActions));
                     return;
                 }
 
                 if (step0.Tool is null)
                 {
                     messages.Add(("assistant", raw.Trim()));
-                    task.Succeeded(raw.Trim());
+                    task.Succeeded(AppendQqActionOutcomes(raw.Trim(), prohibitedQqActions, failedQqActions));
                     return;
                 }
 
@@ -257,6 +258,19 @@ public sealed class ServerAgentRunner : BotAgent.Services.Tools.IToolExecutor
                     output = $"工具执行出错：{ex.GetType().Name} {ex.Message}";
                 }
 
+                if (name == "qq")
+                {
+                    if (IsProhibitedQqActionOutput(output))
+                    {
+                        prohibitedQqActions.Add(output.Trim());
+                    }
+                    else if (output.StartsWith("❌ ", StringComparison.Ordinal)
+                             || output.StartsWith("工具执行出错：", StringComparison.Ordinal))
+                    {
+                        failedQqActions.Add(output.Trim());
+                    }
+                }
+
                 _log($"[ServerAgent] 第 {step} 步 {task.LastNote} → {Shorten(output.Replace('\n', ' '), 110)}");
 
                 messages.Add(("assistant", raw));
@@ -286,8 +300,40 @@ public sealed class ServerAgentRunner : BotAgent.Services.Tools.IToolExecutor
         }
     }
 
-    /// <summary>
-    /// 洗一下历史再喂给模型：**丢掉工具步骤**，只留“用户要什么 + 结论是什么”。
+    private static bool IsProhibitedQqActionOutput(string output)
+        => output.Contains("没开（本次允许：", StringComparison.Ordinal)
+           || output.Contains("未被当前平台策略授权", StringComparison.Ordinal)
+           || output.Contains("被平台策略拒绝", StringComparison.Ordinal)
+           || output.Contains("闸门拒绝", StringComparison.Ordinal)
+           || output.Contains("被平台能力拒绝", StringComparison.Ordinal)
+           || output.Contains("不再做了", StringComparison.Ordinal)
+           || output.StartsWith("qq 工具这次没有会话上下文", StringComparison.Ordinal)
+           || output.StartsWith("要指明对谁做", StringComparison.Ordinal)
+           || output.StartsWith("要指明是哪条消息", StringComparison.Ordinal)
+           || output.StartsWith("这次不知道", StringComparison.Ordinal)
+           || output.StartsWith("这里需要一个", StringComparison.Ordinal)
+           || output.Contains("不是一个 QQ 号", StringComparison.Ordinal)
+           || output.Contains("不是一个消息 id", StringComparison.Ordinal)
+           || output.Contains("不知道该发到哪儿", StringComparison.Ordinal)
+           || output.StartsWith("不认识的动作", StringComparison.Ordinal);
+
+    private static string AppendQqActionOutcomes(string final, IReadOnlyCollection<string> denials,
+        IReadOnlyCollection<string> failures)
+    {
+        var denied = denials.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToArray();
+        var failed = failures.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToArray();
+        if (denied.Length > 0)
+        {
+            final += "\n\n未执行的 QQ 动作：\n" + string.Join("\n", denied);
+        }
+        if (failed.Length > 0)
+        {
+            final += "\n\n执行未成功的 QQ 动作：\n" + string.Join("\n", failed);
+        }
+        return final;
+    }
+
+
     ///
     /// 为什么：工具步骤长这样 —— <c>{"tool":"bash","command":"uptime…"}</c> 与 <c>工具输出（bash）：…</c>。
     /// 它们对“这个会话在聊什么”几乎没贡献，却把模型带进“我正在跑命令”的模式：

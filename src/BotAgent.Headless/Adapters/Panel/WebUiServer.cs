@@ -24,6 +24,7 @@ using BotAgent.Services.Qq;
 using BotAgent.Services.Reply;
 using BotAgent.Services.Settings;
 using BotAgent.Services.Stickers;
+using BotAgent.Services.Platforms;
 using BotAgent.Services.Voice;
 using BotAgent.Adapters.Persistence;
 using BotAgent.Domain.Ports;
@@ -161,7 +162,8 @@ public sealed partial class WebUiServer : IDisposable
         Action? onRestart = null,
         Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? circuitStatusProvider = null,
         IPlatformRegistry? platformRegistry = null,
-        Platforms.Feishu.FeishuBotGateway? feishuGateway = null)
+        Platforms.Feishu.FeishuBotGateway? feishuGateway = null,
+         PlatformPolicyResolver? platformPolicies = null)
     {
         _port = port;
         _box = box;
@@ -203,6 +205,7 @@ public sealed partial class WebUiServer : IDisposable
         _circuitStatusProvider = circuitStatusProvider;
         _platformRegistry = platformRegistry;
         _feishuGateway = feishuGateway;
+         _platformPolicies = platformPolicies;
 
         // 启动时把密钥库里那份 TTS 密钥重新写给 tts 容器（容器可能刚被重建、
         // 或者上次写文件前我们就重启了）——否则面板里存着 key，语音却发不出去。
@@ -251,6 +254,7 @@ public sealed partial class WebUiServer : IDisposable
     private readonly Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? _circuitStatusProvider;
     private readonly IPlatformRegistry? _platformRegistry;
     private readonly Platforms.Feishu.FeishuBotGateway? _feishuGateway;
+    private readonly PlatformPolicyResolver? _platformPolicies;
 
     /// <summary>实际监听的前缀（启动失败为 null）。</summary>
     public string? ListeningOn { get; private set; }
