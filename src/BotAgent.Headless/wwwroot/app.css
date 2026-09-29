@@ -313,6 +313,21 @@ h1, h2, h3, p { margin: 0; }
   font-weight: 600;
 }
 .chan-tab.chan-off { opacity: 0.55; }
+.badge-count {
+  display: inline-block;
+  padding: 0 5px;
+  margin-left: 3px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(120, 120, 120, 0.2);
+  color: inherit;
+  vertical-align: 1px;
+}
+.chan-tab.active .badge-count {
+  background: rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
 .chan-status {
   padding: 0 12px 8px;
   font-size: 11px; color: var(--text-secondary);
@@ -760,7 +775,7 @@ textarea { resize: vertical; line-height: 1.5; }
 
 .quota-readouts {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 14px;
 }

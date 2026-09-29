@@ -1862,6 +1862,34 @@ check("包含人工审批卡片与批准/拒绝操作入口",
   pgHtml.includes('id="approveBtn"') &&
   pgHtml.includes('id="rejectBtn"'));
 
+/* ─────────── 每日 Token 配额多平台划分（按平台与显现其它平台） ─────────── */
+
+console.log("\n▶ 每日 Token 配额：多平台划分与显现");
+
+check("quotaCard 包含全平台划分切换栏 #quotaChanTabs",
+  html.includes('id="quotaChanTabs"') &&
+  html.includes('id="quotaTabAll"') &&
+  html.includes('id="quotaTabPrivate"') &&
+  html.includes('id="quotaTabOfficial"') &&
+  html.includes('id="quotaTabFeishu"') &&
+  html.includes('id="quotaTabLocal"'));
+
+check("quotaCard 包含各平台会话计数徽标",
+  html.includes('id="quotaCountAll"') &&
+  html.includes('id="quotaCountPrivate"') &&
+  html.includes('id="quotaCountOfficial"') &&
+  html.includes('id="quotaCountFeishu"') &&
+  html.includes('id="quotaCountLocal"'));
+
+check("quotaCard 包含所属平台指示卡 #quotaPlatform",
+  html.includes('id="quotaPlatform"'));
+
+check("app.js 实现配额按平台分组与筛选逻辑",
+  js.includes("getQuotaChannelName") &&
+  js.includes("updateQuotaChannelCounts") &&
+  js.includes("quotaChanTabs") &&
+  js.includes("optgroup"));
+
 console.log("");
 if (failures.length === 0) {
   console.log(`通过 ${pass}，失败 0`);

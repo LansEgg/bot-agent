@@ -712,8 +712,18 @@
         <div class="card" id="quotaCard">
           <div class="card-head">
             <h3>每日 Token 配额</h3>
-            <p>按会话来源隔离的 UTC 日预算；只控制每日总量，单次回复上限仍由模型设置里的 <code>maxTokens</code> 控制。</p>
+            <p>按平台与会话来源隔离的 UTC 日预算；只控制每日总量，单次回复上限仍由模型设置里的 <code>maxTokens</code> 控制。</p>
           </div>
+
+          <!-- 平台划分切换栏与多平台显现 -->
+          <div class="chan-tabs" id="quotaChanTabs" role="tablist" style="margin-bottom:12px;padding:0;">
+            <button class="chan-tab active" data-quota-chan="all" id="quotaTabAll" type="button">全部 <span class="badge-count" id="quotaCountAll">0</span></button>
+            <button class="chan-tab" data-quota-chan="private" id="quotaTabPrivate" type="button">QQ 私域 <span class="badge-count" id="quotaCountPrivate">0</span></button>
+            <button class="chan-tab" data-quota-chan="official" id="quotaTabOfficial" type="button">QQ 官方 <span class="badge-count" id="quotaCountOfficial">0</span></button>
+            <button class="chan-tab" data-quota-chan="feishu" id="quotaTabFeishu" type="button">飞书 <span class="badge-count" id="quotaCountFeishu">0</span></button>
+            <button class="chan-tab" data-quota-chan="local" id="quotaTabLocal" type="button">本地通道 <span class="badge-count" id="quotaCountLocal">0</span></button>
+          </div>
+
           <div class="grid-2">
             <div class="field">
               <label for="quotaTenant">会话租户</label>
@@ -727,6 +737,7 @@
             </div>
           </div>
           <div class="quota-readouts" aria-live="polite">
+            <div class="quota-readout"><span>所属平台</span><strong id="quotaPlatform">—</strong></div>
             <div class="quota-readout"><span>已用总量</span><strong id="quotaUsedTokens">—</strong></div>
             <div class="quota-readout"><span>剩余</span><strong id="quotaRemainingTokens">—</strong></div>
             <div class="quota-readout"><span>Prompt / Completion</span><strong id="quotaTokenSplit">—</strong></div>
