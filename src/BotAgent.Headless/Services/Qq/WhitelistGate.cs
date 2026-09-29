@@ -1,5 +1,7 @@
 using BotAgent.Domain.Qq;
+using BotAgent.Domain.Platforms;
 using BotAgent.Services.OneBot;
+using BotAgent.Services.Platforms;
 
 namespace BotAgent.Services.Qq;
 
@@ -18,6 +20,7 @@ namespace BotAgent.Services.Qq;
 public sealed class WhitelistGate
 {
     private readonly SettingsBox _box;
+    private readonly PlatformPolicyResolver _platformPolicies;
 
     private HashSet<long> _groups = new();
     private bool _allGroups;
@@ -39,9 +42,10 @@ public sealed class WhitelistGate
     private bool _groupsFromLegacy;
     private bool _privatesFromLegacy;
 
-    public WhitelistGate(SettingsBox box)
+    public WhitelistGate(SettingsBox box, PlatformPolicyResolver platformPolicies)
     {
-        _box = box;
+        _box = box ?? throw new ArgumentNullException(nameof(box));
+        _platformPolicies = platformPolicies ?? throw new ArgumentNullException(nameof(platformPolicies));
         Rebuild();
     }
 
@@ -115,6 +119,11 @@ public sealed class WhitelistGate
         }
 
         var channel = Channels.ChannelOf(sourceKey);
+        if (!_platformPolicies.IsChatEnabled(channel))
+        {
+            return false;
+        }
+
         if (Channels.IsLocal(channel))
         {
             // 本地通道：只有点名的 id 收（空 = 全拦，fail-closed）

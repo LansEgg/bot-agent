@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BotAgent.Domain.Platforms;
 
 namespace BotAgent.Services;
 
@@ -313,6 +314,13 @@ public sealed class AppSettings
 
     /// <summary>同时向模型发起的最大请求数（按会话串行、跨会话并发）。</summary>
     public int MaxConcurrentReplies { get; set; } = 2;
+
+    // ---------- 平台策略覆盖（按 platformId + accountScope） ----------
+
+    /// <summary>
+    /// 平台策略的显式覆盖。旧字段仍是兼容 fallback；凭据永远不进入这里。
+    /// </summary>
+    public List<PlatformPolicySettings> PlatformPolicies { get; set; } = new();
 
     // ---------- 对话总开关（两个通道各自可单独静音） ----------
 
@@ -949,5 +957,13 @@ public sealed class AppSettings
     ///   • **写**：<see cref="SettingsBox.Apply" /> 在副本上改完再整体发布（review-findings #4）。
     /// 只读用途时：不要对副本调用保存 / 写回。
     /// </summary>
-    public AppSettings Snapshot() => (AppSettings)MemberwiseClone();
+    public AppSettings Snapshot()
+    {
+        var copy = (AppSettings)MemberwiseClone();
+        copy.PlatformPolicies = (PlatformPolicies ?? new List<PlatformPolicySettings>())
+            .Where(p => p is not null)
+            .Select(p => p.Clone())
+            .ToList();
+        return copy;
+    }
 }

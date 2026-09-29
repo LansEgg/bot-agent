@@ -99,10 +99,14 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
 
     private void OnMessage(QqChatMessage msg)
     {
-        // 通道以**上行自己报的**为准（三条上行各自知道自己是哪条）——
-        // 以前这里把“不是官方的”一律归成私域，于是第三条通道（本地）的消息会被贴上私域标签 →
-        // 白名单/会话 key/上下文全部走错一条路（真实踩过：S48 的第一轮就是这个症状）。
+        // 归一上行标签；显式未知通道必须在学习路由或转发前拒绝。
+        // 空标签仍按旧 OneBot 私域通道处理。
         var channel = Channels.Declared(msg.Channel);
+        if (string.IsNullOrEmpty(channel) || !_byChannel.ContainsKey(channel))
+        {
+            _log?.Invoke("入站路由拒绝：未知或未注册通道");
+            return;
+        }
         Learn(channel, msg.IsGroup, msg.IsGroup ? msg.GroupId : msg.UserId);
         MessageReceived?.Invoke(string.Equals(msg.Channel, channel, StringComparison.OrdinalIgnoreCase)
             ? msg
@@ -144,7 +148,7 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
     {
         var channel = Channels.ChannelOf(sourceKey);
         var (isGroup, id) = Channels.Parse(sourceKey);
-        if (id > 0)
+        if (id > 0 && !string.IsNullOrEmpty(channel) && _byChannel.ContainsKey(channel))
         {
             _byKey[sourceKey] = channel;
             _learned[(isGroup, id)] = channel;
@@ -168,7 +172,7 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
                     : Channels.Private;
     }
 
-    private IQqChatSource Resolve(bool isGroup, long id)
+    private IQqChatSource? Resolve(bool isGroup, long id)
     {
         var channel = ResolveChannel(isGroup, id);
         if (_byChannel.TryGetValue(channel, out var src))
@@ -176,43 +180,49 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
             return src;
         }
 
-        // 该通道没启用（比如官方没配凭据）：退回默认通道，至少别把消息丢在路由器里。
-        return _sources[0];
+        _log?.Invoke($"出站路由拒绝：通道未注册或未启用（{channel}，目标形状={(isGroup ? "group" : "private")}）");
+        return null;
     }
+
+    private static Task<bool> UnsupportedBoolAsync() => Task.FromResult(false);
+    private static Task<SendResult> UnsupportedSendAsync() => Task.FromResult(new SendResult(false));
+    private static Task<(string? Text, long SenderId)> UnsupportedMessageAsync() =>
+        Task.FromResult<(string? Text, long SenderId)>((null, 0));
 
     // ---------- 出站：按目标号路由 ----------
 
     public Task<bool> SendMusicAsync(bool isGroup, long targetId, string platform, string songId, string title = "", CancellationToken ct = default)
-        => Resolve(isGroup, targetId).SendMusicAsync(isGroup, targetId, platform, songId, title, ct);
+        => Resolve(isGroup, targetId)?.SendMusicAsync(isGroup, targetId, platform, songId, title, ct) ?? UnsupportedBoolAsync();
 
     public Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null, bool directAddress = false)
-        => Resolve(isGroup, targetId).SendTextAsync(isGroup, targetId, text, ct, replyToMessageId, directAddress);
+        => Resolve(isGroup, targetId)?.SendTextAsync(isGroup, targetId, text, ct, replyToMessageId, directAddress) ?? UnsupportedSendAsync();
 
     public Task<(string? Text, long SenderId)> GetMessageInfoAsync(long messageId, CancellationToken ct = default)
-        => Resolve(false, messageId).GetMessageInfoAsync(messageId, ct);
+        => Resolve(false, messageId)?.GetMessageInfoAsync(messageId, ct) ?? UnsupportedMessageAsync();
 
     public Task<bool> SendVoiceAsync(bool isGroup, long targetId, string audioUrl, CancellationToken ct = default)
-        => Resolve(isGroup, targetId).SendVoiceAsync(isGroup, targetId, audioUrl, ct);
+        => Resolve(isGroup, targetId)?.SendVoiceAsync(isGroup, targetId, audioUrl, ct) ?? UnsupportedBoolAsync();
 
     public Task<bool> SendImageAsync(bool isGroup, long targetId, byte[] data, CancellationToken ct = default, long? replyToMessageId = null)
-        => Resolve(isGroup, targetId).SendImageAsync(isGroup, targetId, data, ct, replyToMessageId);
+        => Resolve(isGroup, targetId)?.SendImageAsync(isGroup, targetId, data, ct, replyToMessageId) ?? UnsupportedBoolAsync();
 
     public Task<bool> SendPokeAsync(bool isGroup, long targetId, long userId, CancellationToken ct = default)
-        => Resolve(isGroup, targetId).SendPokeAsync(isGroup, targetId, userId, ct);
+        => Resolve(isGroup, targetId)?.SendPokeAsync(isGroup, targetId, userId, ct) ?? UnsupportedBoolAsync();
 
     public Task<string?> GetGroupNameAsync(long groupId, CancellationToken ct = default)
-        => Resolve(true, groupId).GetGroupNameAsync(groupId, ct);
+        => Resolve(true, groupId)?.GetGroupNameAsync(groupId, ct) ?? Task.FromResult<string?>(null);
 
     public Task<GroupMemberInfo?> GetGroupMemberInfoAsync(long groupId, long userId, CancellationToken ct = default)
-        => Resolve(true, groupId).GetGroupMemberInfoAsync(groupId, userId, ct);
+        => Resolve(true, groupId)?.GetGroupMemberInfoAsync(groupId, userId, ct) ?? Task.FromResult<GroupMemberInfo?>(null);
 
     public Task<List<string>> FetchCustomFacesAsync(int count = 48, CancellationToken ct = default)
         => _byChannel.TryGetValue(Channels.Private, out var priv)
             ? priv.FetchCustomFacesAsync(count, ct)
-            : _sources[0].FetchCustomFacesAsync(count, ct);
+            : Task.FromResult(new List<string>());
 
     public Task<IReadOnlyList<string>> RefreshImageUrlsAsync(long messageId, CancellationToken ct = default)
-        => Resolve(false, messageId).RefreshImageUrlsAsync(messageId, ct);
+        => Resolve(false, messageId)?.RefreshImageUrlsAsync(messageId, ct)
+            ?? Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 
     /// <summary>上层登记会话用（见 <see cref="RegisterKey"/>）。</summary>
     public void RegisterTarget(string channel, bool isGroup, long id)
@@ -220,6 +230,10 @@ public sealed class ChannelRouter : IQqChatSource, IChannelRegistry, IDisposable
         if (id > 0)
         {
             var ch = Channels.Declared(channel);
+            if (string.IsNullOrEmpty(ch) || !_byChannel.ContainsKey(ch))
+            {
+                return;
+            }
             _learned[(isGroup, id)] = ch;
             _byKey[Channels.Key(ch, isGroup, id)] = ch;
         }

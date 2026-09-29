@@ -389,10 +389,23 @@ function makeEl(id, tag = "div") {
     },
     removeEventListener() {},
     appendChild(c) { this.children.push(c); return c; },
+    append(...nodes) { this.children.push(...nodes); },
     insertBefore(c) { this.children.unshift(c); return c; },
-    replaceChildren() { this.children = []; },
+    replaceChildren(...nodes) { this.children = [...nodes]; },
     querySelector: () => makeEl(id + ":child"),
-    querySelectorAll: () => [],
+    querySelectorAll(selector) {
+      const matches = [];
+      const match = (node) => selector === ".platform-policy-row"
+        ? node.className === "platform-policy-row"
+        : selector === "[data-feature]"
+          ? node.dataset?.feature !== undefined
+          : selector === "[data-policy]"
+            ? node.dataset?.policy !== undefined
+            : false;
+      const walk = (nodes) => { for (const node of nodes) { if (match(node)) matches.push(node); walk(node.children || []); } };
+      walk(this.children);
+      return matches;
+    },
     focus() {},
     remove() {},
     closest: () => null,
@@ -429,6 +442,7 @@ const document = {
     return sel === ".navitem" ? navItems : navItems.concat(mtabItems);
   },
   createElement: (t) => makeEl("created", t),
+  createTextNode: (text) => Object.assign(makeEl("text", "span"), { textContent: text }),
   createDocumentFragment: () => makeEl("frag"),
   hidden: false,
   addEventListener(type, fn) { if (type === "DOMContentLoaded") domReady.push(fn); },
@@ -480,7 +494,9 @@ const RUNTIME = {
   agentServerDocker: false,
   // 白名单拆成两份（群聊/私聊），旧字段还留着做兼容：这里故意只填群聊那份，看回落提示
   messageWhitelist: "10001", whitelistGroups: "10001,20002", whitelistPrivates: "",
-  whitelistGroupsFromLegacy: false, whitelistPrivatesFromLegacy: true
+  whitelistGroupsFromLegacy: false, whitelistPrivatesFromLegacy: true,
+  platformPolicies: [{ PlatformId: "feishu", AccountScope: "default", Enabled: true, ChatEnabled: true,
+    GroupWhitelist: "synthetic-group", PrivateWhitelist: "synthetic-user", FeatureOverrides: { music: false }, AllowedActions: [] }]
 };
 const ENV = {
   modelBaseUrl: "http://x/v1", modelBaseUrlSource: "env",
@@ -560,6 +576,13 @@ const fetchStub = async (url, opts) => {
   } else if (target.includes("/api/agent/test")) {
     if (agentRunDelayMs) await new Promise((r) => setTimeout(r, agentRunDelayMs));
     payload = { ok: true, id: "run-synthetic", text: "<synthetic-result>", durationMs: 42, toolCalls: 1, target: "server" };
+  } else if (target.includes("/api/platforms")) {
+    payload = { platforms: [
+      { platformId: "feishu", accountScope: "default", displayName: "Synthetic Feishu", enabled: true, effectiveEnabled: true, chatEnabled: true, connected: true,
+        capabilities: { supportsText: true, supportsVoice: false, supportsMusic: false, supportsStickers: false, supportsPoke: false } },
+      { platformId: "qq.private", accountScope: "legacy", displayName: "Synthetic QQ", enabled: true, effectiveEnabled: true, chatEnabled: true, connected: true,
+        capabilities: { supportsText: true, supportsVoice: true, supportsMusic: true, supportsStickers: true, supportsPoke: true } }
+    ], feishu: { enabled: true, configured: true, loaded: true, effectiveEnabled: true } };
   } else if (target.includes("/api/settings")) {
     if (method === "POST" && settingsDelayMs) await new Promise((r) => setTimeout(r, settingsDelayMs));
     if (method === "POST" && opts && opts.body) {
@@ -848,15 +871,21 @@ check(
 
 if (saveCall) {
   const payload = JSON.parse(saveCall.body);
-  // 设备表 agentDevices 是**额外**字段（不在 DOM-id 那套里），不算进“表单字段数”。
-  const declaredKeys = Object.keys(payload).filter((k) => k !== "agentDevices");
-  check("payload 字段数与表单一致（设备表算额外字段）", declaredKeys.length === saveFields.length,
+  // 设备表与平台策略是各自有契约的附加字段，不在旧的 DOM-id 表单字段集合中。
+  const declaredKeys = Object.keys(payload).filter((k) => k !== "agentDevices" && k !== "platformPolicies");
+  check("payload 字段数与表单一致（设备表与平台策略单独校验）", declaredKeys.length === saveFields.length,
     `${declaredKeys.length} vs ${saveFields.length}`);
+  const feishuPolicy = payload.platformPolicies?.find((p) => p.PlatformId === "feishu" && p.AccountScope === "default");
+  check("平台策略表单保存实例开关、白名单和功能覆盖",
+    !!feishuPolicy && feishuPolicy.Enabled === true && feishuPolicy.ChatEnabled === true
+      && feishuPolicy.GroupWhitelist === "synthetic-group" && feishuPolicy.PrivateWhitelist === "synthetic-user"
+      && feishuPolicy.FeatureOverrides?.music === false,
+    JSON.stringify(feishuPolicy));
 
   // 核心不变式：**什么都不改直接保存，payload 必须与服务端当前值完全一致**。
   // 一旦有字段没被回填，它就会以 0/空/false 发回来 → 服务端把它压到最小值
   // （白名单被清空则直接进入严格模式并删光会话）。
-  const drifted = Object.entries(payload).filter(([k, v]) => RUNTIME[k] !== undefined && v !== RUNTIME[k]);
+  const drifted = Object.entries(payload).filter(([k, v]) => k !== "platformPolicies" && RUNTIME[k] !== undefined && v !== RUNTIME[k]);
   check(
     "★ 不改动直接保存，payload 与服务端值完全一致（没被空值污染）",
     drifted.length === 0,
