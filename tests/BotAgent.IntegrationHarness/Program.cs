@@ -387,8 +387,9 @@ public static partial class Program
         openAi.EnqueueReply("""{"suitability": 90, "reply": "超时那次的无效回复"}""");
         openAi.EnqueueReply("""{"suitability": 90, "reply": "慢也答上了"}""");
         await protocol.SendGroupMessageAsync(99999, 20006, "老王", "@机器人 慢慢想", 7010, mentionBot: true, ct: cts.Token);
-        // 第一次请求一落到假上游就把延迟调回 0：模拟“第一次卡住、重试那下很快”（真上游换账号后常见）
+        // 第一次请求一落到假上游并且开始延迟后，再把后续延迟调回 0：模拟“第一次卡住、重试那下很快”（真上游换账号后常见）
         await WaitUntilAsync(() => openAi.Requests.Count > reqsBeforeSlow, TimeSpan.FromSeconds(30));
+        await Task.Delay(200);
         openAi.ResponseDelayMs = 0;
         await WaitUntilAsync(() => protocol.ActionsReceived
             .Where(a => a["action"]?.GetValue<string>() == "send_group_msg")
