@@ -26,7 +26,7 @@
     logs: [],
     modelStudio: { context: "chat" },
     settingsLoaded: false,    // 设置表单是否已从服务端回填过
-    quota: { tenant: "", snapshot: null, loading: false },
+    quota: { tenant: "", snapshot: null, loading: false, channel: "all" },
      agentPromptDefault: "",  // 服务端那份默认「Agent 附加提示词」（面板「恢复默认」按钮用，不在前端抄一份）
     chatOpen: false,          // 手机端：是否已点进某个会话（列表 ↔ 聊天 的主从切换）
     login: {                  // 扫码登录卡片
@@ -1451,10 +1451,43 @@ function renderChannelStatus(channels) {
     return Number.isNaN(date.getTime()) ? "—" : date.toISOString();
   }
 
+  function getQuotaChannelName(ch) {
+    if (ch === "official") return "QQ 官方";
+    if (ch === "feishu") return "飞书";
+    if (ch === "local") return "本地通道";
+    return "QQ 私域";
+  }
+
+  function getQuotaChannelPrefix(ch) {
+    if (ch === "official") return "官方";
+    if (ch === "feishu") return "飞书";
+    if (ch === "local") return "本地";
+    return "私域";
+  }
+
+  function updateQuotaChannelCounts() {
+    const counts = { all: 0, private: 0, official: 0, feishu: 0, local: 0 };
+    for (const c of state.conversations) {
+      if (!c || !c.key) continue;
+      counts.all++;
+      const ch = conversationChannel(c);
+      if (counts[ch] !== undefined) counts[ch]++;
+      else counts.private++;
+    }
+    if ($("quotaCountAll")) $("quotaCountAll").textContent = String(counts.all);
+    if ($("quotaCountPrivate")) $("quotaCountPrivate").textContent = String(counts.private);
+    if ($("quotaCountOfficial")) $("quotaCountOfficial").textContent = String(counts.official);
+    if ($("quotaCountFeishu")) $("quotaCountFeishu").textContent = String(counts.feishu);
+    if ($("quotaCountLocal")) $("quotaCountLocal").textContent = String(counts.local);
+  }
+
   function renderQuotaSnapshot(snapshot) {
-    const fields = ["quotaUsedTokens", "quotaRemainingTokens", "quotaTokenSplit", "quotaResetDate", "quotaNextResetAt", "quotaEnergySaving", "quotaSilentReason"];
+    const fields = ["quotaUsedTokens", "quotaRemainingTokens", "quotaTokenSplit", "quotaResetDate", "quotaNextResetAt", "quotaEnergySaving", "quotaSilentReason", "quotaPlatform"];
     if (!snapshot) {
-      for (const id of fields) $(id).textContent = "—";
+      for (const id of fields) {
+        const el = $(id);
+        if (el) el.textContent = "—";
+      }
       $("quotaDailyLimit").value = "";
       return;
     }
@@ -1470,29 +1503,82 @@ function renderChannelStatus(channels) {
     energy.classList.toggle("warn", !!snapshot.energySaving);
     energy.classList.toggle("ok", !snapshot.energySaving);
     $("quotaSilentReason").textContent = snapshot.energySavingReason || "—";
+
+    const platformEl = $("quotaPlatform");
+    if (platformEl) {
+      platformEl.replaceChildren();
+      const tenantConv = state.conversations.find((c) => c && c.key === snapshot.tenant);
+      const ch = tenantConv ? conversationChannel(tenantConv) : (
+        snapshot.tenant.startsWith("feishu:") ? "feishu" :
+        snapshot.tenant.startsWith("official:") ? "official" :
+        snapshot.tenant.startsWith("local:") ? "local" : "private"
+      );
+      const badge = document.createElement("span");
+      badge.className = "chan-badge chan-" + ch;
+      badge.textContent = getQuotaChannelName(ch);
+      platformEl.appendChild(badge);
+    }
   }
 
   function renderQuotaTenants() {
     const select = $("quotaTenant");
     if (!select) return "";
 
-    const rows = state.conversations.filter((conversation) => conversation && conversation.key);
-    const selectedStillExists = rows.some((conversation) => conversation.key === state.quota.tenant);
-    const selected = selectedStillExists ? state.quota.tenant : (rows[0]?.key || "");
+    updateQuotaChannelCounts();
+    const filter = state.quota.channel || "all";
+
+    const tabs = document.querySelectorAll("#quotaChanTabs .chan-tab");
+    for (const tab of tabs) {
+      tab.classList.toggle("active", (tab.dataset.quotaChan || "all") === filter);
+    }
+
+    const allRows = state.conversations.filter((c) => c && c.key);
+    const filteredRows = allRows.filter((c) => filter === "all" || conversationChannel(c) === filter);
+
+    const selectedStillExists = filteredRows.some((c) => c.key === state.quota.tenant);
+    const selected = selectedStillExists ? state.quota.tenant : (filteredRows[0]?.key || "");
+
     select.replaceChildren();
-    if (rows.length === 0) {
+    if (filteredRows.length === 0) {
       const empty = document.createElement("option");
       empty.value = "";
-      empty.textContent = "暂无已登记会话";
+      empty.textContent = filter === "all" ? "暂无已登记会话" : `【${getQuotaChannelName(filter)}】暂无已登记会话`;
       select.appendChild(empty);
+    } else if (filter === "all") {
+      const groupMap = {
+        private: { label: "QQ 私域 (qq.private)", items: [] },
+        official: { label: "QQ 官方 (qq.official)", items: [] },
+        feishu: { label: "飞书 (feishu)", items: [] },
+        local: { label: "本地通道 (local)", items: [] }
+      };
+      for (const c of filteredRows) {
+        const ch = conversationChannel(c);
+        if (groupMap[ch]) groupMap[ch].items.push(c);
+        else groupMap.private.items.push(c);
+      }
+      for (const ch of ["private", "official", "feishu", "local"]) {
+        const g = groupMap[ch];
+        if (g.items.length === 0) continue;
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = g.label;
+        for (const conversation of g.items) {
+          const option = document.createElement("option");
+          option.value = conversation.key;
+          option.textContent = `[${getQuotaChannelPrefix(ch)}] ${conversation.name || "未命名会话"} (${conversation.key})`;
+          optgroup.appendChild(option);
+        }
+        select.appendChild(optgroup);
+      }
     } else {
-      for (const conversation of rows) {
+      const ch = filter;
+      for (const conversation of filteredRows) {
         const option = document.createElement("option");
         option.value = conversation.key;
-        option.textContent = conversation.name || "未命名会话";
+        option.textContent = `[${getQuotaChannelPrefix(ch)}] ${conversation.name || "未命名会话"} (${conversation.key})`;
         select.appendChild(option);
       }
     }
+
     select.value = selected;
     select.disabled = !selected || state.quota.loading;
     $("quotaDailyLimit").disabled = !selected || state.quota.loading;
@@ -1506,7 +1592,18 @@ function renderChannelStatus(channels) {
     if (!selected) {
       state.quota.snapshot = null;
       renderQuotaSnapshot(null);
-      $("quotaHint").textContent = "先选择一个已登记会话";
+      const ch = state.quota.channel || "all";
+      if (ch === "feishu") {
+        $("quotaHint").textContent = "飞书通道暂无已登记会话（飞书应用收到消息或在群内 @机器人 后将自动建立）";
+      } else if (ch === "local") {
+        $("quotaHint").textContent = "本地通道暂无已登记会话（可在下方「本地通道」卡片打开交互演练场注入一条测试消息）";
+      } else if (ch === "official") {
+        $("quotaHint").textContent = "QQ 官方通道暂无已登记会话（在开放平台沙箱或已绑定的群/私聊发一条消息即可建立）";
+      } else if (ch === "private") {
+        $("quotaHint").textContent = "QQ 私域通道暂无已登记会话（登录 QQ 后在群聊或私聊中发一条消息即可建立）";
+      } else {
+        $("quotaHint").textContent = "暂无已登记会话，请先在任一平台与机器人对话建立会话";
+      }
       return;
     }
 
@@ -2414,6 +2511,7 @@ function renderChannelStatus(channels) {
     renderConn();
     renderAiMode();
     renderThinking();
+    updateQuotaChannelCounts();
   }
 
   function connectEvents() {
@@ -2427,6 +2525,7 @@ function renderChannelStatus(channels) {
       state.byKey = new Map(state.conversations.map((c) => [c.key, c]));
       renderConversations();
       renderThinking();
+      updateQuotaChannelCounts();
     });
 
     es.addEventListener("message", (e) => {
@@ -3679,6 +3778,16 @@ function renderChannelStatus(channels) {
        loadQuotaPanel();
      });
      $("quotaSaveBtn").addEventListener("click", saveQuota);
+     const quotaTabsWrap = $("quotaChanTabs");
+     if (quotaTabsWrap) {
+       const quotaTabs = quotaTabsWrap.querySelectorAll(".chan-tab");
+       for (const tab of quotaTabs) {
+         tab.addEventListener("click", () => {
+           state.quota.channel = tab.dataset.quotaChan || "all";
+           loadQuotaPanel();
+         });
+       }
+     }
 
     // 清除密钥：必须先确认（密钥没了机器人就发不出话，不是小事）
     $("clearApiKey").addEventListener("click", () => {
