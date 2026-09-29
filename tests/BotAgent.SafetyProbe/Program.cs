@@ -2087,6 +2087,10 @@ public static partial class Program
         public bool SaveTtsKey(string? key) => Save("ttsKey", key);
         public string? LoadOfficialSecret() => Load("officialAppSecret");
         public bool SaveOfficialSecret(string? secret) => Save("officialAppSecret", secret);
+        public string? LoadFeishuSecret() => Load("feishuAppSecret");
+        public bool SaveFeishuSecret(string? secret) => Save("feishuAppSecret", secret);
+        public string? LoadFeishuEncryptKey() => Load("feishuEncryptKey");
+        public bool SaveFeishuEncryptKey(string? key) => Save("feishuEncryptKey", key);
         public string? Load(string name) => _values.TryGetValue(name, out var value) ? value : null;
         public bool Save(string name, string? value)
         {

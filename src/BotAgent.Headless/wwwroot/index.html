@@ -114,12 +114,12 @@
         <input type="search" id="search" placeholder="搜索会话" autocomplete="off" />
       </div>
 
-      <!-- 两条通道分块：私域（自建 NapCat）与官方（QQ 开放平台）。
-           两侧的会话 key 带各自的通道前缀，这里只是按前缀筛出对应板块，互不混淆。 -->
+      <!-- 多通道分块：私域、官方与飞书平台 -->
       <div class="chan-tabs" id="chanTabs" role="tablist">
         <button type="button" class="chan-tab active" data-chan="all" role="tab">全部</button>
         <button type="button" class="chan-tab" data-chan="private" role="tab">私域</button>
         <button type="button" class="chan-tab" data-chan="official" role="tab" id="chanTabOfficial">官方</button>
+        <button type="button" class="chan-tab" data-chan="feishu" role="tab" id="chanTabFeishu">飞书</button>
       </div>
       <div class="chan-status" id="chanStatus"></div>
 
@@ -1094,6 +1094,51 @@
           </div>
           <div id="platformPolicyRows" class="platform-policy-list"></div>
           <p class="path-hint" id="platformPolicyEmpty">正在读取已注册的平台实例。</p>
+        </div>
+
+        <!-- 飞书通道（Feishu Bot） -->
+        <div class="card" id="feishuCard">
+          <div class="card-head">
+            <h3>飞书通道（企业协作平台）</h3>
+            <p>通过飞书开放平台机器人应用接入：事件订阅走 Webhook（<code>POST /api/webhooks/feishu</code>），回复通过飞书开放平台 REST API 投递。
+              与 QQ 平台<b>通道严格隔离</b>（会话 key 带 <code>feishu:</code> 前缀）。
+              在飞书开放平台「事件与回调」配置请求网址为本服务地址，并订阅 <code>im.message.receive_v1</code> 消息接收事件。</p>
+          </div>
+
+          <label class="switch-row">
+            <input type="checkbox" id="setFeishuEnabled" />
+            <span class="switch"></span>
+            <span>启用飞书通道<span class="hint" id="feishuStateHint">保存后点下方的「一键重启」生效</span></span>
+          </label>
+
+          <p class="path-hint" id="feishuWebhookUrlHint">Webhook 入口地址：<code>/api/webhooks/feishu</code>（支持 URL verification challenge 自动应答、请求签名防伪与 1MB 防护）。</p>
+
+          <div class="grid-2">
+            <div class="field">
+              <label>App ID (cli_xxx)<span class="hint">飞书开放平台应用凭据中的 App ID</span></label>
+              <input type="text" id="setFeishuAppId" maxlength="64" placeholder="cli_xxxxxxxx" />
+            </div>
+            <div class="field">
+              <label>App Secret<span class="hint">存密钥库、回显掩码；<b>留空 = 不改</b>。环境变量优先，改了重启生效</span></label>
+              <input type="password" id="setFeishuAppSecret" maxlength="200" placeholder="还没配，在这里填一个（留空 = 不改）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>Verification Token<span class="hint">飞书开放平台事件订阅的 Verification Token</span></label>
+              <input type="text" id="setFeishuVerificationToken" maxlength="128" placeholder="事件订阅中的 Verification Token" />
+            </div>
+            <div class="field">
+              <label>Encrypt Key (加密策略密钥)<span class="hint">可选；飞书开放平台事件订阅如果开启了加密则必填，留空表示不解密</span></label>
+              <input type="password" id="setFeishuEncryptKey" maxlength="200" placeholder="未开启加密可留空（留空 = 不改）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>白名单 (群 chat_id / 用户 open_id)<span class="hint">多个用英文逗号隔开；留空 = 允许已加入的所有会话</span></label>
+              <input type="text" id="setFeishuWhitelist" maxlength="1000" placeholder="例如 oc_xxx,ou_xxx（留空 = 全部接受）" />
+            </div>
+            <div class="field">
+              <label>API Base URL<span class="hint">默认官方开放平台地址 <code>https://open.feishu.cn</code>（专有云或测试可改）</span></label>
+              <input type="text" id="setFeishuApiBase" maxlength="256" placeholder="https://open.feishu.cn" />
+            </div>
+          </div>
         </div>
 
         <!-- 官方通道（QQ 开放平台） -->

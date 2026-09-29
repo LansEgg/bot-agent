@@ -62,6 +62,15 @@ public sealed class SecretsStore : ISecretsRepository
 
     public bool SaveOfficialSecret(string? secret) => Save("officialAppSecret", secret);
 
+    /// <summary>飞书通道（Feishu Bot API）的 AppSecret 与 EncryptKey。</summary>
+    public string? LoadFeishuSecret() => Load("feishuAppSecret");
+
+    public bool SaveFeishuSecret(string? secret) => Save("feishuAppSecret", secret);
+
+    public string? LoadFeishuEncryptKey() => Load("feishuEncryptKey");
+
+    public bool SaveFeishuEncryptKey(string? key) => Save("feishuEncryptKey", key);
+
     /// <summary>读一条密钥（没有/读失败返回 null）。</summary>
     public string? Load(string name) => Load(name, throwOnError: false);
 

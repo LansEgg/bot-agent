@@ -35,6 +35,15 @@ public interface ISecretsRepository
 
     bool SaveOfficialSecret(string? secret);
 
+    /// <summary>飞书通道（Feishu Bot API）的 AppSecret 与 EncryptKey。</summary>
+    string? LoadFeishuSecret();
+
+    bool SaveFeishuSecret(string? secret);
+
+    string? LoadFeishuEncryptKey();
+
+    bool SaveFeishuEncryptKey(string? key);
+
     /// <summary>读一条密钥（没有 / 读失败 = null）。</summary>
     string? Load(string name);
 
