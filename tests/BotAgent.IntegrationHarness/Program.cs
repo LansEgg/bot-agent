@@ -367,15 +367,18 @@ public static partial class Program
                 "/msg" + System.Text.RegularExpressions.Regex.Matches(r.ToJsonString(), "\\\"role\\\"").Count)));
 
         // 再发一条“同一条带图消息”的后续 → 上下文里再也不会重新把那张图送上去
+        // 注意：只检查聊天主请求（messages 超过 2 条），排除后台表情包描述等独立短请求（那些只有 2 条消息且本来就是识图的）
         var reqsBeforeImg2 = openAi.Requests.Count;
         openAi.EmptyChoicesWhenImages = false;
         openAi.EnqueueReply("""{"suitability": 70, "reply": "接着说"}""");
         await protocol.SendGroupMessageAsync(99999, 20005, "老王", "@机器人 继续", 7009, mentionBot: true, ct: cts.Token);
-        await WaitUntilAsync(() => openAi.Requests.Count > reqsBeforeImg2, TimeSpan.FromSeconds(60));
+        await WaitUntilAsync(() => openAi.Requests.Skip(reqsBeforeImg2).Any(r => (r["messages"]?.AsArray().Count ?? 0) > 2), TimeSpan.FromSeconds(60));
         await Task.Delay(500);
+        var nextChatReqs = openAi.Requests.Skip(reqsBeforeImg2).Where(r => (r["messages"]?.AsArray().Count ?? 0) > 2).ToList();
         Check("★ 被拉黑的图不会反复重送（后续请求里那张图不再出现）",
-            !openAi.Requests.Skip(reqsBeforeImg2).Any(r => r.ToJsonString().Contains("image_url")),
-            $"后续请求 {openAi.Requests.Count - reqsBeforeImg2} 个，带 image_url 的 {openAi.Requests.Skip(reqsBeforeImg2).Count(r => r.ToJsonString().Contains("image_url"))} 个");
+            nextChatReqs.Count > 0 &&
+            !nextChatReqs.Any(r => r.ToJsonString().Contains("image_url", StringComparison.Ordinal)),
+            $"后续聊天请求 {nextChatReqs.Count} 个，带 image_url 的 {nextChatReqs.Count(r => r.ToJsonString().Contains("image_url", StringComparison.Ordinal))} 个");
 
         // ---- 慢上游超时（管理员 11:32 截图：TaskCanceledException 60 秒超时 → 一整轮没了）----
         // 现在：聊天超时改成 120 秒（可调）+ 超时也“退让重试一次（第二次 30 秒封顶）”。
