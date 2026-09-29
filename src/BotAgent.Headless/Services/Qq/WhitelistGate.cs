@@ -89,9 +89,10 @@ public sealed class WhitelistGate
 
         // 本地通道：只有点名才算数（空 = 全拦）。配置里写的是**短 id**（1、2、1001…），
         // 这里换算成内部目标号（+ LocalBase）—— 超出范围的直接丢掉（fail-closed，不让它撞进官方号段）。
-        var localSource = !string.IsNullOrWhiteSpace(locPolicy?.GroupWhitelist)
-            ? locPolicy.GroupWhitelist
-            : (!string.IsNullOrWhiteSpace(locPolicy?.PrivateWhitelist) ? locPolicy.PrivateWhitelist : _settings.LocalChannelIds);
+        var hasLocPolicy = !string.IsNullOrWhiteSpace(locPolicy?.GroupWhitelist) || !string.IsNullOrWhiteSpace(locPolicy?.PrivateWhitelist);
+        var localSource = hasLocPolicy
+            ? $"{locPolicy?.GroupWhitelist},{locPolicy?.PrivateWhitelist}"
+            : _settings.LocalChannelIds;
         var (localIds, _) = WhitelistPolicy.ParseWhitelist(localSource);
         _local = localIds.Select(Channels.LocalTarget).Where(id => id > 0).ToHashSet();
     }
