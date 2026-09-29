@@ -226,23 +226,27 @@ public sealed partial class WebUiServer
                 var norm = Domain.Platforms.PlatformId.Normalize(p.PlatformId);
                 if (norm == Domain.Platforms.PlatformId.QqPrivate)
                 {
-                    if (p.GroupWhitelist is not null && !string.IsNullOrWhiteSpace(p.GroupWhitelist)) s.WhitelistGroups = p.GroupWhitelist;
-                    if (p.PrivateWhitelist is not null && !string.IsNullOrWhiteSpace(p.PrivateWhitelist)) s.WhitelistPrivates = p.PrivateWhitelist;
+                    if (p.GroupWhitelist is not null) s.WhitelistGroups = p.GroupWhitelist;
+                    if (p.PrivateWhitelist is not null) s.WhitelistPrivates = p.PrivateWhitelist;
                 }
                 else if (norm == Domain.Platforms.PlatformId.QqOfficial)
                 {
-                    if (p.GroupWhitelist is not null && !string.IsNullOrWhiteSpace(p.GroupWhitelist)) s.OfficialWhitelistGroups = p.GroupWhitelist;
-                    if (p.PrivateWhitelist is not null && !string.IsNullOrWhiteSpace(p.PrivateWhitelist)) s.OfficialWhitelistPrivates = p.PrivateWhitelist;
+                    if (p.GroupWhitelist is not null) s.OfficialWhitelistGroups = p.GroupWhitelist;
+                    if (p.PrivateWhitelist is not null) s.OfficialWhitelistPrivates = p.PrivateWhitelist;
                 }
                 else if (norm == Domain.Platforms.PlatformId.Feishu)
                 {
-                    var wl = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : p.PrivateWhitelist;
-                    if (!string.IsNullOrWhiteSpace(wl)) s.FeishuWhitelist = wl;
+                    if (p.GroupWhitelist is not null || p.PrivateWhitelist is not null)
+                    {
+                        s.FeishuWhitelist = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : (p.PrivateWhitelist ?? string.Empty);
+                    }
                 }
                 else if (norm == Domain.Platforms.PlatformId.Local)
                 {
-                    var wl = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : p.PrivateWhitelist;
-                    if (!string.IsNullOrWhiteSpace(wl)) s.LocalChannelIds = wl;
+                    if (p.GroupWhitelist is not null || p.PrivateWhitelist is not null)
+                    {
+                        s.LocalChannelIds = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : (p.PrivateWhitelist ?? string.Empty);
+                    }
                 }
             }
         }
