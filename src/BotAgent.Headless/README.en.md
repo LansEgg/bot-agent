@@ -146,13 +146,16 @@ secrets:
 | --- | --- | --- |
 | `QQCHAT_MAX_AGENT_STEPS` | `1` | Upper bound on **the bounded stepping loop on the chat side** (a 1–3 slider in the panel, clamped once more in code). The default of 1 is **byte-for-byte** the previous behaviour; raised, the model can "run read-only tools (web search / page read) on the spot, then ask once more" — still read-only, and voice / stickers / pokes / sharing still go through the unified verdict at the send stage; if a tool yields nothing it does not spin |
 | `QQCHAT_AGENT_SERVER_GATE` | `0` | `1` = **every `//` step also passes through the unified tool gate** (registry + this turn's policy snapshot + category denials). Once on, the verdict matches the old allowlist; off = zero behaviour change. High-risk exceptions can only be named by **tool name** (`ToolPolicy.HighRiskExceptions`; listing `bash` does not incidentally open up `docker`), and the approval branch still does not accept high-risk ones |
-| `QQCHAT_LOCAL_CHANNEL_IDS` | empty | The roster for the **local HTTP channel** (the third `IQqChatSource` implementation). **Empty = the whole channel is not built** (deliberately unlike the official channel's "empty = accept all"); write **short ids** (`1`, `2`, `1001`) and the server maps them to a dedicated **7e15-onward** number range; anything out of range (below 1 or above 1e12) is rejected outright — better a 400 than a collision with the official number range |
+| `QQCHAT_LOCAL_CHANNEL_IDS` | empty | The roster for the **local HTTP channel** (the third `IQqChatSource` implementation). **Empty = the channel is not constructed** (unlike official); write **short IDs** (`1`, `2`, `1001`), mapped to **7e15-onward** internal IDs; can be configured and updated dynamically in the panel's "Platform Instance Policy" |
 
-> ⚠ **Current state of the panel controls (recorded honestly)**: of these three, only *the chat step limit* has a slider in the panel; the other two have **no dedicated switch control** — change them through **environment variables** (passed through by the `docker-compose.yml` above) or the panel save endpoint `POST /api/settings`
-> (`{"agentServerUseGate":true}` / `{"localChannelIds":"1"}`); the current values are visible in the settings echo in the panel.
-> Changing the local channel roster **requires a container restart to take effect** (channels are built from the roster at startup).
-
-> The entry point for the third switch is `POST /api/local/message` (inject a local message; replies land in an in-memory outbox): two **fail-closed** preconditions — an empty roster gives `403 local_channel_disabled`; no panel token configured gives `403 panel_token_required`.
+> 💡 **Platform Instance Policy & Local Channel Panel Operations**:
+> 1. **Centralized governance**: Web panel Settings features the "Platform Instance Policy" table, managing all platforms (QQ Private, QQ Official, Feishu, Local Channel) for master switches, chat toggles, independent group/private whitelists, and capability overrides with atomic synchronization.
+> 2. **Why Local Channel initially has 0 conversations**: Local Channel is a pure in-process / HTTP test channel with no external push connection. Conversations are **dynamically created upon the first injected message**.
+> 3. **How to operate on the panel**:
+>    - **Method 1 (Interactive Playground, Recommended)**: In panel Settings under "Local Channel", click `🧪 Open Interactive Playground (Playground)` (or visit `/playground.html`). Select scenario group, trigger mode (@bot / quote / plain), enter text, and click "Inject Exercise ↵" to see real-time replies and the six-stage governance analysis.
+>    - **Method 2 (Main Dashboard Management)**: Once injected, the conversation immediately appears with a purple `Local` badge in the main conversation list. Click the "Local" filter tab on the left sidebar to view messages, archives, and reply manually.
+>    - **Method 3 (HTTP API)**: Call `POST /api/local/message` with panel token: `{"id": 1, "text": "Hello", "sender": "Tester", "isGroup": true}`. Replies are recorded into the memory outbox (`/api/local`).
+> 4. **Preconditions (Fail-Closed)**: Empty whitelist returns `403 local_channel_disabled`; missing panel token returns `403 panel_token_required`.
 
 > Why QR login from the panel needs a token: the bot fetches the QR code from NapCat WebUI's public endpoints
 > (`/api/auth/login` + `/api/QQLogin/GetQQLoginQrcode`) using the same authentication as NapCat's own frontend,
