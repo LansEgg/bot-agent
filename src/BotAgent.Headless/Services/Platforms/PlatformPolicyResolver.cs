@@ -118,6 +118,7 @@ public sealed class PlatformPolicyResolver
     private static PlatformCapabilities DefaultCapabilities(string platform)
         => platform switch
         {
+            PlatformId.QqPrivate => PlatformCapabilities.QqOneBot,
             PlatformId.QqOfficial => PlatformCapabilities.QqOfficial,
             PlatformId.Local => PlatformCapabilities.Local,
             PlatformId.Feishu => PlatformCapabilities.FeishuTextOnly,

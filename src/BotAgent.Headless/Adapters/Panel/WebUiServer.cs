@@ -255,6 +255,7 @@ public sealed partial class WebUiServer : IDisposable
     private readonly IPlatformRegistry? _platformRegistry;
     private readonly Platforms.Feishu.FeishuBotGateway? _feishuGateway;
     private readonly PlatformPolicyResolver? _platformPolicies;
+    private readonly SemaphoreSlim _feishuWebhookSlots = new(16, 16);
 
     /// <summary>实际监听的前缀（启动失败为 null）。</summary>
     public string? ListeningOn { get; private set; }
@@ -839,6 +840,7 @@ public sealed partial class WebUiServer : IDisposable
             // 忽略
         }
 
+        _feishuWebhookSlots.Dispose();
         _ = _loop;
     }
 

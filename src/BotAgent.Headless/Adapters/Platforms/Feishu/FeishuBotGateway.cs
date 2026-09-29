@@ -36,6 +36,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
     private readonly ConcurrentDictionary<long, string> _toOriginal = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seen = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<FeishuOutboxItem> _outbox = new();
+    private long _lastPruneTicks;
 
     private string _tenantToken = string.Empty;
     private DateTimeOffset _tokenExpires = DateTimeOffset.MinValue;
@@ -640,11 +641,20 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
     private bool TryMarkSeen(string key)
     {
         var now = Clock.UtcNow;
-        foreach (var pair in _seen)
+
+        // 仅当距离上次清理超过 60 秒或字典条目超过容量阈值时才做批次淘汰，避免每次请求 O(N) 线性扫描
+        var last = Interlocked.Read(ref _lastPruneTicks);
+        if (_seen.Count > SeenCapacity || now.Ticks - last > TimeSpan.FromSeconds(60).Ticks)
         {
-            if (now - pair.Value > SeenTtl)
+            if (Interlocked.CompareExchange(ref _lastPruneTicks, now.Ticks, last) == last)
             {
-                _seen.TryRemove(new KeyValuePair<string, DateTimeOffset>(pair.Key, pair.Value));
+                foreach (var pair in _seen)
+                {
+                    if (now - pair.Value > SeenTtl)
+                    {
+                        _seen.TryRemove(new KeyValuePair<string, DateTimeOffset>(pair.Key, pair.Value));
+                    }
+                }
             }
         }
 

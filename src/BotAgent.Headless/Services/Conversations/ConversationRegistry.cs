@@ -76,16 +76,17 @@ public sealed class ConversationRegistry
     }
 
     /// <summary>
-    /// 按入站消息取会话（没有就新建）。
+    /// 按入站消息取会话（没有就新建）。通道未注册或未知时返回 null 并记录告警。
     /// 通道前缀在 <see cref="Channels.Key" /> 里加（官方 = <c>official:group:123</c>；私域保持老格式
     /// <c>group:123</c>）—— 前缀就是隔离：官方那边的 openid 与私域的真实 QQ 号哪怕数字碰上，也是两个会话。
     /// </summary>
-    public BotConversation GetOrCreate(QqChatMessage msg)
+    public BotConversation? GetOrCreate(QqChatMessage msg)
     {
         var channel = Channels.Declared(msg.Channel);
         if (string.IsNullOrEmpty(channel))
         {
-            throw new ArgumentException("Unknown inbound platform channel", nameof(msg));
+            _log($"入站通道未知或未声明，拒绝创建会话（channel={msg.Channel ?? "<null>"}）");
+            return null;
         }
         var key = Channels.Key(channel, msg.IsGroup, msg.IsGroup ? msg.GroupId : msg.UserId);
         _source.RegisterTarget(channel, msg.IsGroup, msg.IsGroup ? msg.GroupId : msg.UserId);

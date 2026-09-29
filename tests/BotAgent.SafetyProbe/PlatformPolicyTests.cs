@@ -58,6 +58,21 @@ public static partial class Program
         Check("★ 非法会话种类不被解析成私域目标",
             BotAgent.Domain.Qq.Channels.Parse("unknown:10001") == (false, 0L)
             && BotAgent.Domain.Qq.Channels.Parse("feishu:unknown:10001") == (false, 0L));
+
+        // GitHub Issue #29: ConversationRegistry.GetOrCreate 对未知平台通道安全返回 null 而不抛出未捕获异常
+        var conversationRegistry = new BotAgent.Services.Conversations.ConversationRegistry(
+            new FakeConversationRepository(),
+            new SettingsBox(settings),
+            new BotAgent.Services.Local.LocalChannelSource(),
+            _ => true,
+            _ => { });
+        var unknownChannelMsg = new BotAgent.Services.OneBot.QqChatMessage(
+            0, true, 20002, 10001,
+            "synthetic", "hello", DateTimeOffset.UtcNow, false,
+            Channel: "unknown.platform");
+        var created = conversationRegistry.GetOrCreate(unknownChannelMsg);
+        Check("ConversationRegistry.GetOrCreate 对未知渠道安全降级返回 null 且不抛未捕获异常",
+            created is null, created is null ? "ok" : "not null");
     }
 
     private sealed class SyntheticPlatformRegistry(PlatformStatusSnapshot snapshot) : IPlatformRegistry
