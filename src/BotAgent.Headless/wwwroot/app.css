@@ -618,15 +618,73 @@ textarea { resize: vertical; line-height: 1.5; }
 .section-nav {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
   padding: 8px 16px;
-  overflow-x: auto;          /* 窄屏（手机上 11 个胶囊放不下）横向滑 */
+  overflow-x: auto;          /* 窄屏（手机上胶囊放不下）横向滑 */
   scrollbar-width: none;
   border-bottom: 1px solid var(--divider);
 }
 .section-nav::-webkit-scrollbar { display: none; }
 .section-nav:empty { display: none; }   /* JS 没跑起来（或还没生成）时不占一行空白 */
+
+/* 窄屏第一排：一级大类切换栏 */
+.section-cat-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.section-cat-bar::-webkit-scrollbar { display: none; }
+
+.section-cat-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--divider);
+  background: var(--subtle-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 90ms ease, color 90ms ease, border-color 90ms ease;
+}
+.section-cat-tab:hover { background: var(--subtle-hover); color: var(--text-primary); }
+.section-cat-tab.active {
+  color: var(--text-primary);
+  font-weight: 600;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--subtle-hover));
+}
+.section-cat-tab.active .badge-count {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 窄屏第二排：当前选中大类下的子设置胶囊 */
+.section-tree {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.section-tree::-webkit-scrollbar { display: none; }
+.section-cat-header { display: none; }
+.section-cat-group { display: none; }
+.section-cat-group.active { display: contents; }
+.section-cat-items {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-tree > .section-link-all { display: none; }
 
 .section-link {
   flex: 0 0 auto;
@@ -636,6 +694,7 @@ textarea { resize: vertical; line-height: 1.5; }
   font-size: 12.5px;
   color: var(--text-secondary);
   white-space: nowrap;
+  cursor: pointer;
   transition: background 90ms ease, color 90ms ease, border-color 90ms ease;
 }
 .section-link:hover { background: var(--subtle-hover); color: var(--text-primary); }
@@ -660,11 +719,11 @@ textarea { resize: vertical; line-height: 1.5; }
 .card[hidden] { display: none; }
 
 /*
- * 宽屏：设置页 = 左侧分节栏 + 右侧内容，**一次只显示一节**。
+ * 宽屏：设置页 = 左侧两级分类折叠树 + 右侧内容，**一次只显示一节**。
  *
  * 为什么不摆多列瀑布：之前把十几张卡片横着铺开，卡片高矮不一、形状各不相同，
  * 扫一眼就是“一块一块”的乱（管理员原话：“这一块一块地排版你不觉得太乱了吗”）。
- * 设置项本来就该一节一节看：左侧把所有小节列出来（一眼看全、点一下就切），
+ * 设置项按一级大类分组折叠：点开大类显示其对应的子设置栏，
  * 右侧只渲染当前那一节 —— 单列、宽度收在 980px（宽屏上一行太长反而难读）。
  * 想看全部也行：侧栏最后一枚“全部显示”把它们按**单列**从头列到尾（方便通读 / Ctrl+F）。
  */
@@ -689,13 +748,92 @@ textarea { resize: vertical; line-height: 1.5; }
     border-right: 1px solid var(--divider);
   }
 
-  .section-link {
-    text-align: left;
-    padding: 7px 10px;
+  .section-cat-bar { display: none; }
+
+  .section-tree {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    overflow: visible;
+  }
+
+  .section-cat-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .section-cat-group.active {
+    display: flex;
+  }
+
+  .section-cat-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 8px;
     border: none;
     border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
     font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: background 90ms ease, color 90ms ease;
+  }
+  .section-cat-header:hover {
+    background: var(--subtle-hover);
+  }
+  .section-cat-group.active > .section-cat-header {
+    color: var(--accent);
+  }
+  .section-cat-arrow {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    transition: transform 140ms ease;
+    display: inline-block;
+    width: 12px;
+    text-align: center;
+  }
+  .section-cat-group.open > .section-cat-header .section-cat-arrow {
+    transform: rotate(90deg);
+    color: var(--text-secondary);
+  }
+  .section-cat-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .section-cat-icon {
+    margin-right: 2px;
+  }
+
+  .section-cat-items {
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding-left: 14px;
+    margin-left: 8px;
+    border-left: 1px solid var(--divider);
+  }
+  .section-cat-group.open > .section-cat-items {
+    display: flex;
+  }
+
+  .section-link {
+    text-align: left;
+    padding: 6px 10px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12.5px;
     position: relative;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .section-link.active { background: var(--subtle-hover); }
   .section-link.active::before {
@@ -706,6 +844,11 @@ textarea { resize: vertical; line-height: 1.5; }
     width: 3px; height: 16px;
     border-radius: 2px;
     background: var(--accent);
+  }
+  .section-tree > .section-link-all {
+    display: block;
+    margin-top: 8px;
+    color: var(--text-tertiary);
   }
   .section-link-all { margin-top: 8px; color: var(--text-tertiary); }
 

@@ -160,6 +160,33 @@ check(
   /card\.hidden\)\s*continue/.test(js)
 );
 
+/* ─────────── 1b2-2) 两级分类导航（5 大类 + 折叠联动） ─────────── */
+
+console.log("\n▶ 静态：设置页两级分类导航架构");
+
+const cardCategoryMatches = Array.from(html.matchAll(/<div class="card[^"]*"[^>]*data-category="([^"]+)"/g));
+check("所有 21 张卡片均声明了 data-category 属性", cardCategoryMatches.length >= 21);
+const declaredCats = new Set(cardCategoryMatches.map((m) => m[1]));
+const expectedCats = ["channel", "model", "chat", "multimedia", "other"];
+check("大类分类命名完整覆盖 5 大类", expectedCats.every((c) => declaredCats.has(c)));
+
+check(
+  "JS：支持大类字典定义与分组聚合",
+  js.includes("CATEGORIES =") && js.includes('"channel"') && js.includes('"multimedia"') && js.includes('"other"')
+);
+check(
+  "JS：包含移动端大类胶囊栏生成与手风琴树生成",
+  js.includes("section-cat-bar") && js.includes("section-cat-header") && js.includes("section-tree")
+);
+check(
+  "CSS：两级分类导航关键样式定义完整",
+  /\.section-cat-bar\s*\{/.test(css) &&
+    /\.section-cat-tab\s*\{/.test(css) &&
+    /\.section-tree\s*\{/.test(css) &&
+    /\.section-cat-header\s*\{/.test(css) &&
+    /\.section-cat-arrow\s*\{/.test(css)
+);
+
 /* ─────────── 1b3) 可读性：不把字堆成一团 ─────────── */
 
 console.log("\n▶ 静态：设置页排版可读性");
