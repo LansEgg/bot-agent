@@ -2,6 +2,7 @@ using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Ports;
 using BotAgent.Domain.Qq;
 using BotAgent.Domain.Ops;
+using BotAgent.Domain.Platforms;
 using BotAgent.Domain.Reply;
 using BotAgent.Domain.Stickers;
 using BotAgent.Services.Agent;
@@ -16,6 +17,7 @@ using BotAgent.Services.Ops;
 using BotAgent.Services.Participation;
 using BotAgent.Services.Permissions;
 using BotAgent.Services.Poke;
+using BotAgent.Services.Platforms;
 using BotAgent.Services.Qq;
 using BotAgent.Services.Resilience;
 using BotAgent.Services.Stickers;
@@ -67,6 +69,7 @@ public sealed partial class ReplyPipeline
     private readonly TurnTraceStore _traces;
     private readonly ProtocolRiskBackoff? _riskBackoff;
     private readonly ITenantQuotaLedger? _quotas;
+    private readonly PlatformPolicyResolver _platformPolicies;
     /// <summary>有限步进循环（批次 E）：默认 1 步 = 与改造前逐字一致。</summary>
     private readonly AgentTurnLoop _turnLoop;
     /// <summary>当场做掉只读工具（批次 E）：判定与冷却与“留给下一轮”那条路完全一致。</summary>
@@ -97,7 +100,8 @@ public sealed partial class ReplyPipeline
         ReplyHooks hooks,
         TurnTraceStore traces,
         ProtocolRiskBackoff? riskBackoff = null,
-        ITenantQuotaLedger? quotas = null)
+        ITenantQuotaLedger? quotas = null,
+        PlatformPolicyResolver? platformPolicies = null)
     {
         _box = box;
         _source = source;
@@ -124,6 +128,7 @@ public sealed partial class ReplyPipeline
         _traces = traces;
         _riskBackoff = riskBackoff;
         _quotas = quotas;
+        _platformPolicies = platformPolicies ?? new PlatformPolicyResolver(box);
         _turnLoop = new AgentTurnLoop(brain, traces);
         _inlineTools = new InlineTurnTools(research, approvals, participation, hooks.Log);
 
@@ -314,6 +319,11 @@ public sealed partial class ReplyPipeline
         msg = pre.Message;
 
         var conversation = _registry.GetOrCreate(msg);
+        if (conversation is null)
+        {
+            _hooks.Log($"入站消息关联会话失败，放弃后续处理（channel={msg.Channel}）");
+            return;
+        }
 
         // 本机 Agent 命令（// 开头）：**不进人设路线** —— 它不是一个“插个嘴”，是一个真任务；
         // 也不该被适合度阈值/群冷却/复读守卫那些限流卡住（它们都是为“聊天”设计的）。handoff-4 §31
@@ -455,14 +465,15 @@ public sealed partial class ReplyPipeline
     /// </summary>
     private InboundHead? HandleInboundControl(QqChatMessage msg)
     {
-        // 对话总开关（按通道）：官方那条在调试/被平台限制时，可以只把它静音，私域照旧。
-        // 面板顶部那个「AI 开关」是**全局**的（两条一起断，且连“人在叫它”也不回）——两者不是一回事。
-        // 本地通道（批次 F）跟**私域**那个总开关（同属“自己的入口”；官方开关是专给开放平台的）。
-        var channelEnabled = Channels.IsOfficial(msg.Channel)
-            ? _settings.OfficialChatEnabled
-            : Channels.IsFeishu(msg.Channel)
-                ? _settings.FeishuEnabled
-                : _settings.PrivateChatEnabled;
+        var channel = msg.Channel;
+        var platformPolicy = _platformPolicies.ResolveForChannel(channel);
+        if (!platformPolicy.Registered || !platformPolicy.Connected)
+        {
+            LogThrottled("unknown-channel:" + channel, $"忽略未注册或未连接的平台通道: {channel}");
+            return null;
+        }
+
+        var channelEnabled = platformPolicy.Enabled && platformPolicy.ChatEnabled;
         if (!channelEnabled)
         {
             var label = Channels.Tag(msg.Channel) + (msg.IsGroup ? " 群 " + msg.GroupId : " 私聊 " + msg.UserId);
@@ -543,8 +554,13 @@ public sealed partial class ReplyPipeline
     /// </summary>
     private IReadOnlyList<MusicShare>? HandleInboundMedia(BotConversation conversation, QqChatMessage msg)
     {
+        var policy = _platformPolicies.ResolveForChannel(msg.Channel);
+        var stickersEnabled = policy.Feature("stickers", _settings.EnableStickers).Enabled;
+        var musicEnabled = policy.Feature("music", _settings.EnableMusic).Enabled;
+        var linksEnabled = policy.Feature("linkpreview", _settings.EnableLinkPreview).Enabled;
+
         // 表情包：群友发的图自动收进库（后台下载，不阻塞接收线程）
-        if (_settings.EnableStickers && _settings.StickerLibraryMax > 0 && msg.IsGroup && msg.ImageUrls is { Count: > 0 })
+        if (stickersEnabled && _settings.StickerLibraryMax > 0 && msg.IsGroup && msg.ImageUrls is { Count: > 0 })
         {
             var urls = msg.ImageUrls.ToList();
             var uid = msg.UserId.ToString();
@@ -555,7 +571,7 @@ public sealed partial class ReplyPipeline
 
         // 听音乐：识别到分享就后台去查歌词 + 下一份低码率音频分析波形。
         // 有歌的时候**先不回复** —— 等分析结果回来再让模型开口，否则它只能对着一个歌名瞎聊。
-        var musicShares = _settings.EnableMusic ? msg.MusicShares : null;
+        var musicShares = musicEnabled ? msg.MusicShares : null;
         if (musicShares is { Count: > 0 })
         {
             _ = Task.Run(() => HandleMusicAsync(conversation, msg.SenderName, musicShares.ToList()));
@@ -563,7 +579,7 @@ public sealed partial class ReplyPipeline
 
         // 链接：群里发的 URL（包括分享卡片里那个）真去打开看一眼，取回标题/摘要。
         // 有音乐分享时跳过 —— 音乐那条路自己会处理链接，不必看两遍。
-        var linkUrls = musicShares is { Count: > 0 } || _links is null || !_settings.EnableLinkPreview
+        var linkUrls = musicShares is { Count: > 0 } || _links is null || !linksEnabled
             ? []
             : LinkExtractor.Extract(msg.Text, Math.Clamp(_settings.LinkPreviewMax, 0, 5));
         if (linkUrls.Count > 0)
@@ -1217,8 +1233,14 @@ public sealed partial class ReplyPipeline
         // 频率门（语音/表情/戳的冷却）仍读实时值：那是限速，不是授权。
         var snapshot = _settings.Snapshot();
         var caps = _approvals.Capabilities;
+        var platformPolicy = _platformPolicies.ResolveForChannel(Channels.ChannelOf(conversation.SourceKey));
+        if (!platformPolicy.Registered || !platformPolicy.Connected || !platformPolicy.Enabled || !platformPolicy.ChatEnabled)
+        {
+            _traces.Node(conversation.SourceKey, TurnNodeKind.Outbound, "blocked", reasonCode: "platform_chat_disabled");
+            return;
+        }
 
-        var turn = await BuildTurnInputsAsync(conversation, snapshot, caps, triggerMessageId, proactive);
+        var turn = await BuildTurnInputsAsync(conversation, snapshot, caps, triggerMessageId, platformPolicy, proactive);
         if (turn is null)
         {
             return;
@@ -1309,7 +1331,7 @@ public sealed partial class ReplyPipeline
             }
         }
 
-        var sticker = await QueueTurnActionsAsync(conversation, turn.Snapshot, turn.Caps, result, directAddress);
+        var sticker = await QueueTurnActionsAsync(conversation, turn.Snapshot, turn.Caps, turn.PlatformPolicy, result, directAddress);
 
         var reply = (result.Reply ?? string.Empty).Trim();
 
@@ -1356,10 +1378,10 @@ public sealed partial class ReplyPipeline
         var (isGroup, targetId) = conversation.Target;
 
         var (voiceSent, voiceFailed) = await TrySendVoiceAsync(
-            conversation, turn.Snapshot, turn.Caps, voiceParts, voiceText, isGroup, targetId, result, directAddress);
+            conversation, turn.Snapshot, turn.Caps, turn.PlatformPolicy, voiceParts, voiceText, isGroup, targetId, result, directAddress);
 
         await SendTurnAsync(
-            conversation, turn.Context, triggerMessageId, turn.Caps, isGroup, targetId, replyTo,
+            conversation, turn.Context, triggerMessageId, turn.Caps, turn.PlatformPolicy, isGroup, targetId, replyTo,
             reply, voiceText, voiceParts, voiceFailed, voiceSent, sticker, pokeTarget, elapsed, result, directAddress);
     }
 
@@ -1459,7 +1481,8 @@ public sealed partial class ReplyPipeline
         AppSettings snapshot,
         Domain.Permissions.ChatCapabilitySet caps,
         long? triggerMessageId,
-        bool proactive)
+        EffectivePlatformPolicy platformPolicy,
+         bool proactive)
     {
         var context = conversation.TakeLast(snapshot.MaxContextMessages);
         if (context.Count == 0)
@@ -1513,7 +1536,7 @@ public sealed partial class ReplyPipeline
         // 先挑后发 —— 库可能有上千张，全塞进提示词既贵又不准。
         // 气氛“沉”（有人低落/在吵架）时不给候选：给了它就容易挑一张发出去，与气氛不搭。
         var stickerChoices = new List<StickerChoice>();
-        if (snapshot.EnableStickers && snapshot.StickerLibraryMax > 0 && snapshot.StickerCandidates > 0 &&
+        if (platformPolicy.Feature("stickers", snapshot.EnableStickers).Enabled && snapshot.StickerLibraryMax > 0 && snapshot.StickerCandidates > 0 &&
             !_vibes.IsSober(conversation.SourceKey))
         {
             var query = string.Join(" ", context.TakeLast(8).Select(m => m.Text));
@@ -1546,7 +1569,7 @@ public sealed partial class ReplyPipeline
                 (stickerChoices.Count > 0 ? $"，表情包候选 {stickerChoices.Count} 张" : string.Empty) + "）");
 
         // 最近被戳过（10 分钟内）才给模型“可以戳回去”的指令，平时不浪费 token
-        var pokeContext = snapshot.EnablePoke &&
+        var pokeContext = platformPolicy.Feature("poke", snapshot.EnablePoke).Enabled &&
             _poke.RecentlyPoked(conversation.SourceKey, TimeSpan.FromMinutes(10), Clock.Now);
 
         // 心情（被戳次数客观 + 模型主观写的）：影响还戳不戳回去、话多话少。
@@ -1572,7 +1595,7 @@ public sealed partial class ReplyPipeline
         var linkText = _linkNotes.TryRemove(conversation.SourceKey, out var pendingLink) ? pendingLink : null;
 
         return new TurnInputs(
-            Started: started, Snapshot: snapshot, Caps: caps, Context: context, Profiles: profiles,
+            Started: started, Snapshot: snapshot, Caps: caps, PlatformPolicy: platformPolicy, Context: context, Profiles: profiles,
             ProfileChars: profileChars, StickerChoices: stickerChoices, RoleCount: roleCount,
             GroupRoles: groupRoles, VibeHint: vibeHint, PreviousVibe: previousVibe, PokeContext: pokeContext,
             MoodText: moodText, MusicText: musicText, RecallText: recallText, SearchText: searchText,
@@ -1652,10 +1675,11 @@ public sealed partial class ReplyPipeline
     /// 每个动作都要过服务端能力闸门（P3：模型输出不构成授权）；返回这一轮真正要发的表情包（可能为 null）。
     /// </summary>
     private async Task<StickerRecord?> QueueTurnActionsAsync(
-        BotConversation conversation,
-        AppSettings snapshot,
-        Domain.Permissions.ChatCapabilitySet caps,
-        CompletionResult result,
+         BotConversation conversation,
+         AppSettings snapshot,
+         Domain.Permissions.ChatCapabilitySet caps,
+         EffectivePlatformPolicy platformPolicy,
+         CompletionResult result,
         bool directAddress)
     {
         if (_riskBackoff?.IsActive(conversation.SourceKey) == true)
@@ -1670,7 +1694,7 @@ public sealed partial class ReplyPipeline
         // 联网搜索（search / read）：后台去查，拿到结果后再给它一次开口的机会。
         // 这两个是“两轮动作”—— 模型这轮照常接话（reply 可以写“我去查查”），下一轮拿着事实说。
         // search 优先于 read：模型一般只会填一个。
-        if (snapshot.EnableWebSearch && _research.IsReady && result.Search is { Length: > 0 } wantedQuery)
+        if (platformPolicy.Feature("websearch", snapshot.EnableWebSearch).Enabled && _research.IsReady && result.Search is { Length: > 0 } wantedQuery)
         {
             // P3：联网是“真出网”，必须过服务端能力闸门（模型输出不构成授权）；策略用本轮快照
             if (_approvals.AllowCapability(conversation, "web.search", wantedQuery, out _, pinned: caps))
@@ -1678,7 +1702,7 @@ public sealed partial class ReplyPipeline
                 QueueWebSearchAsync(conversation, wantedQuery);
             }
         }
-        else if (snapshot.EnableWebSearch && _research.IsReady && result.Read is { Length: > 0 } pageUrl)
+        else if (platformPolicy.Feature("websearch", snapshot.EnableWebSearch).Enabled && _research.IsReady && result.Read is { Length: > 0 } pageUrl)
         {
             if (_approvals.AllowCapability(conversation, "web.read", pageUrl, out _, pinned: caps))
             {
@@ -1690,7 +1714,7 @@ public sealed partial class ReplyPipeline
         // 这是群里说“去听一下 XXX”的唯一入口 —— 不靠正则猜句子，交给模型自己决定。
         // P3（V3 §9.2）：听歌是“真出网”（去外部音乐服务搜歌 + 拉音频），必须过能力闸门 ——
         // 不能因为它是“老入口”就绕过场景白名单与预算。
-        if (snapshot.EnableMusic && result.Listen is { Length: > 0 } wantedSong && _music is not null
+        if (platformPolicy.Feature("music", snapshot.EnableMusic).Enabled && result.Listen is { Length: > 0 } wantedSong && _music is not null
             && _approvals.AllowCapability(conversation, "music.listen", wantedSong, out _, pinned: caps))
         {
             var key = conversation.SourceKey;
@@ -1718,7 +1742,7 @@ public sealed partial class ReplyPipeline
 
         // 模型想把某首歌分享给群里 → 搜到就发一张网易云卡片，顺手“听”一遍（下一轮它就能聊这首歌）。
         // P3（V3 §9.2）：分享歌曲 = 往当前会话发额外消息，必须过同一条闸门（未配场景时行为不变）。
-        if (snapshot.EnableMusic && result.ShareSong is { Length: > 0 } songToShare && _music is not null
+        if (platformPolicy.Feature("music", snapshot.EnableMusic).Enabled && result.ShareSong is { Length: > 0 } songToShare && _music is not null
             && _approvals.AllowCapability(conversation, "music.share", songToShare, out _, pinned: caps))
         {
             var key = conversation.SourceKey;
@@ -1737,7 +1761,7 @@ public sealed partial class ReplyPipeline
             });
         }
 
-        if (snapshot.EnableStickers && result.StickerId is { } sid && !_vibes.IsSober(conversation.SourceKey)
+        if (platformPolicy.Feature("stickers", snapshot.EnableStickers).Enabled && result.StickerId is { } sid && !_vibes.IsSober(conversation.SourceKey)
             && _approvals.AllowCapability(conversation, "sticker.send", null, out _, pinned: caps))
         {
             sticker = _stickers.Store.Find(sid);
@@ -1769,9 +1793,10 @@ public sealed partial class ReplyPipeline
     /// 「该不该发语音」**不由这里判断** —— 那是模型的事（管理员 2026-09-21 明确过）。
     /// </summary>
     private async Task<(bool VoiceSent, List<string> VoiceFailed)> TrySendVoiceAsync(
-        BotConversation conversation,
-        AppSettings snapshot,
-        Domain.Permissions.ChatCapabilitySet caps,
+         BotConversation conversation,
+         AppSettings snapshot,
+         Domain.Permissions.ChatCapabilitySet caps,
+         EffectivePlatformPolicy platformPolicy,
         List<string> voiceParts,
         string voiceText,
         bool isGroup,
@@ -1799,7 +1824,7 @@ public sealed partial class ReplyPipeline
             // 现在只把气氛（vibeHint）递给模型看，由它自己权衡。
             // 代码侧只留“技术性”限制：开关、字数上限（云端/协议端真有上限）、同会话频率下限（防刷屏）。
             var maxChars = Math.Clamp(snapshot.VoiceMaxChars, 10, 300);
-            if (!snapshot.EnableVoice || _voice is null)
+            if (!platformPolicy.Feature("voice", snapshot.EnableVoice).Enabled || _voice is null)
             {
                 voiceSkipWhy = "语音消息开关是关的";
             }
@@ -1879,10 +1904,11 @@ public sealed partial class ReplyPipeline
     /// 拆出来只为了可读性：这里的一行都没改语义 —— 位置、顺序、日志措辞都是原来那句。
     /// </summary>
     private async Task SendTurnAsync(
-        BotConversation conversation,
-        IReadOnlyList<ChatMessage> context,
-        long? triggerMessageId,
-        Domain.Permissions.ChatCapabilitySet caps,
+         BotConversation conversation,
+         IReadOnlyList<ChatMessage> context,
+         long? triggerMessageId,
+         Domain.Permissions.ChatCapabilitySet caps,
+         EffectivePlatformPolicy platformPolicy,
         bool isGroup,
         long targetId,
         long? replyTo,
@@ -1973,8 +1999,9 @@ public sealed partial class ReplyPipeline
             conversation.Messages.FirstOrDefault(m => m.QqMessageId == mentionTrigger)?.MentionedBot == true;
         // 分句发送的**逐段**结果（issue #14）：前几段成功、后面失败时，
         // 只有真正发出去的段落才写进会话历史 —— 不能因为"整条返回 false"就把已发的当成没发。
+        var effectiveReplyTo = platformPolicy.Feature("quote", true).Enabled ? replyTo : null;
         var sendReport = textReply is not null
-            ? await _plain.SendWithCadenceAsync(isGroup, targetId, textReply, replyTo,
+            ? await _plain.SendWithCadenceAsync(isGroup, targetId, textReply, effectiveReplyTo,
                 _riskBackoff?.IsActive(conversation.SourceKey) == true ? sendDirect : directAddress)
             : CadenceSendReport.None;
         var sentText = sendReport.AnySent;
@@ -1996,7 +2023,7 @@ public sealed partial class ReplyPipeline
         }
 
         var pokeSent = pokeTarget is long pokeUserId &&
-            await TrySendPokeAsync(conversation, context, caps, isGroup, targetId, pokeUserId);
+            await TrySendPokeAsync(conversation, context, caps, platformPolicy, isGroup, targetId, pokeUserId);
 
         if (sent || pokeSent)
         {
@@ -2069,13 +2096,21 @@ public sealed partial class ReplyPipeline
 
     /// <summary>戳一戳发送与前置闸门裁决：仅在目标出现于当前上下文且心情/能力闸门放行时发出。</summary>
     private async Task<bool> TrySendPokeAsync(
-        BotConversation conversation,
-        IReadOnlyList<ChatMessage> context,
-        Domain.Permissions.ChatCapabilitySet caps,
+         BotConversation conversation,
+         IReadOnlyList<ChatMessage> context,
+         Domain.Permissions.ChatCapabilitySet caps,
+         EffectivePlatformPolicy platformPolicy,
         bool isGroup,
         long targetId,
         long pokeUserId)
     {
+        var pokeFeature = platformPolicy.Feature("poke", globallyEnabled: true);
+        if (!pokeFeature.Enabled)
+        {
+            _hooks.Log($"这次不戳（平台策略拒绝：{pokeFeature.ReasonCode}）");
+            return false;
+        }
+
         var known = context.Any(m => m.SenderId == pokeUserId) ||
                     _poke.IsRecentPoker(conversation.SourceKey, pokeUserId);
         if (!known)
@@ -2217,55 +2252,6 @@ public sealed partial class ReplyPipeline
         });
     }
     private readonly object _quoteEnrichLock = new();
-    /// <summary>丢掉某会话的待回复项（删会话/改白名单时用）。在途那次不中斷，但不再补发后续。</summary>
-    private void DropPending(string sourceKey)
-    {
-        _pendingReplies.TryRemove(sourceKey, out _);
-        _pendingConversations.TryRemove(sourceKey, out _);
-    }
-
-    // ══════════ 宿主（BotAgentHost）与面板要用的公开入口 ══════════
-
-    /// <summary>面板/宿主读的在途与排队计数。</summary>
-    public int InFlightReplies => _inFlight.Count;
-
-    public int QueuedReplies => _pendingReplies.Values.Sum(q => q.Count);
-
-    public long LastGenerationMilliseconds => Interlocked.Read(ref _lastGenerationMs);
-
-    /// <summary>按 sourceKey 找会话（agent 结果回来时只能用 key）。</summary>
-    public bool TryFind(string sourceKey, out BotConversation conversation)
-    {
-        conversation = _registry.Find(sourceKey)!;
-        return conversation is not null;
-    }
-
-    /// <summary>会话被删 / 移出白名单：把它的**回复侧**痕迹一起清掉（冷却、历史标记、待回复队列）。</summary>
-    public void ForgetSession(string sourceKey)
-    {
-        _replyCooldown.TryRemove(sourceKey, out _);
-        _historyRequested.TryRemove(sourceKey, out _);
-        DropPending(sourceKey);
-    }
-
-    /// <summary>恢复出来的会话：历史按"还没拉过"算（首次收到消息时才去拉群历史）。</summary>
-    public void MarkHistoryPending(string sourceKey) => _historyRequested.TryAdd(sourceKey, 0);
-
-    /// <summary>面板改了并发上限 → 换一个新的闸门（旧的不 Dispose，让在途的那次跑完）。</summary>
-    public void ResizeGate(int permits)
-    {
-        if (permits == _replyGatePermits)
-        {
-            return;
-        }
-
-        _replyGatePermits = permits;
-        var previous = _replyGate;
-        _replyGate = new SemaphoreSlim(permits);
-        RetireGate(previous);
-        _hooks.Log($"模型并发上限已改为 {permits}");
-    }
-
 }
 
 /// <summary>入站最前面那几道闸的产物：标注后的消息 + 是不是纯旁白（null = 这条消息到此为止）。</summary>
@@ -2280,6 +2266,7 @@ public sealed record TurnInputs(
     DateTime Started,
     AppSettings Snapshot,
     Domain.Permissions.ChatCapabilitySet Caps,
+     EffectivePlatformPolicy PlatformPolicy,
     IReadOnlyList<ChatMessage> Context,
     List<string> Profiles,
     int ProfileChars,

@@ -11,7 +11,10 @@ public sealed record PlatformCapabilities(
     bool SupportsRecall = false,
     bool SupportsDirect = true,
     bool SupportsGroup = true,
-    bool SupportsThread = false)
+    bool SupportsThread = false,
+    bool SupportsStickers = false,
+    bool SupportsMusic = false,
+    bool SupportsPoke = false)
 {
     public static PlatformCapabilities QqOneBot { get; } = new(
         SupportsText: true,
@@ -21,7 +24,10 @@ public sealed record PlatformCapabilities(
         SupportsRecall: true,
         SupportsDirect: true,
         SupportsGroup: true,
-        SupportsThread: false);
+        SupportsThread: false,
+        SupportsStickers: true,
+        SupportsMusic: true,
+        SupportsPoke: true);
 
     public static PlatformCapabilities QqOfficial { get; } = new(
         SupportsText: true,

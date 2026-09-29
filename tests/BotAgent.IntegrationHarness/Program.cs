@@ -207,6 +207,8 @@ public static partial class Program
 
         // ② 群友闲聊（未 @）→ 模型选择沉默
         await protocol.SendGroupMessageAsync(99999, 20003, "小李", "我也想问", 7002, ct: cts.Token);
+        await WaitUntilAsync(() => openAi.Requests.Count >= 2, TimeSpan.FromSeconds(10));
+        await Task.Delay(300);
 
         // ③ 再 @ 一条，紧接着别人插话 → 回复应带引用（指明回的是哪条）
         await protocol.SendGroupMessageAsync(99999, 20002, "老王", "就是登录那块", 7003, mentionBot: true, ct: cts.Token);

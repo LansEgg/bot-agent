@@ -542,8 +542,8 @@ The full suite has **729** assertions (measured 2026-09-24: **728 pass / 1 pre-e
 warning line, measuring ~4364 characters; **it is a sentinel, not a target, so don't move the threshold**). Inside the harness, `QQCHAT_IT_ONLY=s19` runs a single scenario.
 
 There are also several **sub-second probes** (no database, no network, each run after changing the corresponding part): `ArchitectureProbe` (architecture ratchet, **92/0**),
-`SafetyProbe` (mechanisms and safety boundaries, **341/0**), `ParticipationProbe` (48/0), `PipelineEval` (isolated evaluation, 68/68),
-`FrontendProbe` (panel static + runtime, **230/0**).
+`SafetyProbe` (mechanisms and multi-platform safety boundaries, **389/0**), `ParticipationProbe` (48/0), `PipelineEval` (isolated evaluation, 68/68),
+`ProductionSpecProbe` (production specs & fallbacks, 59/0), `FrontendProbe` (panel static + runtime, **271/0**). Includes S50 Feishu Webhook (10/0) and S51 Daily Token Quota (8/0) integration verifications.
 
 ---
 

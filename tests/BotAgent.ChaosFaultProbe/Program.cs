@@ -261,6 +261,58 @@ var chatHttp = new SyntheticHttpFetcher();
             Check(recoveredToolCall.Succeeded && recoveredToolCall.Value == "synthetic-recovered-tool"
                 && toolBreaker.Snapshot().State == ToolCircuitState.Closed,
                 "L2 冷却后 half-open 探测成功并恢复 closed", ref passed, ref failed, failures);
+
+            // GitHub Issue #23: 调用方在执行过程中取消应原样抛出，且不污染失败/超时计数，也不锁死 HalfOpen 探测
+            using (var callerCts = new CancellationTokenSource())
+            {
+                var callerCancelled = false;
+                try
+                {
+                    await toolBreaker.RunAsync<string>(async token =>
+                    {
+                        callerCts.Cancel();
+                        token.ThrowIfCancellationRequested();
+                        await Task.CompletedTask;
+                        return "should-cancel";
+                    }, callerCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    callerCancelled = true;
+                }
+                Check(callerCancelled, "L2 工具调用方执行中主动取消时原样抛出 OperationCanceledException", ref passed, ref failed, failures);
+                Check(toolBreaker.Snapshot().State == ToolCircuitState.Closed
+                    && toolBreaker.Snapshot().ConsecutiveTimeouts == 0
+                    && !toolBreaker.Snapshot().ProbeInFlight,
+                    "L2 工具调用方主动取消不污染超时计数与熔断状态", ref passed, ref failed, failures);
+            }
+
+            // 测试 ProviderFailoverRunner 在执行中取消时原样抛出且不污染计数
+            using (var providerCts = new CancellationTokenSource())
+            {
+                var runnerCancelled = false;
+                var testRunner = new ProviderFailoverRunner(
+                    new[] { new ProviderCandidate("p1", 0) },
+                    clock.Now);
+                try
+                {
+                    await testRunner.RunAsync<string>((_, token) =>
+                    {
+                        providerCts.Cancel();
+                        token.ThrowIfCancellationRequested();
+                        return Task.FromResult(ProviderCallResult<string>.Success("ok"));
+                    }, providerCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    runnerCancelled = true;
+                }
+                Check(runnerCancelled, "L1 ProviderFailoverRunner 调用方执行中主动取消时原样抛出", ref passed, ref failed, failures);
+                Check(testRunner.Snapshots()[0].State == ProviderCircuitState.Closed
+                    && testRunner.Snapshots()[0].ConsecutiveHardFailures == 0
+                    && !testRunner.Snapshots()[0].ProbeInFlight,
+                    "L1 ProviderFailoverRunner 调用方主动取消不记录硬错误", ref passed, ref failed, failures);
+            }
             var riskBackoff = new ProtocolRiskBackoff(
                 now: clock.Now,
                 duration: TimeSpan.FromMinutes(30));

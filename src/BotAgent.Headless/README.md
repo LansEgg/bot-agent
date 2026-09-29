@@ -547,8 +547,8 @@ docker logs harness      # 断言结果
 提醒线，实测约 4364 字，**是哨兵不是目标，别去改阈值**）；harness 里 `QQCHAT_IT_ONLY=s19` 可以只跑某个场景。
 
 另有几支**秒级探针**（不连库、不连网，改完对应部分各跑一遍）：`ArchitectureProbe`（架构棘轮，**92/0**）、
-`SafetyProbe`（机制与安全边界，**341/0**）、`ParticipationProbe`（48/0）、`PipelineEval`（隔离评测，68/68）、
-`FrontendProbe`（面板静态 + 运行时，**230/0**）。
+`SafetyProbe`（机制与多平台策略安全边界，**389/0**）、`ParticipationProbe`（48/0）、`PipelineEval`（隔离评测，68/68）、
+`ProductionSpecProbe`（生产契约与降级，59/0）、`FrontendProbe`（面板静态 + 运行时，**271/0**）。包含 S50 飞书 Webhook 接入（10/0）与 S51 每日 Token 配额面板（8/0）集成验证。
 
 ---
 

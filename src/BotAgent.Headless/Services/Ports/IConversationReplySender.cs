@@ -1,3 +1,5 @@
+using BotAgent.Domain.Platforms;
+
 namespace BotAgent.Services.Ports;
 
 /// <summary>
@@ -5,4 +7,12 @@ namespace BotAgent.Services.Ports;
 /// </summary>
 public interface IConversationReplySender : IQqMessageSender
 {
+    /// <summary>支持显式平台上下文的出站分句发送重载，优先使用显式上下文判定策略。</summary>
+    Task<CadenceSendReport> SendWithCadenceAsync(
+        PlatformContext context,
+        bool isGroup,
+        long targetId,
+        string reply,
+        long? replyTo,
+        bool directAddress = false);
 }

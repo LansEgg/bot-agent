@@ -2,10 +2,12 @@ using BotAgent.Domain.Agent;
 using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Qq;
 using BotAgent.Domain.Ports;
+using BotAgent.Domain.Platforms;
 using BotAgent.Services.Conversations;
 using BotAgent.Services.OneBot;
 using BotAgent.Services.Panel;
 using BotAgent.Services.Qq;
+using BotAgent.Services.Platforms;
 using System.Text.Json.Nodes;
 
 namespace BotAgent.Services.Agent;
@@ -35,6 +37,8 @@ public sealed partial class AgentCommandService
     private readonly AgentBridgeServer? _agentBridge;
     private readonly IAgentImageStore _images;
     private readonly AgentHooks _hooks;
+    private readonly IQqActions? _actionGateway;
+    private readonly PlatformPolicyResolver? _platformPolicies;
 
     public AgentCommandService(
         SettingsBox box,
@@ -46,7 +50,9 @@ public sealed partial class AgentCommandService
         ServerAgentRunner serverAgent,
         AgentBridgeServer? agentBridge,
         IAgentImageStore images,
-        AgentHooks hooks)
+        AgentHooks hooks,
+        IQqActions? actionGateway = null,
+        PlatformPolicyResolver? platformPolicies = null)
     {
         _box = box;
         _source = source;
@@ -58,6 +64,8 @@ public sealed partial class AgentCommandService
         _agentBridge = agentBridge;
         _images = images;
         _hooks = hooks;
+        _actionGateway = actionGateway;
+        _platformPolicies = platformPolicies;
 
         // 进度/结果事件只服务这一块，订阅跟着搬过来（以前挂在 BotAgentHost 构造函数里）
         if (_agentBridge is not null)
@@ -73,7 +81,7 @@ public sealed partial class AgentCommandService
     private AppSettings _settings => _box.Current;
 
     /// <summary>协议端（QQ 动作要用它）—— 只有 OneBot 这条路有。</summary>
-    private IQqActions? Gateway => _source as IQqActions;
+    private IQqActions? Gateway => _actionGateway ?? _source as IQqActions;
 
     // ══════════ 本机 Agent（// 命令，handoff-4 §31）══════════
 
@@ -275,7 +283,7 @@ public sealed partial class AgentCommandService
             Prompt = prompt,
             Session = "qqchat-panel",
             // 面板试跑：没有哪个群/哪个人，参数里的 sender/this 用不了（写死 QQ 号仍可用）
-            QqHost = Gateway is null ? null : new SessionQqActionHost(Gateway, true, 0, 0, 0, _hooks.SelfId())
+            QqHost = Gateway is null ? null : new SessionQqActionHost(Gateway, true, 0, 0, 0, _hooks.SelfId(), _platformPolicies, Channels.Private)
         };
 
         if (_serverAgent is null)
@@ -373,7 +381,8 @@ public sealed partial class AgentCommandService
         }
 
         var (isGroup, targetId) = conversation.Target;
-        return new SessionQqActionHost(Gateway, isGroup, targetId, msg.UserId, msg.MessageId, _hooks.SelfId());
+        return new SessionQqActionHost(Gateway, isGroup, targetId, msg.UserId, msg.MessageId, _hooks.SelfId(), _platformPolicies,
+            Channels.ChannelOf(conversation.SourceKey));
     }
 
     /// <summary>服务器内置 agent 正在跑的会话（单会话串行）。</summary>

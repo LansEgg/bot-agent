@@ -1,6 +1,9 @@
 using System.Text.Json.Nodes;
 using BotAgent.Domain.Ports;
+using BotAgent.Domain.Platforms;
+using BotAgent.Domain.Qq;
 using BotAgent.Services.OneBot;
+using BotAgent.Services.Platforms;
 
 namespace BotAgent.Services.Agent;
 
@@ -198,8 +201,11 @@ public sealed class SessionQqActionHost : IQqActionHost, BotAgent.Services.Tools
     private readonly long _senderId;
     private readonly long _messageId;
     private readonly long _selfId;
+    private readonly PlatformPolicyResolver? _platformPolicies;
+    private readonly string? _channel;
 
-    public SessionQqActionHost(IQqActions gateway, bool isGroup, long targetId, long senderId, long messageId, long selfId)
+    public SessionQqActionHost(IQqActions gateway, bool isGroup, long targetId, long senderId, long messageId, long selfId,
+        PlatformPolicyResolver? platformPolicies = null, string? channel = null)
     {
         _gateway = gateway;
         _isGroup = isGroup;
@@ -207,6 +213,8 @@ public sealed class SessionQqActionHost : IQqActionHost, BotAgent.Services.Tools
         _senderId = senderId;
         _messageId = messageId;
         _selfId = selfId;
+        _platformPolicies = platformPolicies;
+        _channel = channel;
 
         var where = isGroup ? $"群 {targetId}" : $"私聊 {targetId}";
         var self = selfId > 0 ? selfId.ToString() : "(未知)";
@@ -251,8 +259,65 @@ public sealed class SessionQqActionHost : IQqActionHost, BotAgent.Services.Tools
         return BotAgent.Domain.Tools.ToolOutcome.Success(text, "qq 动作 " + spec.Name);
     }
 
+    private EffectivePlatformPolicy? ResolveTargetPolicy()
+    {
+        if (_platformPolicies is null)
+        {
+            return null;
+        }
+
+        var channel = _channel;
+        if (channel is null)
+        {
+            channel = Channels.IsFeishuId(_targetId)
+                ? Channels.Feishu
+                : Channels.IsLocalId(_targetId)
+                    ? Channels.Local
+                    : Channels.IsAliasId(_targetId)
+                        ? Channels.Official
+                        : Channels.Private;
+        }
+        return _platformPolicies.ResolveForChannel(channel);
+    }
+
+    private static string? FeatureForAction(string action)
+        => action switch
+        {
+            "poke" => "poke",
+            "recall" => "recall",
+            _ => null,
+        };
     public async Task<string> ExecuteAsync(QqActionSpec spec, JsonObject args, CancellationToken ct)
     {
+        var policy = ResolveTargetPolicy();
+        if (policy is not null)
+        {
+            if (policy.Context.PlatformId != PlatformId.QqPrivate)
+            {
+                return $"❌ 动作 {spec.Name} 被平台策略拒绝（QQ 动作仅支持私域 OneBot 会话）。";
+            }
+
+            if (!policy.Registered || !policy.Connected || !policy.Enabled || !policy.ChatEnabled)
+            {
+                return $"❌ 动作 {spec.Name} 被平台策略拒绝（平台未注册、未连接或聊天未启用）。";
+            }
+
+            var featureName = FeatureForAction(spec.Name);
+            if (featureName is not null)
+            {
+                var feature = policy.Feature(featureName);
+                if (!feature.Enabled)
+                {
+                    return $"❌ 动作 {spec.Name} 被平台能力拒绝（{feature.ReasonCode}）。";
+                }
+            }
+
+            if (policy.ActionAllowlistConfigured && !policy.CanUseAction(spec.Name))
+            {
+                return $"❌ 动作 {spec.Name} 未被当前平台策略授权。";
+            }
+        }
+
         switch (spec.Name)
         {
             case "like":

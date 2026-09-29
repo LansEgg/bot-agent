@@ -1,18 +1,20 @@
 using System.Net;
 using System.Text.Json.Nodes;
+using BotAgent.Services.Platforms;
 
 namespace BotAgent.Adapters.Panel;
 
 public sealed partial class WebUiServer
 {
     private const int MaxFeishuWebhookBodyBytes = 1_048_576;
-    private static readonly SemaphoreSlim FeishuWebhookSlots = new(16, 16);
     private async Task HandlePlatformsAsync(HttpListenerContext context)
     {
         var snapshots = _platformRegistry?.GetSnapshots() ?? Array.Empty<Domain.Ports.PlatformStatusSnapshot>();
         var arr = new JsonArray();
+        var policies = _platformPolicies ?? new PlatformPolicyResolver(_box, _platformRegistry);
         foreach (var s in snapshots)
         {
+            var policy = policies.Resolve(new Domain.Platforms.PlatformContext(s.PlatformId, s.AccountScope));
             arr.Add(new JsonObject
             {
                 ["platformId"] = s.PlatformId,
@@ -20,8 +22,11 @@ public sealed partial class WebUiServer
                 ["displayName"] = s.DisplayName,
                 ["tag"] = s.Tag,
                 ["enabled"] = s.Enabled,
+                ["effectiveEnabled"] = policy.Enabled,
+                ["chatEnabled"] = policy.ChatEnabled,
                 ["connected"] = s.Connected,
                 ["lastErrorCode"] = s.LastErrorCode,
+                ["reasons"] = new JsonArray(policy.Reasons.Select(r => (JsonNode?)JsonValue.Create(r)).ToArray()),
                 ["capabilities"] = new JsonObject
                 {
                     ["supportsText"] = s.Capabilities.SupportsText,
@@ -32,6 +37,9 @@ public sealed partial class WebUiServer
                     ["supportsGroup"] = s.Capabilities.SupportsGroup,
                     ["supportsDirect"] = s.Capabilities.SupportsDirect,
                     ["supportsThread"] = s.Capabilities.SupportsThread,
+                    ["supportsStickers"] = s.Capabilities.SupportsStickers,
+                    ["supportsMusic"] = s.Capabilities.SupportsMusic,
+                    ["supportsPoke"] = s.Capabilities.SupportsPoke,
                 },
             });
         }
@@ -94,7 +102,7 @@ public sealed partial class WebUiServer
             return;
         }
 
-        if (!await FeishuWebhookSlots.WaitAsync(0, _cts.Token).ConfigureAwait(false))
+        if (!await _feishuWebhookSlots.WaitAsync(0, _cts.Token).ConfigureAwait(false))
         {
             await WriteJsonAsync(context, 429, new JsonObject
             {
@@ -135,7 +143,7 @@ public sealed partial class WebUiServer
         }
         finally
         {
-            FeishuWebhookSlots.Release();
+            _feishuWebhookSlots.Release();
         }
     }
 

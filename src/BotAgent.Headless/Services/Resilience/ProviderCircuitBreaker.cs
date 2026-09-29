@@ -125,6 +125,15 @@ public sealed class ProviderCircuitBreaker
         }
     }
 
+    /// <summary>外部取消时释放 half-open 探测锁，不计入失败，不改变状态。</summary>
+    public void ReleaseProbe()
+    {
+        lock (_gate)
+        {
+            _probeInFlight = false;
+        }
+    }
+
     /// <summary>
     /// 从持久化快照恢复状态。正在执行的 half-open 探测不会跨进程恢复，避免把旧进程的在途请求误认为仍然有效。
     /// </summary>
@@ -281,6 +290,11 @@ public sealed class ProviderFailoverRunner
                 lastReason = "provider_timeout";
                 fallbackHops++;
                 continue;
+            }
+            catch (OperationCanceledException)
+            {
+                _breakers[provider.Id].ReleaseProbe();
+                throw;
             }
             catch
             {
