@@ -114,12 +114,13 @@
         <input type="search" id="search" placeholder="搜索会话" autocomplete="off" />
       </div>
 
-      <!-- 多通道分块：私域、官方与飞书平台 -->
+      <!-- 多通道分块：私域、官方、飞书与本地通道 -->
       <div class="chan-tabs" id="chanTabs" role="tablist">
         <button type="button" class="chan-tab active" data-chan="all" role="tab">全部</button>
         <button type="button" class="chan-tab" data-chan="private" role="tab">私域</button>
         <button type="button" class="chan-tab" data-chan="official" role="tab" id="chanTabOfficial">官方</button>
         <button type="button" class="chan-tab" data-chan="feishu" role="tab" id="chanTabFeishu">飞书</button>
+        <button type="button" class="chan-tab" data-chan="local" role="tab" id="chanTabLocal">本地</button>
       </div>
       <div class="chan-status" id="chanStatus"></div>
 
@@ -671,18 +672,14 @@
           </div>
 
           <div class="field">
-            <label>群聊白名单<span class="hint">严格模式：只有名单内的**群**会进入消息列表并触发 AI，名单外全部忽略。<code>*</code> = 所有群（危险）</span></label>
-            <textarea id="setWhitelistGroups" rows="3" placeholder="例如：&#10;10001&#10;20002（留空 = 使用共用名单；共用名单也空 = 忽略全部）"></textarea>
-          </div>
-
-          <div class="field">
-            <label>私聊白名单<span class="hint">只有名单内的**好友**私聊会触发 AI。与群聊名单各管各的：QQ 号填在群里不会放行同号的群，反之亦然。<code>*</code> = 所有私聊（危险）</span></label>
-            <textarea id="setWhitelistPrivates" rows="3" placeholder="例如：&#10;30001（留空 = 使用共用名单；共用名单也空 = 忽略全部）"></textarea>
-          </div>
-
-          <div class="field">
-            <label>共用名单（回退）<span class="hint" id="whitelistLegacyHint">群聊或私聊名单留空时，会使用这份共用名单</span></label>
-            <textarea id="setWhitelist" rows="2" placeholder="留空表示不设置共用名单"></textarea>
+            <label>白名单管理</label>
+            <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：QQ 私域的群聊白名单与私聊白名单已统一收敛至页面下方的「平台实例策略」卡片集中配置，各通道独立治理、互不串台。</p>
+            <div style="display:none" aria-hidden="true">
+              <textarea id="setWhitelistGroups" rows="3" placeholder="例如：&#10;10001&#10;20002（留空 = 使用共用名单；共用名单也空 = 忽略全部）"></textarea>
+              <textarea id="setWhitelistPrivates" rows="3" placeholder="例如：&#10;30001（留空 = 使用共用名单；共用名单也空 = 忽略全部）与群聊名单各管各的"></textarea>
+              <textarea id="setWhitelist" rows="2" placeholder="留空表示不设置共用名单"></textarea>
+              <span id="whitelistLegacyHint">群聊或私聊名单留空时，会使用这份共用名单</span>
+            </div>
           </div>
         </div>
 
@@ -1131,8 +1128,9 @@
               <input type="password" id="setFeishuEncryptKey" maxlength="200" placeholder="未开启加密可留空（留空 = 不改）" autocomplete="off" />
             </div>
             <div class="field">
-              <label>白名单 (群 chat_id / 用户 open_id)<span class="hint">多个用英文逗号隔开；留空 = 允许已加入的所有会话</span></label>
-              <input type="text" id="setFeishuWhitelist" maxlength="1000" placeholder="例如 oc_xxx,ou_xxx（留空 = 全部接受）" />
+              <label>白名单管理</label>
+              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：飞书的群聊白名单（<code>chat_id</code>）与单聊白名单（<code>open_id</code>）已统一在下方的「平台实例策略」卡片中按群和私聊分别管理。</p>
+              <input type="hidden" id="setFeishuWhitelist" />
             </div>
             <div class="field">
               <label>API Base URL<span class="hint">默认官方开放平台地址 <code>https://open.feishu.cn</code>（专有云或测试可改）</span></label>
@@ -1160,7 +1158,7 @@
                那个一关两条都不回（连人在叫它也不回）；这里能只把一条静音。
                （放在「回复节奏」这栏：它本来就是管“回不回、多久回”的） -->
 
-          <p class="path-hint" id="officialConversationList">官方通道见过的会话会列在这里，点一下就能填进下面的白名单。</p>
+          <p class="path-hint" id="officialConversationList">官方通道见过的会话会列在这里，点一下即可查看别名号。</p>
 
           <div class="grid-2">
             <div class="field">
@@ -1176,12 +1174,10 @@
               <label class="switch-row"><input type="checkbox" id="setOfficialSandbox" /><span class="switch"></span><span>用沙箱环境</span></label>
             </div>
             <div class="field">
-              <label>群白名单<span class="hint">写官方通道的<b>别名号</b>（会话列表里能看到）；留空 = 全部接受。千万别写真实群号</span></label>
-              <input type="text" id="setOfficialWhitelistGroups" maxlength="400" placeholder="留空 = 全部接受" />
-            </div>
-            <div class="field">
-              <label>单聊白名单<span class="hint">同样是别名号；留空 = 全部接受</span></label>
-              <input type="text" id="setOfficialWhitelistPrivates" maxlength="400" placeholder="留空 = 全部接受" />
+              <label>白名单管理</label>
+              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：官方通道群聊与单聊白名单（别名号）已统一在下方的「平台实例策略」集中管理，留空默认全部接受。</p>
+              <input type="hidden" id="setOfficialWhitelistGroups" />
+              <input type="hidden" id="setOfficialWhitelistPrivates" />
             </div>
           </div>
 
@@ -1192,6 +1188,26 @@
           <div class="field">
             <button type="button" id="restartBtn" class="btn-secondary">⟳ 一键重启机器人</button>
             <span class="path-hint" id="restartHint">改了 AppID / 环境 / 白名单后点一下：几秒内自己回来（页面会等它）。容器挂了也不怕——重启策略会拉起它。</span>
+          </div>
+        </div>
+
+        <!-- 本地通道（HTTP 管道通道） -->
+        <div class="card" id="localCard">
+          <div class="card-head">
+            <h3>本地通道（HTTP 管道注入）</h3>
+            <p>通过 HTTP 接口 <code>POST /api/local/message</code> 注入会话，与私域、官方和飞书通道<b>严格通道隔离</b>（会话 key 带 <code>local:</code> 前缀，专属 7e15 号段）。
+              回复落在内存出箱中，不碰外部网络。白名单已统一收敛至下方的「平台实例策略」集中管理。</p>
+          </div>
+
+          <label class="switch-row">
+            <span class="chan-badge chan-local" style="margin-right:8px">本地</span>
+            <span>本地通道状态：<span id="localStateHint" class="hint">未启用（在下方「平台实例策略」为本地通道配置允许的短 ID 并重启后生效）</span></span>
+          </label>
+
+          <p class="path-hint">本地通道接口地址：<code>/api/local/message</code>（需携带面板认证令牌 <code>token=...</code> 或 <code>X-Panel-Token</code> 头）。</p>
+          <div class="field">
+            <a href="/playground.html" target="_blank" class="btn-secondary" style="display:inline-block;text-decoration:none;padding:8px 16px;font-size:13px;border-radius:6px">🧪 打开交互演练场 (Playground)</a>
+            <span class="path-hint">演练场提供完整的六步治理节点时间轴可视化与端到端模拟测试。</span>
           </div>
         </div>
 
