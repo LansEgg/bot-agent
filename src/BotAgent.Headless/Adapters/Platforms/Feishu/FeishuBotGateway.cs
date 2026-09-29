@@ -263,7 +263,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         if (string.IsNullOrWhiteSpace(targetRaw)) return (false, 400, "{\"error\":\"missing_target\"}");
 
         // 白名单检查
-        if (!IsAllowed(targetRaw))
+        if (!IsAllowed(isGroup, targetRaw))
         {
             _log?.Invoke($"[飞书] 忽略未在白名单中的消息（目标长度={targetRaw.Length}）");
             return (true, 200, "{\"code\":0,\"msg\":\"not_whitelisted\"}");
@@ -464,11 +464,15 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
     public void RegisterTarget(string channel, bool isGroup, long id) { }
 
-    private bool IsAllowed(string target)
+    private bool IsAllowed(bool isGroup, string target)
     {
-        var wl = _box.Current.FeishuWhitelist;
+        var policy = (_box.Current.PlatformPolicies ?? new List<PlatformPolicySettings>())
+            .FirstOrDefault(p => p is not null && string.Equals(PlatformId.Normalize(p.PlatformId), PlatformId.Feishu, StringComparison.OrdinalIgnoreCase));
+        var policyWl = isGroup ? policy?.GroupWhitelist : policy?.PrivateWhitelist;
+        var wl = !string.IsNullOrWhiteSpace(policyWl) ? policyWl : _box.Current.FeishuWhitelist;
         if (string.IsNullOrWhiteSpace(wl)) return false;
         var tokens = wl.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Contains("*") || tokens.Contains("all", StringComparer.OrdinalIgnoreCase)) return true;
         if (tokens.Contains(target, StringComparer.OrdinalIgnoreCase)) return true;
         var alias = AliasFor(target).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return tokens.Contains(alias, StringComparer.OrdinalIgnoreCase);

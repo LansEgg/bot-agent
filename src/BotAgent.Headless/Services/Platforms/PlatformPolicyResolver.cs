@@ -47,8 +47,8 @@ public sealed class PlatformPolicyResolver
             && string.Equals(s.AccountScope, account, StringComparison.OrdinalIgnoreCase));
         var overrideSettings = FindSettings(settings, platform, account);
         var legacyEnabled = LegacyPlatformEnabled(settings, platform);
-        var enabled = overrideSettings?.Enabled ?? legacyEnabled;
-        var chatEnabled = overrideSettings?.ChatEnabled ?? LegacyChatEnabled(settings, platform);
+        var enabled = (overrideSettings?.Enabled ?? true) && legacyEnabled;
+        var chatEnabled = enabled && (overrideSettings?.ChatEnabled ?? true) && LegacyChatEnabled(settings, platform);
         var capabilities = snapshot?.Capabilities ?? DefaultCapabilities(platform);
         var reasons = new List<string>();
 

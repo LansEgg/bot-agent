@@ -1556,13 +1556,22 @@ function renderChannelStatus(channels) {
       `${read(p, "platformId", "PlatformId")}|${read(p, "accountScope", "AccountScope") || "default"}`,
       p
     ]));
+    const standardPlatformDefaults = {
+      "qq.private|legacy": { displayName: "QQ私域", capabilities: { supportsText: true, supportsImage: true, supportsVoice: true, supportsQuote: true, supportsRecall: true, supportsGroup: true, supportsDirect: true, supportsStickers: true, supportsMusic: true, supportsPoke: true } },
+      "qq.official|legacy": { displayName: "QQ官方", capabilities: { supportsText: true, supportsImage: true, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } },
+      "feishu|default": { displayName: "飞书", capabilities: { supportsText: true, supportsImage: false, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsThread: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } },
+      "local|legacy": { displayName: "本地通道", capabilities: { supportsText: true, supportsImage: false, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } }
+    };
+    for (const key of Object.keys(standardPlatformDefaults)) {
+      if (!policyByKey.has(key)) policyByKey.set(key, null);
+    }
     const snapshotByKey = new Map(snapshots.map((s) => [`${s.platformId}|${s.accountScope}`, s]));
     for (const s of snapshots) {
       const key = `${s.platformId}|${s.accountScope}`;
       if (!policyByKey.has(key)) policyByKey.set(key, null);
     }
     for (const [key, p] of policyByKey) {
-      const snapshot = snapshotByKey.get(key);
+      const snapshot = snapshotByKey.get(key) || standardPlatformDefaults[key];
       const [platformId, accountScope] = key.split("|");
       const existing = p || {};
       const featureOverrides = read(existing, "featureOverrides", "FeatureOverrides") || {};
@@ -1587,16 +1596,16 @@ function renderChannelStatus(channels) {
 
       const switches = document.createElement("div");
       switches.className = "platform-policy-switches";
-      for (const [keyName, labelText, fallback] of [
-        ["enabled", "启用平台", snapshot?.effectiveEnabled ?? snapshot?.enabled ?? false],
-        ["chatEnabled", "启用聊天", snapshot?.chatEnabled ?? true]
+      for (const [keyName, labelText] of [
+        ["enabled", "启用平台"],
+        ["chatEnabled", "启用聊天"]
       ]) {
         const label = document.createElement("label");
         const input = document.createElement("input");
         input.type = "checkbox";
         input.dataset.policy = keyName;
         const configured = read(existing, keyName, keyName === "enabled" ? "Enabled" : "ChatEnabled");
-        input.checked = configured == null ? !!fallback : configured === true;
+        input.checked = configured == null ? true : configured === true;
         label.append(input, document.createTextNode(labelText));
         switches.append(label);
       }
@@ -1623,22 +1632,15 @@ function renderChannelStatus(channels) {
 
       const features = document.createElement("div");
       features.className = "platform-policy-features";
-      const globalFeatureDefaults = {
-        voice: runtime.enableVoice === true,
-        music: runtime.enableMusic === true,
-        stickers: runtime.enableStickers === true,
-        poke: runtime.enablePoke === true,
-        linkpreview: runtime.enableLinkPreview === true,
-        websearch: runtime.enableWebSearch === true
-      };
       for (const [feature, labelText] of Object.entries({ voice: "语音", music: "音乐", stickers: "表情包", poke: "戳一戳", linkpreview: "链接预览", websearch: "联网搜索" })) {
         const label = document.createElement("label");
         const input = document.createElement("input");
         input.type = "checkbox";
         input.dataset.feature = feature;
+        const capName = ["linkpreview", "websearch"].includes(feature) ? "supportsText" : `supports${feature[0].toUpperCase()}${feature.slice(1)}`;
+        const capSupported = snapshot?.capabilities ? snapshot.capabilities[capName] === true : true;
         const configured = featureOverrides[feature] ?? featureOverrides[feature.toLowerCase()];
-        input.checked = configured == null ? globalFeatureDefaults[feature] : configured === true;
-        const capName = `supports${feature[0].toUpperCase()}${feature.slice(1)}`;
+        input.checked = configured == null ? capSupported : configured === true;
         if (snapshot?.capabilities && ["voice", "music", "stickers", "poke"].includes(feature)) {
           input.disabled = snapshot.capabilities[capName] !== true;
         }

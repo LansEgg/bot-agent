@@ -63,7 +63,8 @@ public static class AppDatabase
             {
                 DataSource = FilePath,
                 Mode = SqliteOpenMode.ReadWriteCreate,
-                Pooling = true
+                Pooling = true,
+                DefaultTimeout = 30
             }.ToString();
 
             using (var conn = Open())
@@ -81,7 +82,7 @@ public static class AppDatabase
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
-        Exec(conn, "PRAGMA busy_timeout=5000;");   // 并发写：等一会儿而不是立刻抛 SQLITE_BUSY
+        Exec(conn, "PRAGMA busy_timeout=30000;");   // 并发写：等一会儿而不是立刻抛 SQLITE_BUSY
         Exec(conn, "PRAGMA foreign_keys=ON;");
         return conn;
     }

@@ -86,9 +86,8 @@ public sealed record EffectivePlatformPolicy(
             return new PlatformFeatureDecision(normalized, true, false, "platform_chat_disabled");
         }
 
-        var featureEnabled = FeatureOverrides is not null && FeatureOverrides.TryGetValue(normalized, out var featureOverride)
-            ? featureOverride
-            : globallyEnabled;
+        var allowedByPolicy = FeatureOverrides is null || !FeatureOverrides.TryGetValue(normalized, out var featureOverride) || featureOverride;
+        var featureEnabled = globallyEnabled && allowedByPolicy;
         return featureEnabled
             ? new PlatformFeatureDecision(normalized, true, true, "enabled")
             : new PlatformFeatureDecision(normalized, true, false, "feature_disabled");

@@ -73,6 +73,71 @@ public static partial class Program
         var created = conversationRegistry.GetOrCreate(unknownChannelMsg);
         Check("ConversationRegistry.GetOrCreate 对未知渠道安全降级返回 null 且不抛未捕获异常",
             created is null, created is null ? "ok" : "not null");
+
+        // ── 测试各平台实例策略中的白名单覆盖机制 ──
+        var policySettings = new AppSettings
+        {
+            MessageWhitelist = "10001",
+            OfficialEnabled = true,
+            OfficialWhitelistGroups = "8000000000000001",
+            LocalChannelIds = "1",
+            PlatformPolicies =
+            [
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.QqPrivate,
+                    AccountScope = AccountScope.Legacy,
+                    GroupWhitelist = "10002",
+                    PrivateWhitelist = "20003",
+                },
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.QqOfficial,
+                    AccountScope = AccountScope.Legacy,
+                    GroupWhitelist = "8000000000000002",
+                    PrivateWhitelist = "8000000000000003",
+                },
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.Local,
+                    AccountScope = AccountScope.Legacy,
+                    GroupWhitelist = "2",
+                    PrivateWhitelist = "3",
+                },
+            ],
+        };
+        var policyBox = new SettingsBox(policySettings);
+        var policyResolver = new PlatformPolicyResolver(policyBox);
+        var policyGate = new BotAgent.Services.Qq.WhitelistGate(policyBox, policyResolver);
+
+        Check("★ QQ私域实例策略白名单优先覆盖全局设置（群 10002 放行，10001 拦截）",
+            policyGate.AllowsSource(isGroup: true, id: 10002) && !policyGate.AllowsSource(isGroup: true, id: 10001));
+        Check("★ QQ官方实例策略白名单优先覆盖（群 8000000000000002 放行，8000000000000001 拦截）",
+            policyGate.AllowsKey("official:group:8000000000000002") && !policyGate.AllowsKey("official:group:8000000000000001"));
+        Check("★ 本地通道实例策略白名单优先覆盖（本地 id=2 与 id=3 放行，id=1 拦截）",
+            policyGate.AllowsKey(BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.Local, true, BotAgent.Domain.Qq.Channels.LocalTarget(2)))
+            && policyGate.AllowsKey(BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.Local, false, BotAgent.Domain.Qq.Channels.LocalTarget(3)))
+            && !policyGate.AllowsKey(BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.Local, true, BotAgent.Domain.Qq.Channels.LocalTarget(1))));
+
+        // 校验全局通道关闭时不被实例策略 Enabled=true 穿透（Fail-Closed 原则）
+        var disabledOfficialSettings = new AppSettings
+        {
+            OfficialEnabled = false,
+            PlatformPolicies =
+            [
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.QqOfficial,
+                    AccountScope = AccountScope.Legacy,
+                    Enabled = true,
+                    ChatEnabled = true,
+                },
+            ],
+        };
+        var disabledOfficialResolver = new PlatformPolicyResolver(new SettingsBox(disabledOfficialSettings));
+        var disabledOfficialPolicy = disabledOfficialResolver.ResolveForChannel("official");
+        Check("★ 全局通道关闭时实例策略 Enabled=true 不会穿透越权（保持 disabled）",
+            !disabledOfficialPolicy.Enabled && !disabledOfficialPolicy.ChatEnabled);
     }
 
     private sealed class SyntheticPlatformRegistry(PlatformStatusSnapshot snapshot) : IPlatformRegistry

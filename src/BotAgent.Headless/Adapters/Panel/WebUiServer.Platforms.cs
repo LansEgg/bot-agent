@@ -7,12 +7,55 @@ namespace BotAgent.Adapters.Panel;
 public sealed partial class WebUiServer
 {
     private const int MaxFeishuWebhookBodyBytes = 1_048_576;
+    private static readonly (string PlatformId, string AccountScope, string DisplayName, string Tag, Domain.Platforms.PlatformCapabilities Capabilities)[] StandardPlatforms =
+    [
+        (Domain.Platforms.PlatformId.QqPrivate, Domain.Platforms.AccountScope.Legacy, "QQ私域", "私域", Domain.Platforms.PlatformCapabilities.QqOneBot),
+        (Domain.Platforms.PlatformId.QqOfficial, Domain.Platforms.AccountScope.Legacy, "QQ官方", "官方", Domain.Platforms.PlatformCapabilities.QqOfficial),
+        (Domain.Platforms.PlatformId.Feishu, Domain.Platforms.AccountScope.Default, "飞书", "飞书", Domain.Platforms.PlatformCapabilities.FeishuTextOnly),
+        (Domain.Platforms.PlatformId.Local, Domain.Platforms.AccountScope.Legacy, "本地通道", "本地", Domain.Platforms.PlatformCapabilities.Local),
+    ];
+
     private async Task HandlePlatformsAsync(HttpListenerContext context)
     {
-        var snapshots = _platformRegistry?.GetSnapshots() ?? Array.Empty<Domain.Ports.PlatformStatusSnapshot>();
-        var arr = new JsonArray();
+        var rawSnapshots = _platformRegistry?.GetSnapshots() ?? Array.Empty<Domain.Ports.PlatformStatusSnapshot>();
         var policies = _platformPolicies ?? new PlatformPolicyResolver(_box, _platformRegistry);
-        foreach (var s in snapshots)
+        var snapshotMap = new Dictionary<(string PlatformId, string AccountScope), Domain.Ports.PlatformStatusSnapshot>();
+        foreach (var s in rawSnapshots)
+        {
+            snapshotMap[(Domain.Platforms.PlatformId.Normalize(s.PlatformId), s.AccountScope)] = s;
+        }
+
+        var allSnapshots = new List<Domain.Ports.PlatformStatusSnapshot>();
+        foreach (var std in StandardPlatforms)
+        {
+            var key = (Domain.Platforms.PlatformId.Normalize(std.PlatformId), std.AccountScope);
+            if (snapshotMap.TryGetValue(key, out var live))
+            {
+                allSnapshots.Add(live);
+                snapshotMap.Remove(key);
+            }
+            else
+            {
+                var policy = policies.Resolve(new Domain.Platforms.PlatformContext(std.PlatformId, std.AccountScope));
+                allSnapshots.Add(new Domain.Ports.PlatformStatusSnapshot(
+                    PlatformId: std.PlatformId,
+                    AccountScope: std.AccountScope,
+                    DisplayName: std.DisplayName,
+                    Tag: std.Tag,
+                    Enabled: policy.Enabled,
+                    Connected: false,
+                    Capabilities: std.Capabilities,
+                    LastErrorCode: null));
+            }
+        }
+
+        foreach (var remaining in snapshotMap.Values)
+        {
+            allSnapshots.Add(remaining);
+        }
+
+        var arr = new JsonArray();
+        foreach (var s in allSnapshots)
         {
             var policy = policies.Resolve(new Domain.Platforms.PlatformContext(s.PlatformId, s.AccountScope));
             arr.Add(new JsonObject
