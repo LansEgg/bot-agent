@@ -7,7 +7,6 @@ namespace BotAgent.Adapters.Panel;
 public sealed partial class WebUiServer
 {
     private const int MaxFeishuWebhookBodyBytes = 1_048_576;
-    private static readonly SemaphoreSlim FeishuWebhookSlots = new(16, 16);
     private async Task HandlePlatformsAsync(HttpListenerContext context)
     {
         var snapshots = _platformRegistry?.GetSnapshots() ?? Array.Empty<Domain.Ports.PlatformStatusSnapshot>();
@@ -103,7 +102,7 @@ public sealed partial class WebUiServer
             return;
         }
 
-        if (!await FeishuWebhookSlots.WaitAsync(0, _cts.Token).ConfigureAwait(false))
+        if (!await _feishuWebhookSlots.WaitAsync(0, _cts.Token).ConfigureAwait(false))
         {
             await WriteJsonAsync(context, 429, new JsonObject
             {
@@ -144,7 +143,7 @@ public sealed partial class WebUiServer
         }
         finally
         {
-            FeishuWebhookSlots.Release();
+            _feishuWebhookSlots.Release();
         }
     }
 

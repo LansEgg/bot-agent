@@ -68,9 +68,23 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
     /// 只有第一句带 QQ 的"回复"引用，后续分句不带。
     /// 返回逐段报告（issue #14）：调用方只把**真的发出去**的段落写进会话历史。
     /// </summary>
-    public async Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
+    public Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
+        => SendWithCadenceAsync(null, isGroup, targetId, reply, replyTo, directAddress);
+
+    /// <summary>
+    /// 支持显式 PlatformContext 的重载：优先使用显式上下文，未提供时回退到 targetId 号段推断。
+    /// </summary>
+    public async Task<CadenceSendReport> SendWithCadenceAsync(
+        PlatformContext? context,
+        bool isGroup,
+        long targetId,
+        string reply,
+        long? replyTo,
+        bool directAddress = false)
     {
-        var policy = ResolveTargetPolicy(isGroup, targetId);
+        var policy = context is not null && _platformPolicies is not null
+            ? _platformPolicies.Resolve(context)
+            : ResolveTargetPolicy(isGroup, targetId);
         var textDecision = policy?.Feature("text", globallyEnabled: true);
         if (textDecision is { Enabled: false })
         {
@@ -183,7 +197,11 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         }
 
         var (isGroup, targetId) = conversation.Target;
-        var textDecision = ResolveTargetPolicy(isGroup, targetId)?.Feature("text", globallyEnabled: true);
+        var channel = Channels.ChannelOf(conversation.SourceKey);
+        var policy = !string.IsNullOrEmpty(channel) && _platformPolicies is not null
+            ? _platformPolicies.ResolveForChannel(channel)
+            : ResolveTargetPolicy(isGroup, targetId);
+        var textDecision = policy?.Feature("text", globallyEnabled: true);
         if (textDecision is { Enabled: false })
         {
             _log($"agent 文本出站被平台策略拒绝（{textDecision.ReasonCode}）");
@@ -263,7 +281,9 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         {
             var isGroup = msg.IsGroup;
             var targetId = isGroup ? msg.GroupId : msg.UserId;
-            var ok = (await SendWithCadenceAsync(isGroup, targetId, text, msg.MessageId, directAddress: msg.MentionedSelf)).AnySent;
+            var channel = Channels.Declared(msg.Channel);
+            var context = !string.IsNullOrEmpty(channel) ? new PlatformContext(channel, AccountScope.Default) : null;
+            var ok = (await SendWithCadenceAsync(context, isGroup, targetId, text, msg.MessageId, directAddress: msg.MentionedSelf)).AnySent;
             if (!ok)
             {
                 _log("[审批] 回执没发出去（协议端拒绝或超时）");

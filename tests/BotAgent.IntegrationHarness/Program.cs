@@ -207,6 +207,8 @@ public static partial class Program
 
         // ② 群友闲聊（未 @）→ 模型选择沉默
         await protocol.SendGroupMessageAsync(99999, 20003, "小李", "我也想问", 7002, ct: cts.Token);
+        await WaitUntilAsync(() => openAi.Requests.Count >= 2, TimeSpan.FromSeconds(10));
+        await Task.Delay(300);
 
         // ③ 再 @ 一条，紧接着别人插话 → 回复应带引用（指明回的是哪条）
         await protocol.SendGroupMessageAsync(99999, 20002, "老王", "就是登录那块", 7003, mentionBot: true, ct: cts.Token);
@@ -325,7 +327,7 @@ public static partial class Program
             protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "send_group_msg") == sendsBeforeDoubleEmpty,
             string.Join(" | ", protocol.ActionsReceived.Skip(sendsBeforeDoubleEmpty).Select(MessageText)));
 
-        // ---- 上游只对“带图”的请求回零候选（实测：上游网关 后端对某些图直接回 200 + 零候选，
+        // ---- 上游只对“带图”的请求回零候选（实测：Antigravity 后端对某些图直接回 200 + 零候选，
         //      同一 payload 重发多少次都空：22:42~22:46 同一尺寸两发两空，同时段别的会话正常）----
         // 期望：两轮空后去掉图片再试一次 → 拿到回复（本轮据文字回），
         //      并把嫌疑图片的消息 id 拉黑，后续上下文不再送它的图。

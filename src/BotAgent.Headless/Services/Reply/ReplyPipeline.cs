@@ -319,6 +319,11 @@ public sealed partial class ReplyPipeline
         msg = pre.Message;
 
         var conversation = _registry.GetOrCreate(msg);
+        if (conversation is null)
+        {
+            _hooks.Log($"入站消息关联会话失败，放弃后续处理（channel={msg.Channel}）");
+            return;
+        }
 
         // 本机 Agent 命令（// 开头）：**不进人设路线** —— 它不是一个“插个嘴”，是一个真任务；
         // 也不该被适合度阈值/群冷却/复读守卫那些限流卡住（它们都是为“聊天”设计的）。handoff-4 §31

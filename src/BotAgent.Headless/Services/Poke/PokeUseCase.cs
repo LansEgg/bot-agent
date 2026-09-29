@@ -86,6 +86,10 @@ public sealed class PokeUseCase
 
         var conversation = _hooks.GetOrCreateConversation(new QqChatMessage(
             0, poke.IsGroup, poke.UserId, poke.GroupId, string.Empty, string.Empty, poke.Time, false));
+        if (conversation is null)
+        {
+            return;
+        }
 
         // 名字尽量从历史里找（notice 事件本身不带昵称/群名片）
         var pokerName = DisplayNames.Of(conversation, poke.UserId, _hooks.SelfId());
@@ -188,7 +192,7 @@ public sealed class PokeUseCase
 public readonly record struct PokeHooks(
     Func<long> SelfId,
     Func<bool, long, bool> IsSourceAllowed,
-    Func<QqChatMessage, BotConversation> GetOrCreateConversation,
+    Func<QqChatMessage, BotConversation?> GetOrCreateConversation,
     Action<BotConversation, ChatMessage> RecordInbound,
     Action<string, string> LogThrottled,
     Action<string> Log,
