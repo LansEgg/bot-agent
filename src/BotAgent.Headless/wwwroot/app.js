@@ -1556,13 +1556,22 @@ function renderChannelStatus(channels) {
       `${read(p, "platformId", "PlatformId")}|${read(p, "accountScope", "AccountScope") || "default"}`,
       p
     ]));
+    const standardPlatformDefaults = {
+      "qq.private|legacy": { displayName: "QQ私域", capabilities: { supportsText: true, supportsImage: true, supportsVoice: true, supportsQuote: true, supportsRecall: true, supportsGroup: true, supportsDirect: true, supportsStickers: true, supportsMusic: true, supportsPoke: true } },
+      "qq.official|legacy": { displayName: "QQ官方", capabilities: { supportsText: true, supportsImage: true, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } },
+      "feishu|default": { displayName: "飞书", capabilities: { supportsText: true, supportsImage: false, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsThread: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } },
+      "local|legacy": { displayName: "本地通道", capabilities: { supportsText: true, supportsImage: false, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } }
+    };
+    for (const key of Object.keys(standardPlatformDefaults)) {
+      if (!policyByKey.has(key)) policyByKey.set(key, null);
+    }
     const snapshotByKey = new Map(snapshots.map((s) => [`${s.platformId}|${s.accountScope}`, s]));
     for (const s of snapshots) {
       const key = `${s.platformId}|${s.accountScope}`;
       if (!policyByKey.has(key)) policyByKey.set(key, null);
     }
     for (const [key, p] of policyByKey) {
-      const snapshot = snapshotByKey.get(key);
+      const snapshot = snapshotByKey.get(key) || standardPlatformDefaults[key];
       const [platformId, accountScope] = key.split("|");
       const existing = p || {};
       const featureOverrides = read(existing, "featureOverrides", "FeatureOverrides") || {};

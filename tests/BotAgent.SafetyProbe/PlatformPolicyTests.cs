@@ -73,6 +73,48 @@ public static partial class Program
         var created = conversationRegistry.GetOrCreate(unknownChannelMsg);
         Check("ConversationRegistry.GetOrCreate 对未知渠道安全降级返回 null 且不抛未捕获异常",
             created is null, created is null ? "ok" : "not null");
+
+        // ── 测试各平台实例策略中的白名单覆盖机制 ──
+        var policySettings = new AppSettings
+        {
+            MessageWhitelist = "10001",
+            OfficialEnabled = true,
+            OfficialWhitelistGroups = "8000000000000001",
+            LocalChannelIds = "1",
+            PlatformPolicies =
+            [
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.QqPrivate,
+                    AccountScope = AccountScope.Legacy,
+                    GroupWhitelist = "10002",
+                    PrivateWhitelist = "20003",
+                },
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.QqOfficial,
+                    AccountScope = AccountScope.Legacy,
+                    GroupWhitelist = "8000000000000002",
+                    PrivateWhitelist = "8000000000000003",
+                },
+                new PlatformPolicySettings
+                {
+                    PlatformId = PlatformId.Local,
+                    AccountScope = AccountScope.Legacy,
+                    GroupWhitelist = "2",
+                },
+            ],
+        };
+        var policyBox = new SettingsBox(policySettings);
+        var policyGate = new BotAgent.Services.Qq.WhitelistGate(policyBox, new PlatformPolicyResolver(policyBox));
+
+        Check("★ QQ私域实例策略白名单优先覆盖全局设置（群 10002 放行，10001 拦截）",
+            policyGate.AllowsSource(isGroup: true, id: 10002) && !policyGate.AllowsSource(isGroup: true, id: 10001));
+        Check("★ QQ官方实例策略白名单优先覆盖（群 8000000000000002 放行，8000000000000001 拦截）",
+            policyGate.AllowsKey("official:group:8000000000000002") && !policyGate.AllowsKey("official:group:8000000000000001"));
+        Check("★ 本地通道实例策略白名单优先覆盖（本地 id=2 放行，id=1 拦截）",
+            policyGate.AllowsKey(BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.Local, true, BotAgent.Domain.Qq.Channels.LocalTarget(2)))
+            && !policyGate.AllowsKey(BotAgent.Domain.Qq.Channels.Key(BotAgent.Domain.Qq.Channels.Local, true, BotAgent.Domain.Qq.Channels.LocalTarget(1))));
     }
 
     private sealed class SyntheticPlatformRegistry(PlatformStatusSnapshot snapshot) : IPlatformRegistry
