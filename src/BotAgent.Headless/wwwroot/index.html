@@ -422,7 +422,7 @@
           密钥与通道地址由容器环境变量提供（下方只读）；<b>人设、白名单、节奏等归本页管理</b>，保存后按对应设置生效。
         </p>
 
-        <div class="card password-settings" id="panelPasswordSettings">
+        <div class="card password-settings" id="panelPasswordSettings" data-category="other">
           <div class="card-head">
             <h3>面板访问安全</h3>
             <p>修改用于登录工作台的密码。修改后其他已登录设备需要重新验证。</p>
@@ -437,7 +437,7 @@
         </div>
 
         <!-- 模型工作区：沿用现有设置接口，按运行上下文切换，不引入新的供应商存储协议。 -->
-        <div class="card model-studio-card" id="modelSettingsCard">
+        <div class="card model-studio-card" id="modelSettingsCard" data-category="model">
           <div class="card-head">
             <h3>模型</h3>
             <p>按运行上下文管理模型。供应商名称由 Base URL 自动识别，密钥由服务端安全保存，界面只显示掩码。</p>
@@ -642,7 +642,7 @@
         </div>
 
         <!-- QQ 接入 -->
-        <div class="card">
+        <div class="card" id="napcatCard" data-category="channel">
           <div class="card-head">
             <h3>QQ 接入 · OneBot v11</h3>
             <p>连接信息由容器环境变量提供；白名单归本页所有，保存即生效。</p>
@@ -684,7 +684,7 @@
         </div>
 
         <!-- 面板一键部署（管理员 2026-09-18：“面板有没有提供一键部署”） -->
-        <div class="card" id="deployCard">
+        <div class="card" id="deployCard" data-category="other">
           <div class="card-head">
             <h3>一键部署</h3>
             <p>把新的 <code>app.tar.gz</code>（发布产物）交给服务器重建镜像并替换机器人容器；
@@ -709,7 +709,7 @@
         </div>
 
         <!-- 每日 Token 配额 -->
-        <div class="card" id="quotaCard">
+        <div class="card" id="quotaCard" data-category="model">
           <div class="card-head">
             <h3>每日 Token 配额</h3>
             <p>按平台与会话来源隔离的 UTC 日预算；只控制每日总量，单次回复上限仍由模型设置里的 <code>maxTokens</code> 控制。</p>
@@ -753,7 +753,7 @@
         </div>
 
         <!-- 回复节奏 -->
-        <div class="card">
+        <div class="card" id="replyRhythmCard" data-category="chat">
           <div class="card-head">
             <h3>回复节奏</h3>
             <p>防止刷屏、控制发言手感。</p>
@@ -876,7 +876,7 @@
         </div>
 
         <!-- 表情包 -->
-        <div class="card">
+        <div class="card" id="stickerSettingsCard" data-category="chat">
           <div class="card-head">
             <h3>表情包</h3>
             <p>机器人会自动把群友发的图收进表情包库，按下文语境挑图发出来；也会自己巡检并决定删哪些。
@@ -917,7 +917,7 @@
         </div>
 
         <!-- 听音乐 -->
-        <div class="card">
+        <div class="card" id="musicCard" data-category="multimedia">
           <div class="card-head">
             <h3>听音乐</h3>
             <p>有人在群里分享歌（网易云歌曲卡片/链接）时，机器人会去查歌名与歌词、下一份<b>低码率</b>音频，
@@ -990,7 +990,7 @@
         </div>
 
         <!-- 语音消息 -->
-        <div class="card">
+        <div class="card" id="voiceCard" data-category="multimedia">
           <div class="card-head">
             <h3>语音消息</h3>
             <p>机器人可以用<b>语音</b>说话（模型在 JSON 里填 <code>speak</code> 字段时）。
@@ -1095,7 +1095,7 @@
           </div>
         </div>
 
-        <div class="card" id="platformPoliciesCard">
+        <div class="card" id="platformPoliciesCard" data-category="channel">
           <div class="card-head">
             <h3>平台实例策略</h3>
             <p>按平台与账号实例分别控制聊天入口、白名单和功能覆盖；连接凭据仍由各平台自己的安全配置管理。</p>
@@ -1105,7 +1105,7 @@
         </div>
 
         <!-- 飞书通道（Feishu Bot） -->
-        <div class="card" id="feishuCard">
+        <div class="card" id="feishuCard" data-category="channel">
           <div class="card-head">
             <h3>飞书通道（企业协作平台）</h3>
             <p>通过飞书开放平台机器人应用接入：事件订阅走 Webhook（<code>POST /api/webhooks/feishu</code>），回复通过飞书开放平台 REST API 投递。
@@ -1151,7 +1151,7 @@
         </div>
 
         <!-- 官方通道（QQ 开放平台） -->
-        <div class="card" id="officialCard">
+        <div class="card" id="officialCard" data-category="channel">
           <div class="card-head">
             <h3>官方通道（QQ 开放平台）</h3>
             <p>与上面那条<b>私域</b>通道（自建 NapCat）<b>并存</b>：官方这条走开放平台的机器人，用户是 openid。
@@ -1203,7 +1203,7 @@
         </div>
 
         <!-- 本地通道（HTTP 管道通道） -->
-        <div class="card" id="localCard">
+        <div class="card" id="localCard" data-category="channel">
           <div class="card-head">
             <h3>本地通道（HTTP 管道注入）</h3>
             <p>通过 HTTP 接口 <code>POST /api/local/message</code> 注入会话，与私域、官方和飞书通道<b>严格通道隔离</b>（会话 key 带 <code>local:</code> 前缀，专属 7e15 号段）。
@@ -1223,7 +1223,7 @@
         </div>
 
         <!-- 联网搜索 -->
-        <div class="card">
+        <div class="card" id="webSearchCard" data-category="multimedia">
           <div class="card-head">
             <h3>联网搜索</h3>
             <p>模型可以要求<b>去网上查一下</b>（JSON 里填 <code>search</code> 字段）或<b>读一下某个网页</b>（<code>read</code> 字段），
@@ -1276,7 +1276,7 @@
         </div>
 
         <!-- 本机 Agent（// 命令） -->
-        <div class="card">
+        <div class="card" id="hostAgentCard" data-category="model">
             <div class="card-head">
                 <h3>本机 Agent（<code>//</code> 命令）</h3>
                 <p>群里发一条 <code>//</code> 开头的消息，机器人把这句话交给<b>你自己电脑上的 pi</b> 去干（能看文件、能改代码、能跑命令），
@@ -1489,7 +1489,7 @@
         </div>
 
         <!-- 服务器健康日报（定时私聊推送） -->
-        <div class="card">
+        <div class="card" id="healthReportCard" data-category="other">
           <div class="card-head">
             <h3>服务器健康日报</h3>
             <p>每天在指定时刻（<b>北京时间</b>）发一条机器人 / 服务器状态：QQ 在线与协议端连接、
@@ -1532,7 +1532,7 @@
         </div>
 
         <!-- 链接与分享 -->
-        <div class="card">
+        <div class="card" id="linkPreviewCard" data-category="multimedia">
           <div class="card-head">
             <h3>链接与分享</h3>
             <p>群友发链接或分享卡片时，机器人会真去打开看一眼，取回标题与摘要再聊 —— 而不是对着一串 URL 猜。
@@ -1558,7 +1558,7 @@
         </div>
 
         <!-- 戳一戳 -->
-        <div class="card">
+        <div class="card" id="pokeCard" data-category="chat">
           <div class="card-head">
             <h3>戳一戳</h3>
             <p>别人戳机器人时，它按语境和人设回一句，也可以戳回去 / 戳别人；
@@ -1589,7 +1589,7 @@
         </div>
 
         <!-- 能力与审批 -->
-        <div class="card">
+        <div class="card" id="capabilitiesCard" data-category="model">
           <div class="card-head">
             <h3>能力与审批<span class="hint">增强能力默认关闭，按需开启</span></h3>
             <p><b>场景预设</b>留空 = 能力白名单完全由上面的开关决定；填了预设只会<b>收紧</b>，
@@ -1672,7 +1672,7 @@
         </div>
 
         <!-- 外观 -->
-        <div class="card">
+        <div class="card" id="appearanceCard" data-category="other">
           <div class="card-head">
             <h3>外观</h3>
             <p>主题跟随系统，也可以手动指定。</p>
@@ -1688,7 +1688,7 @@
         </div>
 
         <!-- 运行日志 -->
-        <div class="card log-card">
+        <div class="card log-card" id="logCard" data-category="other">
           <div class="card-head">
             <h3>运行日志<span class="hint">最近 300 行（刷新页面不会清空；含 Agent / OneBot / 语音 / 搜索等各组件的行）</span></h3>
             <p>能看到它每次为什么发言、为什么沉默、耗时多久；长日志用右边两个按钮一键到顶 / 到底。</p>

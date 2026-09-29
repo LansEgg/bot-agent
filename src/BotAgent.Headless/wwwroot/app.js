@@ -1205,47 +1205,185 @@ function renderChannelStatus(channels) {
     const links = [];
     let current = 0;
 
-    /* 切到某一节：-1 = “全部显示”（单列堆到尾）。
-       切换只动 hidden，不碰表单字段 —— 保存契约（每个待保存字段都在 DOM 里）不受影响。 */
-    function showSection(index, keepScroll) {
-      const all = index < 0;
-      current = all ? -1 : Math.max(0, Math.min(cards.length - 1, index));
-      cards.forEach((c, k) => { c.hidden = !all && k !== current; });
-      links.forEach((b, k) => {
-        const on = all ? k === links.length - 1 : k === current;
-        b.classList.toggle("active", on);
-        // 窄屏那排胶囊是横向滑动的：把当前项带进可视区，否则高亮了也看不见
-        if (on && typeof b.scrollIntoView === "function") {
-          b.scrollIntoView({ block: "nearest", inline: "nearest" });
-        }
-      });
-      if (!keepScroll) scroller.scrollTop = 0;
-      foldCardNotes();   // 卡片刚显示出来，现在才量得出“说明有没有被截断”
-      try {
-        history.replaceState(null, "", all ? "#sec-all" : "#sec-" + current);
-      } catch (err) { /* 隐私模式下 replaceState 可能被禁：无所谓 */ }
-    }
-
+    // 5 大类分类元数据（图标、名称、id）
+    const CATEGORIES = [
+      { id: "channel", label: "通道接入", icon: "🌐" },
+      { id: "model", label: "模型与 Agent", icon: "🧠" },
+      { id: "chat", label: "聊天与互动", icon: "💬" },
+      { id: "multimedia", label: "语音与检索", icon: "🎙️" },
+      { id: "other", label: "其他", icon: "⚙️" },
+    ];
+    const catMap = new Map();
+    CATEGORIES.forEach((c) => catMap.set(c.id, { ...c, indices: [] }));
     cards.forEach((card, i) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "section-link";
-      btn.textContent = labels[i];
-      btn.title = labels[i];
-      btn.addEventListener("click", () => showSection(i));
-      nav.appendChild(btn);
-      links.push(btn);
+      const cat = card.dataset.category || "other";
+      if (!catMap.has(cat)) catMap.get("other").indices.push(i);
+      else catMap.get(cat).indices.push(i);
     });
 
-    // 最后一枚：全部显示（单列从头列到尾，方便通读或 Ctrl+F 找某个字段）
+    // 清空现有 nav 内容
+    nav.innerHTML = "";
+
+    // ── 移动端顶层胶囊栏（第一层：大类胶囊 + 全部显示）──
+    const mobileCatBar = document.createElement("div");
+    mobileCatBar.className = "section-cat-bar";
+    const mobileCatButtons = new Map();
+
+    CATEGORIES.forEach((catMeta) => {
+      const entry = catMap.get(catMeta.id);
+      if (!entry || entry.indices.length === 0) return;
+      const catBtn = document.createElement("button");
+      catBtn.type = "button";
+      catBtn.className = "section-cat-tab";
+      catBtn.dataset.cat = catMeta.id;
+      catBtn.innerHTML = `<span>${catMeta.icon} ${escapeHtml(catMeta.label)}</span><span class="badge-count">${entry.indices.length}</span>`;
+      catBtn.addEventListener("click", () => {
+        // 点击大类：展开并切换到该大类下第一个设置卡片
+        if (entry.indices.length > 0) showSection(entry.indices[0]);
+      });
+      mobileCatBar.appendChild(catBtn);
+      mobileCatButtons.set(catMeta.id, catBtn);
+    });
+
+    const mobileAllBtn = document.createElement("button");
+    mobileAllBtn.type = "button";
+    mobileAllBtn.className = "section-cat-tab section-cat-tab-all";
+    mobileAllBtn.textContent = "全部显示";
+    mobileAllBtn.addEventListener("click", () => showSection(-1));
+    mobileCatBar.appendChild(mobileAllBtn);
+    mobileCatButtons.set("all", mobileAllBtn);
+    nav.appendChild(mobileCatBar);
+
+    // ── 导航树（桌面端折叠树 / 移动端第二层子胶囊）──
+    const treeContainer = document.createElement("div");
+    treeContainer.className = "section-tree";
+
+    const catGroupElements = new Map();
+
+    CATEGORIES.forEach((catMeta) => {
+      const entry = catMap.get(catMeta.id);
+      if (!entry || entry.indices.length === 0) return;
+
+      const groupDiv = document.createElement("div");
+      groupDiv.className = "section-cat-group";
+      groupDiv.dataset.cat = catMeta.id;
+
+      // 桌面端可折叠大类标题行
+      const headerBtn = document.createElement("button");
+      headerBtn.type = "button";
+      headerBtn.className = "section-cat-header";
+      headerBtn.setAttribute("aria-expanded", "false");
+      headerBtn.innerHTML = `
+        <span class="section-cat-arrow" aria-hidden="true">▶</span>
+        <span class="section-cat-title"><span class="section-cat-icon">${catMeta.icon}</span> ${escapeHtml(catMeta.label)}</span>
+        <span class="badge-count">${entry.indices.length}</span>
+      `;
+      headerBtn.addEventListener("click", () => {
+        const isOpen = groupDiv.classList.contains("open");
+        if (isOpen) {
+          groupDiv.classList.remove("open");
+          headerBtn.setAttribute("aria-expanded", "false");
+        } else {
+          // 折叠其它大类，展开自己并切换到该类第一个卡片
+          treeContainer.querySelectorAll(".section-cat-group").forEach((g) => {
+            g.classList.remove("open");
+            const h = g.querySelector(".section-cat-header");
+            if (h) h.setAttribute("aria-expanded", "false");
+          });
+          groupDiv.classList.add("open");
+          headerBtn.setAttribute("aria-expanded", "true");
+          if (entry.indices.length > 0) showSection(entry.indices[0]);
+        }
+      });
+      groupDiv.appendChild(headerBtn);
+
+      // 子项容器
+      const itemsDiv = document.createElement("div");
+      itemsDiv.className = "section-cat-items";
+
+      entry.indices.forEach((cardIdx) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "section-link";
+        btn.dataset.index = String(cardIdx);
+        btn.dataset.cat = catMeta.id;
+        btn.textContent = labels[cardIdx];
+        btn.title = labels[cardIdx];
+        btn.addEventListener("click", () => showSection(cardIdx));
+        itemsDiv.appendChild(btn);
+        links[cardIdx] = btn;
+      });
+
+      groupDiv.appendChild(itemsDiv);
+      treeContainer.appendChild(groupDiv);
+      catGroupElements.set(catMeta.id, { groupDiv, headerBtn, itemsDiv });
+    });
+
+    // 桌面端底部：全部显示
     const allBtn = document.createElement("button");
     allBtn.type = "button";
     allBtn.className = "section-link section-link-all";
     allBtn.textContent = "全部显示";
     allBtn.title = "把这十几节按单列从头列到尾";
     allBtn.addEventListener("click", () => showSection(-1));
-    nav.appendChild(allBtn);
-    links.push(allBtn);
+    treeContainer.appendChild(allBtn);
+    links[cards.length] = allBtn; // 索引 cards.length 对应 allBtn
+
+    nav.appendChild(treeContainer);
+
+    /* 切到某一节：-1 = “全部显示”（单列堆到尾）。
+       切换只动 hidden，不碰表单字段 —— 保存契约（每个待保存字段都在 DOM 里）不受影响。 */
+    function showSection(index, keepScroll) {
+      const all = index < 0;
+      current = all ? -1 : Math.max(0, Math.min(cards.length - 1, index));
+      cards.forEach((c, k) => { c.hidden = !all && k !== current; });
+
+      // 计算当前活跃大类
+      let activeCat = "other";
+      if (!all) {
+        const activeCard = cards[current];
+        activeCat = (activeCard && activeCard.dataset.category) || "other";
+      }
+
+      // 更新移动端大类胶囊高亮
+      mobileCatButtons.forEach((btn, catId) => {
+        const on = all ? catId === "all" : catId === activeCat;
+        btn.classList.toggle("active", on);
+        if (on && typeof btn.scrollIntoView === "function") {
+          btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
+
+      // 更新手风琴分组展开与激活态
+      catGroupElements.forEach(({ groupDiv, headerBtn }, catId) => {
+        if (all) {
+          groupDiv.classList.add("open");
+          groupDiv.classList.remove("active");
+          if (headerBtn) headerBtn.setAttribute("aria-expanded", "true");
+        } else {
+          const match = catId === activeCat;
+          groupDiv.classList.toggle("open", match);
+          groupDiv.classList.toggle("active", match);
+          if (headerBtn) headerBtn.setAttribute("aria-expanded", match ? "true" : "false");
+        }
+      });
+
+      // 更新所有子链接的高亮
+      links.forEach((b, k) => {
+        if (!b) return;
+        const on = all ? k === cards.length : k === current;
+        b.classList.toggle("active", on);
+        if (on && typeof b.scrollIntoView === "function") {
+          b.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
+
+      if (!keepScroll) scroller.scrollTop = 0;
+      foldCardNotes();   // 卡片刚显示出来，现在才量得出“说明有没有被截断”
+      try {
+        history.replaceState(null, "", all ? "#sec-all" : "#sec-" + current);
+      } catch (err) { /* 隐私模式下 replaceState 可能被禁：无所谓 */ }
+    }
 
     // 重新进入设置页（或从 hash 进来）时，把当前节重新亮一次
     refreshSettingsNav = () => showSection(current, true);
@@ -1261,7 +1399,15 @@ function renderChannelStatus(channels) {
         const dist = Math.abs(r.top - (box.top + 8));
         if (dist < bestDist) { bestDist = dist; best = i; }
       });
-      links.forEach((b, k) => b.classList.toggle("active", k === best));
+      links.forEach((b, k) => {
+        if (b) b.classList.toggle("active", k === best);
+      });
+      // 更新大类指示
+      const bestCard = cards[best];
+      const activeCat = (bestCard && bestCard.dataset.category) || "other";
+      mobileCatButtons.forEach((btn, catId) => {
+        btn.classList.toggle("active", catId === activeCat);
+      });
     }
 
     const raf = window.requestAnimationFrame || ((fn) => setTimeout(fn, 16));
@@ -1275,9 +1421,10 @@ function renderChannelStatus(channels) {
       });
     }, { passive: true });
 
-    // 刷新后回到同一节（hash），否则默认第一节
+    // 刷新后回到同一节（hash），否则默认展开第一个大类（通道接入）的首节
+    const defaultStartIdx = (catMap.get("channel")?.indices[0]) ?? 0;
     const m = /^#sec-(\d+|all)$/.exec(location.hash || "");
-    showSection(m ? (m[1] === "all" ? -1 : parseInt(m[1], 10)) : 0);
+    showSection(m ? (m[1] === "all" ? -1 : parseInt(m[1], 10)) : defaultStartIdx);
   }
 
     function fillSelect(sel, models, current, placeholder) {
