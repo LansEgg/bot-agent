@@ -221,6 +221,30 @@ public sealed partial class WebUiServer
         if (body["platformPolicies"] is not null && platformPolicies is not null)
         {
             s.PlatformPolicies = platformPolicies;
+            foreach (var p in platformPolicies)
+            {
+                var norm = Domain.Platforms.PlatformId.Normalize(p.PlatformId);
+                if (norm == Domain.Platforms.PlatformId.QqPrivate)
+                {
+                    if (p.GroupWhitelist is not null && !string.IsNullOrWhiteSpace(p.GroupWhitelist)) s.WhitelistGroups = p.GroupWhitelist;
+                    if (p.PrivateWhitelist is not null && !string.IsNullOrWhiteSpace(p.PrivateWhitelist)) s.WhitelistPrivates = p.PrivateWhitelist;
+                }
+                else if (norm == Domain.Platforms.PlatformId.QqOfficial)
+                {
+                    if (p.GroupWhitelist is not null && !string.IsNullOrWhiteSpace(p.GroupWhitelist)) s.OfficialWhitelistGroups = p.GroupWhitelist;
+                    if (p.PrivateWhitelist is not null && !string.IsNullOrWhiteSpace(p.PrivateWhitelist)) s.OfficialWhitelistPrivates = p.PrivateWhitelist;
+                }
+                else if (norm == Domain.Platforms.PlatformId.Feishu)
+                {
+                    var wl = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : p.PrivateWhitelist;
+                    if (!string.IsNullOrWhiteSpace(wl)) s.FeishuWhitelist = wl;
+                }
+                else if (norm == Domain.Platforms.PlatformId.Local)
+                {
+                    var wl = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : p.PrivateWhitelist;
+                    if (!string.IsNullOrWhiteSpace(wl)) s.LocalChannelIds = wl;
+                }
+            }
         }
 
         if (body["feishuEnabled"] is JsonNode fe) s.FeishuEnabled = fe.GetValue<bool>();

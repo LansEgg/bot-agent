@@ -419,7 +419,7 @@
 
   function normalizeChannelFilter(value) {
     const filter = String(value || "all").trim().toLowerCase();
-    return filter === "private" || filter === "official" || filter === "feishu" ? filter : "all";
+    return filter === "private" || filter === "official" || filter === "feishu" || filter === "local" ? filter : "all";
   }
 
   function syncChannelTabs() {
@@ -443,17 +443,20 @@
     const raw = String(conversation?.channel || "").trim().toLowerCase();
     if (raw === "official") return "official";
     if (raw === "feishu") return "feishu";
-    if (raw === "private" || raw === "local") return "private";
+    if (raw === "local") return "local";
+    if (raw === "private") return "private";
 
     // 兼容旧缓存或反向代理，最后才使用显示标签与 key 前缀兜底。
     const tag = String(conversation?.channelTag || "").trim().toLowerCase();
     if (tag === "官方" || tag === "official") return "official";
     if (tag === "飞书" || tag === "feishu") return "feishu";
-    if (tag === "私域" || tag === "本地" || tag === "private" || tag === "local") return "private";
+    if (tag === "本地" || tag === "local") return "local";
+    if (tag === "私域" || tag === "private") return "private";
 
     const key = String(conversation?.key || conversation?.sourceKey || "").trim().toLowerCase();
     if (key.startsWith("official:")) return "official";
     if (key.startsWith("feishu:")) return "feishu";
+    if (key.startsWith("local:")) return "local";
     return "private";
   }
 
@@ -562,19 +565,22 @@
     }
   }
 
-// 通道的状态一行字。**在官方或飞书通道启用时显示**：
+// 通道的状态一行字。**在非私域通道启用时显示**：
 function renderChannelStatus(channels) {
   state.channels = channels || [];
   const box = $("chanStatus");
   const official = state.channels.find((c) => c.channel === "official" || c.channel === "qq.official");
   const feishu = state.channels.find((c) => c.channel === "feishu");
-  const hasExtra = (official && official.enabled) || (feishu && feishu.enabled);
+  const local = state.channels.find((c) => c.channel === "local");
+  const hasExtra = (official && official.enabled) || (feishu && feishu.enabled) || (local && local.enabled);
   const parts = state.channels.map((c) => {
     const st = !c.enabled ? "未启用" : (c.connected ? "在线" : "离线");
     return `${c.name} ${st}`;
   });
-  box.textContent = parts.join(" · ");
-  box.hidden = !hasExtra;
+  if (box) {
+    box.textContent = parts.join(" · ");
+    box.hidden = !hasExtra;
+  }
   const tabOfficial = $("chanTabOfficial");
   if (tabOfficial) {
     tabOfficial.title = !official || !official.enabled
@@ -588,6 +594,19 @@ function renderChannelStatus(channels) {
       ? "飞书通道未启用（面板设置里开一下，并配置 App ID/Secret）"
       : (feishu.connected ? "飞书通道在线" : "飞书通道已启用，但尚未完成首次配置");
     tabFeishu.classList.toggle("chan-off", !feishu || !feishu.enabled);
+  }
+  const tabLocal = $("chanTabLocal");
+  if (tabLocal) {
+    tabLocal.title = !local || !local.enabled
+      ? "本地通道未启用（在「平台实例策略」配置本地白名单短 ID 开启）"
+      : (local.connected ? "本地通道在线" : "本地通道已启用");
+    tabLocal.classList.toggle("chan-off", !local || !local.enabled);
+  }
+  const localHint = $("localStateHint");
+  if (localHint) {
+    localHint.textContent = !local || !local.enabled
+      ? "未启用（在下方「平台实例策略」配置本地短 ID 如 1, 2 保存并重启生效）"
+      : (local.connected ? "已启用（在线，已装配本地消息注入器）" : "已启用（待重启装配）");
   }
 }
 
@@ -1624,7 +1643,30 @@ function renderChannelStatus(channels) {
         input.maxLength = 4096;
         input.placeholder = placeholder;
         input.dataset.policy = keyName;
-        input.value = read(existing, keyName, keyName === "groupWhitelist" ? "GroupWhitelist" : "PrivateWhitelist") || "";
+        let existingVal = read(existing, keyName, keyName === "groupWhitelist" ? "GroupWhitelist" : "PrivateWhitelist");
+        if ((existingVal == null || existingVal === "") && runtime) {
+          if (platformId === "qq.private") {
+            existingVal = keyName === "groupWhitelist" ? (runtime.whitelistGroups || runtime.messageWhitelist || "") : (runtime.whitelistPrivates || runtime.messageWhitelist || "");
+          } else if (platformId === "qq.official") {
+            existingVal = keyName === "groupWhitelist" ? (runtime.officialWhitelistGroups || "") : (runtime.officialWhitelistPrivates || "");
+          } else if (platformId === "feishu") {
+            existingVal = runtime.feishuWhitelist || "";
+          } else if (platformId === "local") {
+            existingVal = keyName === "groupWhitelist" ? (runtime.localChannelIds || "") : "";
+          }
+        }
+        input.value = existingVal || "";
+        input.addEventListener("input", () => {
+          if (platformId === "qq.private") {
+            if (keyName === "groupWhitelist" && $("setWhitelistGroups")) $("setWhitelistGroups").value = input.value;
+            if (keyName === "privateWhitelist" && $("setWhitelistPrivates")) $("setWhitelistPrivates").value = input.value;
+          } else if (platformId === "qq.official") {
+            if (keyName === "groupWhitelist" && $("setOfficialWhitelistGroups")) $("setOfficialWhitelistGroups").value = input.value;
+            if (keyName === "privateWhitelist" && $("setOfficialWhitelistPrivates")) $("setOfficialWhitelistPrivates").value = input.value;
+          } else if (platformId === "feishu") {
+            if ($("setFeishuWhitelist")) $("setFeishuWhitelist").value = input.value;
+          }
+        });
         label.append(input);
         lists.append(label);
       }

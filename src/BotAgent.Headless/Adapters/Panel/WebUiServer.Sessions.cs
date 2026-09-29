@@ -157,41 +157,60 @@ public sealed partial class WebUiServer
     private JsonArray BuildChannelStatus()
     {
         var arr = new JsonArray();
-        if (_platformRegistry is not null)
+        var rawSnapshots = _platformRegistry?.GetSnapshots() ?? Array.Empty<Domain.Ports.PlatformStatusSnapshot>();
+        var snapshotMap = new Dictionary<string, Domain.Ports.PlatformStatusSnapshot>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in rawSnapshots)
         {
-            foreach (var s in _platformRegistry.GetSnapshots())
+            snapshotMap[Domain.Platforms.PlatformId.Normalize(s.PlatformId)] = s;
+        }
+
+        var sBox = _box.Current;
+        var chanReg = _source as IChannelRegistry;
+        var offConnected = chanReg?.Get(Domain.Qq.Channels.Official)?.IsConnected ?? false;
+        var standardChannels = new (string PlatformId, string DisplayName, string Tag, bool Enabled, bool Connected)[]
+        {
+            (Domain.Platforms.PlatformId.QqPrivate, "QQ私域", "私域", true, _gateway.IsConnected),
+            (Domain.Platforms.PlatformId.QqOfficial, "QQ官方", "官方", sBox.OfficialEnabled, offConnected),
+            (Domain.Platforms.PlatformId.Feishu, "飞书", "飞书", sBox.FeishuEnabled, _feishuGateway?.IsConnected ?? false),
+            (Domain.Platforms.PlatformId.Local, "本地通道", "本地", !string.IsNullOrWhiteSpace(sBox.LocalChannelIds), _localChannel is not null),
+        };
+
+        foreach (var std in standardChannels)
+        {
+            if (snapshotMap.TryGetValue(std.PlatformId, out var live))
             {
                 arr.Add(new JsonObject
                 {
-                    ["channel"] = s.PlatformId,
-                    ["name"] = s.DisplayName,
-                    ["tag"] = s.Tag,
-                    ["enabled"] = s.Enabled,
-                    ["connected"] = s.Connected,
+                    ["channel"] = std.PlatformId,
+                    ["name"] = live.DisplayName,
+                    ["tag"] = live.Tag,
+                    ["enabled"] = live.Enabled,
+                    ["connected"] = live.Connected,
+                });
+                snapshotMap.Remove(std.PlatformId);
+            }
+            else
+            {
+                arr.Add(new JsonObject
+                {
+                    ["channel"] = std.PlatformId,
+                    ["name"] = std.DisplayName,
+                    ["tag"] = std.Tag,
+                    ["enabled"] = std.Enabled,
+                    ["connected"] = std.Connected,
                 });
             }
-
-            return arr;
         }
 
-        var registry = _source as IChannelRegistry;
-        foreach (var channel in new[] { Domain.Qq.Channels.Private, Domain.Qq.Channels.Official })
+        foreach (var remaining in snapshotMap.Values)
         {
-            var src = registry?.Get(channel);
-
-            // 没启用多通道时没有台账（registry 为 null）——这时候**私域就是网关自己**，
-            // 不能因为“没登记”就报成离线（踩过：面板显示“私域 离线”，实际 QQ 连着好好的）。
-            var connected = channel == Domain.Qq.Channels.Private
-                ? (src?.IsConnected ?? _gateway.IsConnected)
-                : (src?.IsConnected ?? false);
-
             arr.Add(new JsonObject
             {
-                ["channel"] = channel,
-                ["name"] = Domain.Qq.Channels.Display(channel),
-                ["tag"] = Domain.Qq.Channels.Tag(channel),
-                ["enabled"] = src is not null || !Domain.Qq.Channels.IsOfficial(channel),
-                ["connected"] = connected
+                ["channel"] = remaining.PlatformId,
+                ["name"] = remaining.DisplayName,
+                ["tag"] = remaining.Tag,
+                ["enabled"] = remaining.Enabled,
+                ["connected"] = remaining.Connected,
             });
         }
 

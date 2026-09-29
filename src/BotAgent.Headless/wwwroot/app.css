@@ -327,6 +327,8 @@ h1, h2, h3, p { margin: 0; }
   vertical-align: 1px;
 }
 .chan-badge.chan-official { background: rgba(74, 125, 255, 0.18); color: #4a7dff; }
+.chan-badge.chan-feishu { background: rgba(16, 185, 129, 0.18); color: #10b981; }
+.chan-badge.chan-local { background: rgba(139, 92, 246, 0.18); color: #8b5cf6; }
 .chan-badge.chan-private { background: rgba(120, 120, 120, 0.18); color: var(--text-secondary); }
 
 input[type="search"], input[type="text"], input[type="number"], input[type="time"], textarea, select {
