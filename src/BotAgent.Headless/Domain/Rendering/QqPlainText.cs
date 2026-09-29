@@ -75,6 +75,39 @@ public static class QqPlainText
     private static readonly Regex BlankRun = new(@"\n{3,}", RegexOptions.Compiled);
     private static readonly Regex SentinelBack = new("\uE000(\\d+)\uE001", RegexOptions.Compiled);
 
+    /// <summary>
+    /// 剥离成对的圆括号动作描写与星号动作描写（如 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等）。
+    /// 保留纯数字序号如 (1)/(2) 和系统占位符如 [图片]。
+    /// </summary>
+    private static readonly Regex BracketActionRegex = new(
+        @"[\(（](?!\s*\d+\s*[\)）])[^\)）\r\n]{1,40}[\)）]",
+        RegexOptions.Compiled);
+
+    private static readonly Regex StarActionRegex = new(
+        @"(?<!\*)\*(?!\*)[^\*\r\n]{1,40}\*(?!\*)",
+        RegexOptions.Compiled);
+
+    /// <summary>
+    /// 过滤文本中夹带的角色动作描写/心理活动（如 (晃了晃耳朵)、（轻笑一声）、*叹了口气*）。
+    /// </summary>
+    public static string StripActionNarrations(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        // 1. 去除圆括号动作：(晃了晃耳朵) / （叹了口气）
+        var res = BracketActionRegex.Replace(text, string.Empty);
+
+        // 2. 去除单星号包裹的动作描写：*叹了口气* / *微笑*
+        res = StarActionRegex.Replace(res, string.Empty);
+
+        // 3. 整理连续空格
+        res = Regex.Replace(res, @"[ \t]{2,}", " ");
+        return res.Trim();
+    }
+
     /// <summary>把一个（模型生成的）回复文本降级成适合 QQ 的纯文本。</summary>
     public static string Sanitize(string? text)
     {

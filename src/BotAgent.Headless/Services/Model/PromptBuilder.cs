@@ -52,7 +52,8 @@ public static class PromptBuilder
         /// 批次 D：服务端按策略裁剪过的工具清单（由 <see cref="Tools.ToolPromptText" /> 生成）。
         /// 空 = 这次一个工具都没开 → 整段不出现（与“开关全关时提示词逐字不变”的纪律一致）。
         /// </summary>
-        string? ToolList);
+        string? ToolList = null,
+        bool FilterActionNarration = false);
 
     /// <summary>把这一轮的系统提示词拼出来（纯字符串拼接，不发任何请求）。</summary>
     public static string Build(PromptRequest request)
@@ -92,7 +93,12 @@ public static class PromptBuilder
             systemContent += "\n\n[机器人人设档案]\n" + request.Persona.Trim();
         }
 
-        systemContent += BuildSuitabilityInstruction(request.AiDesire, request.SuitabilityThreshold);
+        var suitabilityText = BuildSuitabilityInstruction(request.AiDesire, request.SuitabilityThreshold);
+        if (request.FilterActionNarration)
+        {
+            suitabilityText += "\n【语言形式禁令】严禁在 reply 中输出任何带括号的动作描写、心理活动或神态说明（如 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等），只输出真正说出口的口语！";
+        }
+        systemContent += suitabilityText;
 
         // 结构化动作契约（V3 §8.1）：**只在对应开关打开时追加**。
         // 两个开关都关着 → 这段是空串，提示词与改造前逐字一致（§5.3 兼容红线）。

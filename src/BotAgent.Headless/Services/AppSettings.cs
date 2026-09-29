@@ -250,6 +250,9 @@ public sealed class AppSettings
     /// </summary>
     public bool IgnoreBracketMessages { get; set; }
 
+    /// <summary>禁止回复夹带动作/心理描写（自动过滤括号动作如 (晃了晃耳朵)、（叹气）、*微笑* 等）。</summary>
+    public bool FilterActionNarration { get; set; }
+
     /// <summary>分段发送时每段之间的时间基准（毫秒）。</summary>
     public int SegmentDelayMs { get; set; } = 700;
 

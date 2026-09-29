@@ -193,6 +193,7 @@ public sealed class OpenAiClient : IModelClient
             EnableWebSearch: enableWebSearch,
             EnableAsk: enableAsk,
             EnableToolRequest: enableToolRequest,
+            FilterActionNarration: _settings.FilterActionNarration,
             ToolList: toolList));
         // 请求体（含多模态图片）与发送都在 ModelTransport：这里只管"说什么"与"回来的怎么判"
         var built = await _transport.BuildAsync(window, systemContent, quotableIds, ct, sampling: sampling);

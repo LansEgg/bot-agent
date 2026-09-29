@@ -1162,6 +1162,19 @@ public static partial class Program
         // URL 绝不被切成多条（不能出现换行插进 URL）
         var urlLine = QqPlainText.Sanitize("https://example.com/a_b/c~d?x=1&y=2");
         Check("URL 里不会插进换行（不会被分句切成两条消息）", !urlLine.Contains('\n'), urlLine);
+
+        // 动作描写/心理活动过滤测试（StripActionNarrations）
+        var action1 = QqPlainText.StripActionNarrations("好的(晃了晃耳朵)我知道了");
+        Check("过滤半角括号动作描写", action1 == "好的我知道了", action1);
+
+        var action2 = QqPlainText.StripActionNarrations("（叹了口气）行吧，那就这样");
+        Check("过滤全角括号动作描写", action2 == "行吧，那就这样", action2);
+
+        var action3 = QqPlainText.StripActionNarrations("*伸了个懒腰* 准备睡觉");
+        Check("过滤星号动作描写", action3 == "准备睡觉", action3);
+
+        var numKeep = QqPlainText.StripActionNarrations("请参考以下步骤：(1) 打开开关；(2) 点击保存");
+        Check("保留纯数字序号不误伤", numKeep.Contains("(1)") && numKeep.Contains("(2)"), numKeep);
     }
 
     // ───────────────── P3：Fail-Closed 工具权限（V3 §9.5） ─────────────────

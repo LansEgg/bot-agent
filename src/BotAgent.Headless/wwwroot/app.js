@@ -2031,6 +2031,7 @@ function renderChannelStatus(channels) {
     $("setProactiveCooldown").value = r.proactiveCooldownSeconds;
     $("setProactiveQuiet").value = r.proactiveQuietSeconds;
     $("setIgnoreBrackets").checked = r.ignoreBracketMessages === true;
+    $("setFilterActionNarration").checked = r.filterActionNarration === true;
     $("setEnableStickers").checked = r.enableStickers;
     $("setStickerMax").value = r.stickerLibraryMax;
     $("setStickerCandidates").value = r.stickerCandidates;
@@ -2273,6 +2274,7 @@ function renderChannelStatus(channels) {
       proactiveCooldownSeconds: Number($("setProactiveCooldown").value),
       proactiveQuietSeconds: Number($("setProactiveQuiet").value),
       ignoreBracketMessages: $("setIgnoreBrackets").checked,
+      filterActionNarration: $("setFilterActionNarration").checked,
       segmentDelayMs: Number($("setSegmentDelay").value),
       maxContextMessages: Number($("setMaxContext").value),
       maxMessagesPerConversation: Number($("setMaxMessages").value),

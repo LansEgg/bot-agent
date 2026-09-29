@@ -104,10 +104,14 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         }
 
         var rawReply = reply;
+        if (_settings.FilterActionNarration)
+        {
+            reply = QqPlainText.StripActionNarrations(reply);
+        }
         reply = QqPlainText.Sanitize(reply);
         if (reply.Length == 0)
         {
-            _log($"清洗后没有可发内容（原文 {rawReply.Length} 字，全是 Markdown 装饰）→ 这一条不发");
+            _log($"清洗后没有可发内容（原文 {rawReply.Length} 字，全是 Markdown 装饰或动作旁白）→ 这一条不发");
             return new CadenceSendReport(Array.Empty<string>(), "sanitized_empty");
         }
 

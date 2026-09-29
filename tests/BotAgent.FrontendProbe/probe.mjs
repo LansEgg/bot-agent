@@ -136,7 +136,7 @@ check(
 check("JS：boot() 里真的调用了", /initSettingsNav\(\);/.test(js));
 check(
   "★ 宽屏改成左侧分节栏 + 单列内容（不再把卡片铺成“一块一块”）",
-  /#pageSettings\s*\{[^}]*grid-template-columns:\s*208px/.test(css) &&
+  /#pageSettings\s*\{[^}]*grid-template-columns:\s*236px/.test(css) &&
     /\.settings-inner\s*\{[^}]*max-width:\s*980px/.test(css) &&
     /\.section-nav\s*\{[^}]*flex-direction:\s*column/.test(css) &&
     !/[\s{;]columns:\s*\d+px/.test(css),
@@ -171,6 +171,18 @@ const expectedCats = ["channel", "model", "chat", "multimedia", "other"];
 check("大类分类命名完整覆盖 5 大类", expectedCats.every((c) => declaredCats.has(c)));
 
 check(
+  "【通道接入】包含精炼对齐的四大通道并在后由平台实例策略统筹",
+  html.includes("QQ 私域通道 (NapCat)") &&
+    html.includes("QQ 官方通道 (开放平台)") &&
+    html.includes("<h3>飞书通道</h3>") &&
+    html.includes("<h3>本地通道</h3>") &&
+    html.indexOf('id="napcatCard"') < html.indexOf('id="officialCard"') &&
+    html.indexOf('id="officialCard"') < html.indexOf('id="feishuCard"') &&
+    html.indexOf('id="feishuCard"') < html.indexOf('id="localCard"') &&
+    html.indexOf('id="localCard"') < html.indexOf('id="platformPoliciesCard"')
+);
+
+check(
   "JS：支持大类字典定义与分组聚合",
   js.includes("CATEGORIES =") && js.includes('"channel"') && js.includes('"multimedia"') && js.includes('"other"')
 );
@@ -185,6 +197,29 @@ check(
     /\.section-tree\s*\{/.test(css) &&
     /\.section-cat-header\s*\{/.test(css) &&
     /\.section-cat-arrow\s*\{/.test(css)
+);
+
+/* ─────────── 1b2-3) 回复节奏卡片迁移与动作过滤 ─────────── */
+
+console.log("\n▶ 静态：人设与发言控制归并【回复节奏】+ 动作过滤开关");
+
+check(
+  "回复节奏卡片包含机器人人设档案与发言控制",
+  html.includes('id="replyRhythmCard"') &&
+    html.indexOf('id="replyRhythmCard"') < html.indexOf('id="setPersona"') &&
+    html.indexOf('id="setPersona"') < html.indexOf('id="stickerSettingsCard"')
+);
+check(
+  "回复节奏卡片包含禁止动作描写开关 #setFilterActionNarration",
+  html.includes('id="setFilterActionNarration"') &&
+    html.indexOf('id="replyRhythmCard"') < html.indexOf('id="setFilterActionNarration"') &&
+    html.indexOf('id="setFilterActionNarration"') < html.indexOf('id="stickerSettingsCard"')
+);
+check(
+  "模型卡片已移除人设、欲望与步进控件，职责纯粹",
+  html.indexOf('id="modelSettingsCard"') < html.indexOf('id="setFastReply"') &&
+    !(html.indexOf('id="modelSettingsCard"') < html.indexOf('id="setPersona"') &&
+      html.indexOf('id="setPersona"') < html.indexOf('id="napcatCard"'))
 );
 
 /* ─────────── 1b3) 可读性：不把字堆成一团 ─────────── */

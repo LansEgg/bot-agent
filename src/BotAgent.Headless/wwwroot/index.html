@@ -534,52 +534,6 @@
                         <input type="number" id="setMaxTokens" min="64" max="32000" step="64" />
                       </div>
                     </div>
-                    <div class="field">
-                      <label>机器人人设档案<span class="hint">定义角色的性格与说话风格</span></label>
-                      <textarea id="setPersona" rows="4" placeholder="例如：说话简短、口语化，偶尔吐槽……"></textarea>
-                    </div>
-                    <div class="field">
-                      <label>AI 对话欲望<span class="hint">越高越主动参与群聊发言</span><b class="val" id="desireVal">50</b></label>
-                      <input type="range" id="setDesire" min="0" max="100" step="5" />
-                    </div>
-                    <div class="field">
-                      <label>发言适合度阈值<span class="hint">模型评分低于此值则保持沉默</span><b class="val" id="threshVal">10</b></label>
-                      <input type="range" id="setThreshold" min="0" max="60" step="5" />
-                    </div>
-                    <div class="field">
-                      <label>聊天步进循环上限<span class="hint">每次任务最多模型调用次数：1 = 只调用一次；2/3 = 工具返回结果后最多再调用 1/2 次</span><b class="val" id="agentStepsVal">1</b></label>
-                      <input type="range" id="setMaxAgentSteps" min="1" max="3" step="1" />
-                    </div>
-                    <label class="switch-row">
-                      <input type="checkbox" id="setAdaptiveSampling" />
-                      <span class="switch"></span>
-                      <span>自适应采样超参数（理性低温保准，感性升温灵动）</span>
-                    </label>
-                    <div class="grid-2">
-                      <div class="field">
-                        <label>理性温度<b class="val" id="rationalTempVal">0.3</b></label>
-                        <input type="range" id="setRationalTemp" min="0" max="1" step="0.05" />
-                      </div>
-                      <div class="field">
-                        <label>理性 Top_P<b class="val" id="rationalTopPVal">0.3</b></label>
-                        <input type="range" id="setRationalTopP" min="0" max="1" step="0.05" />
-                      </div>
-                    </div>
-                    <div class="grid-2">
-                      <div class="field">
-                        <label>感性温度<b class="val" id="emotionalTempVal">0.85</b></label>
-                        <input type="range" id="setEmotionalTemp" min="0" max="1.5" step="0.05" />
-                      </div>
-                      <div class="field">
-                        <label>感性 Top_P<b class="val" id="emotionalTopPVal">0.9</b></label>
-                        <input type="range" id="setEmotionalTopP" min="0" max="1" step="0.05" />
-                      </div>
-                    </div>
-                    <label class="switch-row">
-                      <input type="checkbox" id="setAiMode" />
-                      <span class="switch"></span>
-                      <span>AI 自动回复开关</span>
-                    </label>
                   </div>
                 </details>
               </div>
@@ -641,10 +595,10 @@
           </div>
         </div>
 
-        <!-- QQ 接入 -->
+        <!-- QQ 私域通道 (NapCat) -->
         <div class="card" id="napcatCard" data-category="channel">
           <div class="card-head">
-            <h3>QQ 接入 · OneBot v11</h3>
+            <h3>QQ 私域通道 (NapCat)</h3>
             <p>连接信息由容器环境变量提供；白名单归本页所有，保存即生效。</p>
           </div>
 
@@ -681,6 +635,130 @@
               <span id="whitelistLegacyHint">群聊或私聊名单留空时，会使用这份共用名单</span>
             </div>
           </div>
+        </div>
+
+        <!-- QQ 官方通道 (开放平台) -->
+        <div class="card" id="officialCard" data-category="channel">
+          <div class="card-head">
+            <h3>QQ 官方通道 (开放平台)</h3>
+            <p>与上面那条<b>私域</b>通道（自建 NapCat）<b>并存</b>：官方这条走开放平台的机器人，用户是 openid。
+              两边的会话、上下文、人设、白名单<b>完全隔离</b>（会话 key 带 <code>official:</code> 前缀），互不串台。
+              开启前先在开放平台把服务器的<b>出口 IP</b> 加进白名单；密钥（Secret）不在这里填 —— 它只从环境变量读。</p>
+          </div>
+
+          <label class="switch-row">
+            <input type="checkbox" id="setOfficialEnabled" />
+            <span class="switch"></span>
+            <span>启用官方通道<span class="hint" id="officialStateHint">保存后点下面的按钮重启生效</span></span>
+          </label>
+
+          <p class="path-hint" id="officialConversationList">官方通道见过的会话会列在这里，点一下即可查看别名号。</p>
+
+          <div class="grid-2">
+            <div class="field">
+              <label>AppID<span class="hint">开放平台机器人页上的 AppID（写在这里不敏感）</span></label>
+              <input type="text" id="setOfficialAppId" maxlength="40" placeholder="102xxxxxx" />
+            </div>
+            <div class="field">
+              <label>AppSecret<span class="hint">存密钥库、只回显掩码（与 TTS 密钥同规矩）；<b>留空 = 不改</b>。环境变量优先，改了要重启才生效（下面有一键重启）</span></label>
+              <input type="password" id="setOfficialAppSecret" maxlength="200" placeholder="还没配，在这里填一个（留空 = 不改）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>环境<span class="hint">沙箱只能收/发<b>沙箱群与沙箱单聊</b>（调试用）—— <b>正式群里 @ 它不会有任何反应</b>：平台不推送，日志里也不会出现任何行。要在正式群用，把这里取消勾选后重启</span></label>
+              <label class="switch-row"><input type="checkbox" id="setOfficialSandbox" /><span class="switch"></span><span>用沙箱环境</span></label>
+            </div>
+            <div class="field">
+              <label>白名单管理</label>
+              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：官方通道群聊与单聊白名单（别名号）已统一在下方的「平台实例策略」集中管理，留空默认全部接受。</p>
+              <input type="hidden" id="setOfficialWhitelistGroups" />
+              <input type="hidden" id="setOfficialWhitelistPrivates" />
+            </div>
+          </div>
+
+          <p class="path-hint" id="officialHint">设了 <code>QQCHAT_OFFICIAL_APP_SECRET</code> 才会真的连上去；没配就是“开关开着但连不上”，启动日志里会直说。</p>
+
+          <!-- 一键重启：改完「重启才生效」的东西（官方通道凭据、容器级挂载…）不用再开 SSH。
+               做法是让进程退出、由容器重启策略把它拉起来；页面会自己等它回来。 -->
+          <div class="field">
+            <button type="button" id="restartBtn" class="btn-secondary">⟳ 一键重启机器人</button>
+            <span class="path-hint" id="restartHint">改了 AppID / 环境 / 白名单后点一下：几秒内自己回来（页面会等它）。容器挂了也不怕——重启策略会拉起它。</span>
+          </div>
+        </div>
+
+        <!-- 飞书通道 -->
+        <div class="card" id="feishuCard" data-category="channel">
+          <div class="card-head">
+            <h3>飞书通道</h3>
+            <p>通过飞书开放平台机器人应用接入：事件订阅走 Webhook（<code>POST /api/webhooks/feishu</code>），回复通过飞书开放平台 REST API 投递。
+              与 QQ 平台<b>通道严格隔离</b>（会话 key 带 <code>feishu:</code> 前缀）。
+              在飞书开放平台「事件与回调」配置请求网址为本服务地址，并订阅 <code>im.message.receive_v1</code> 消息接收事件。</p>
+          </div>
+
+          <label class="switch-row">
+            <input type="checkbox" id="setFeishuEnabled" />
+            <span class="switch"></span>
+            <span>启用飞书通道<span class="hint" id="feishuStateHint">保存后点下方的「一键重启」生效</span></span>
+          </label>
+
+          <p class="path-hint" id="feishuWebhookUrlHint">Webhook 入口地址：<code>/api/webhooks/feishu</code>（支持 URL verification challenge 自动应答、请求签名防伪与 1MB 防护）。</p>
+
+          <div class="grid-2">
+            <div class="field">
+              <label>App ID (cli_xxx)<span class="hint">飞书开放平台应用凭据中的 App ID</span></label>
+              <input type="text" id="setFeishuAppId" maxlength="64" placeholder="cli_xxxxxxxx" />
+            </div>
+            <div class="field">
+              <label>App Secret<span class="hint">存密钥库、回显掩码；<b>留空 = 不改</b>。环境变量优先，改了重启生效</span></label>
+              <input type="password" id="setFeishuAppSecret" maxlength="200" placeholder="还没配，在这里填一个（留空 = 不改）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>Verification Token<span class="hint">飞书开放平台事件订阅的 Verification Token</span></label>
+              <input type="text" id="setFeishuVerificationToken" maxlength="128" placeholder="事件订阅中的 Verification Token" />
+            </div>
+            <div class="field">
+              <label>Encrypt Key (加密策略密钥)<span class="hint">可选；飞书开放平台事件订阅如果开启了加密则必填，留空表示不解密</span></label>
+              <input type="password" id="setFeishuEncryptKey" maxlength="200" placeholder="未开启加密可留空（留空 = 不改）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>白名单管理</label>
+              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：飞书的群聊白名单（<code>chat_id</code>）与单聊白名单（<code>open_id</code>）已统一在下方的「平台实例策略」卡片中按群和私聊分别管理。</p>
+              <input type="hidden" id="setFeishuWhitelist" />
+            </div>
+            <div class="field">
+              <label>API Base URL<span class="hint">默认官方开放平台地址 <code>https://open.feishu.cn</code>（专有云或测试可改）</span></label>
+              <input type="text" id="setFeishuApiBase" maxlength="256" placeholder="https://open.feishu.cn" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 本地通道 -->
+        <div class="card" id="localCard" data-category="channel">
+          <div class="card-head">
+            <h3>本地通道</h3>
+            <p>通过 HTTP 接口 <code>POST /api/local/message</code> 注入会话，与私域、官方和飞书通道<b>严格通道隔离</b>（会话 key 带 <code>local:</code> 前缀，专属 7e15 号段）。
+              回复落在内存出箱中，不碰外部网络。白名单已统一收敛至下方的「平台实例策略」集中管理。</p>
+          </div>
+
+          <label class="switch-row">
+            <span class="chan-badge chan-local" style="margin-right:8px">本地</span>
+            <span>本地通道状态：<span id="localStateHint" class="hint">未启用（在下方「平台实例策略」为本地通道配置允许的短 ID 并重启后生效）</span></span>
+          </label>
+
+          <p class="path-hint">本地通道接口地址：<code>/api/local/message</code>（需携带面板认证令牌 <code>token=...</code> 或 <code>X-Panel-Token</code> 头）。</p>
+          <div class="field">
+            <a href="/playground.html" target="_blank" class="btn-secondary" style="display:inline-block;text-decoration:none;padding:8px 16px;font-size:13px;border-radius:6px">🧪 打开交互演练场 (Playground)</a>
+            <span class="path-hint">演练场提供完整的六步治理节点时间轴可视化与端到端模拟测试。</span>
+          </div>
+        </div>
+
+        <!-- 平台实例策略 -->
+        <div class="card" id="platformPoliciesCard" data-category="channel">
+          <div class="card-head">
+            <h3>平台实例策略</h3>
+            <p>按平台与账号实例分别控制聊天入口、白名单和功能覆盖；连接凭据仍由各平台自己的安全配置管理。</p>
+          </div>
+          <div id="platformPolicyRows" class="platform-policy-list"></div>
+          <p class="path-hint" id="platformPolicyEmpty">正在读取已注册的平台实例。</p>
         </div>
 
         <!-- 面板一键部署（管理员 2026-09-18：“面板有没有提供一键部署”） -->
@@ -756,8 +834,68 @@
         <div class="card" id="replyRhythmCard" data-category="chat">
           <div class="card-head">
             <h3>回复节奏</h3>
-            <p>防止刷屏、控制发言手感。</p>
+            <p>控制人设风格、发言欲望、手感与节奏，防止刷屏。</p>
           </div>
+
+          <!-- 机器人人设档案 -->
+          <div class="field">
+            <label>机器人人设档案<span class="hint">定义角色的性格与说话风格</span></label>
+            <textarea id="setPersona" rows="4" placeholder="例如：说话简短、口语化，偶尔吐槽……"></textarea>
+          </div>
+
+          <!-- 禁止回复夹带动作描写开关 -->
+          <label class="switch-row">
+            <input type="checkbox" id="setFilterActionNarration" />
+            <span class="switch"></span>
+            <span>禁止回复夹带动作描写（自动过滤括号动作）<span class="hint">强约束提示词并自动剥离回复中出现的 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等动作与神态心理描写，只发真正说出口的话</span></span>
+          </label>
+
+          <div class="grid-2">
+            <div class="field">
+              <label>AI 对话欲望<span class="hint">越高越主动参与群聊发言</span><b class="val" id="desireVal">50</b></label>
+              <input type="range" id="setDesire" min="0" max="100" step="5" />
+            </div>
+            <div class="field">
+              <label>发言适合度阈值<span class="hint">模型评分低于此值则保持沉默</span><b class="val" id="threshVal">10</b></label>
+              <input type="range" id="setThreshold" min="0" max="60" step="5" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label>聊天步进循环上限<span class="hint">每次任务最多模型调用次数：1 = 只调用一次；2/3 = 工具返回结果后最多再调用 1/2 次</span><b class="val" id="agentStepsVal">1</b></label>
+            <input type="range" id="setMaxAgentSteps" min="1" max="3" step="1" />
+          </div>
+
+          <label class="switch-row">
+            <input type="checkbox" id="setAdaptiveSampling" />
+            <span class="switch"></span>
+            <span>自适应采样超参数（理性低温保准，感性升温灵动）</span>
+          </label>
+          <div class="grid-2">
+            <div class="field">
+              <label>理性温度<b class="val" id="rationalTempVal">0.3</b></label>
+              <input type="range" id="setRationalTemp" min="0" max="1" step="0.05" />
+            </div>
+            <div class="field">
+              <label>理性 Top_P<b class="val" id="rationalTopPVal">0.3</b></label>
+              <input type="range" id="setRationalTopP" min="0" max="1" step="0.05" />
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label>感性温度<b class="val" id="emotionalTempVal">0.85</b></label>
+              <input type="range" id="setEmotionalTemp" min="0" max="1.5" step="0.05" />
+            </div>
+            <div class="field">
+              <label>感性 Top_P<b class="val" id="emotionalTopPVal">0.9</b></label>
+              <input type="range" id="setEmotionalTopP" min="0" max="1" step="0.05" />
+            </div>
+          </div>
+          <label class="switch-row">
+            <input type="checkbox" id="setAiMode" />
+            <span class="switch"></span>
+            <span>AI 自动回复开关</span>
+          </label>
 
           <!-- 对话总开关（按通道）。与顶部那个全局「AI 开关」分工：
                全局一关两条都不回（连人在叫它也不回）；这里能只把一条静音。
@@ -1092,133 +1230,6 @@
             </div>
             <p class="path-hint" id="cloneHint">复刻成功后会直接填进上面的「音色」格，保存即可用（复刻本身不扣语音合成额度，只收一次音色费）。</p>
             <div class="path-hint" id="cloneList"></div>
-          </div>
-        </div>
-
-        <div class="card" id="platformPoliciesCard" data-category="channel">
-          <div class="card-head">
-            <h3>平台实例策略</h3>
-            <p>按平台与账号实例分别控制聊天入口、白名单和功能覆盖；连接凭据仍由各平台自己的安全配置管理。</p>
-          </div>
-          <div id="platformPolicyRows" class="platform-policy-list"></div>
-          <p class="path-hint" id="platformPolicyEmpty">正在读取已注册的平台实例。</p>
-        </div>
-
-        <!-- 飞书通道（Feishu Bot） -->
-        <div class="card" id="feishuCard" data-category="channel">
-          <div class="card-head">
-            <h3>飞书通道（企业协作平台）</h3>
-            <p>通过飞书开放平台机器人应用接入：事件订阅走 Webhook（<code>POST /api/webhooks/feishu</code>），回复通过飞书开放平台 REST API 投递。
-              与 QQ 平台<b>通道严格隔离</b>（会话 key 带 <code>feishu:</code> 前缀）。
-              在飞书开放平台「事件与回调」配置请求网址为本服务地址，并订阅 <code>im.message.receive_v1</code> 消息接收事件。</p>
-          </div>
-
-          <label class="switch-row">
-            <input type="checkbox" id="setFeishuEnabled" />
-            <span class="switch"></span>
-            <span>启用飞书通道<span class="hint" id="feishuStateHint">保存后点下方的「一键重启」生效</span></span>
-          </label>
-
-          <p class="path-hint" id="feishuWebhookUrlHint">Webhook 入口地址：<code>/api/webhooks/feishu</code>（支持 URL verification challenge 自动应答、请求签名防伪与 1MB 防护）。</p>
-
-          <div class="grid-2">
-            <div class="field">
-              <label>App ID (cli_xxx)<span class="hint">飞书开放平台应用凭据中的 App ID</span></label>
-              <input type="text" id="setFeishuAppId" maxlength="64" placeholder="cli_xxxxxxxx" />
-            </div>
-            <div class="field">
-              <label>App Secret<span class="hint">存密钥库、回显掩码；<b>留空 = 不改</b>。环境变量优先，改了重启生效</span></label>
-              <input type="password" id="setFeishuAppSecret" maxlength="200" placeholder="还没配，在这里填一个（留空 = 不改）" autocomplete="off" />
-            </div>
-            <div class="field">
-              <label>Verification Token<span class="hint">飞书开放平台事件订阅的 Verification Token</span></label>
-              <input type="text" id="setFeishuVerificationToken" maxlength="128" placeholder="事件订阅中的 Verification Token" />
-            </div>
-            <div class="field">
-              <label>Encrypt Key (加密策略密钥)<span class="hint">可选；飞书开放平台事件订阅如果开启了加密则必填，留空表示不解密</span></label>
-              <input type="password" id="setFeishuEncryptKey" maxlength="200" placeholder="未开启加密可留空（留空 = 不改）" autocomplete="off" />
-            </div>
-            <div class="field">
-              <label>白名单管理</label>
-              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：飞书的群聊白名单（<code>chat_id</code>）与单聊白名单（<code>open_id</code>）已统一在下方的「平台实例策略」卡片中按群和私聊分别管理。</p>
-              <input type="hidden" id="setFeishuWhitelist" />
-            </div>
-            <div class="field">
-              <label>API Base URL<span class="hint">默认官方开放平台地址 <code>https://open.feishu.cn</code>（专有云或测试可改）</span></label>
-              <input type="text" id="setFeishuApiBase" maxlength="256" placeholder="https://open.feishu.cn" />
-            </div>
-          </div>
-        </div>
-
-        <!-- 官方通道（QQ 开放平台） -->
-        <div class="card" id="officialCard" data-category="channel">
-          <div class="card-head">
-            <h3>官方通道（QQ 开放平台）</h3>
-            <p>与上面那条<b>私域</b>通道（自建 NapCat）<b>并存</b>：官方这条走开放平台的机器人，用户是 openid。
-              两边的会话、上下文、人设、白名单<b>完全隔离</b>（会话 key 带 <code>official:</code> 前缀），互不串台。
-              开启前先在开放平台把服务器的<b>出口 IP</b> 加进白名单；密钥（Secret）不在这里填 —— 它只从环境变量读。</p>
-          </div>
-
-          <label class="switch-row">
-            <input type="checkbox" id="setOfficialEnabled" />
-            <span class="switch"></span>
-            <span>启用官方通道<span class="hint" id="officialStateHint">保存后点下面的按钮重启生效</span></span>
-          </label>
-
-          <!-- 对话总开关：两条通道各管各的。与顶部那个全局「AI 开关」不同 ——
-               那个一关两条都不回（连人在叫它也不回）；这里能只把一条静音。
-               （放在「回复节奏」这栏：它本来就是管“回不回、多久回”的） -->
-
-          <p class="path-hint" id="officialConversationList">官方通道见过的会话会列在这里，点一下即可查看别名号。</p>
-
-          <div class="grid-2">
-            <div class="field">
-              <label>AppID<span class="hint">开放平台机器人页上的 AppID（写在这里不敏感）</span></label>
-              <input type="text" id="setOfficialAppId" maxlength="40" placeholder="102xxxxxx" />
-            </div>
-            <div class="field">
-              <label>AppSecret<span class="hint">存密钥库、只回显掩码（与 TTS 密钥同规矩）；<b>留空 = 不改</b>。环境变量优先，改了要重启才生效（下面有一键重启）</span></label>
-              <input type="password" id="setOfficialAppSecret" maxlength="200" placeholder="还没配，在这里填一个（留空 = 不改）" autocomplete="off" />
-            </div>
-            <div class="field">
-              <label>环境<span class="hint">沙箱只能收/发<b>沙箱群与沙箱单聊</b>（调试用）—— <b>正式群里 @ 它不会有任何反应</b>：平台不推送，日志里也不会出现任何行。要在正式群用，把这里取消勾选后重启</span></label>
-              <label class="switch-row"><input type="checkbox" id="setOfficialSandbox" /><span class="switch"></span><span>用沙箱环境</span></label>
-            </div>
-            <div class="field">
-              <label>白名单管理</label>
-              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：官方通道群聊与单聊白名单（别名号）已统一在下方的「平台实例策略」集中管理，留空默认全部接受。</p>
-              <input type="hidden" id="setOfficialWhitelistGroups" />
-              <input type="hidden" id="setOfficialWhitelistPrivates" />
-            </div>
-          </div>
-
-          <p class="path-hint" id="officialHint">设了 <code>QQCHAT_OFFICIAL_APP_SECRET</code> 才会真的连上去；没配就是“开关开着但连不上”，启动日志里会直说。</p>
-
-          <!-- 一键重启：改完「重启才生效」的东西（官方通道凭据、容器级挂载…）不用再开 SSH。
-               做法是让进程退出、由容器重启策略把它拉起来；页面会自己等它回来。 -->
-          <div class="field">
-            <button type="button" id="restartBtn" class="btn-secondary">⟳ 一键重启机器人</button>
-            <span class="path-hint" id="restartHint">改了 AppID / 环境 / 白名单后点一下：几秒内自己回来（页面会等它）。容器挂了也不怕——重启策略会拉起它。</span>
-          </div>
-        </div>
-
-        <!-- 本地通道（HTTP 管道通道） -->
-        <div class="card" id="localCard" data-category="channel">
-          <div class="card-head">
-            <h3>本地通道（HTTP 管道注入）</h3>
-            <p>通过 HTTP 接口 <code>POST /api/local/message</code> 注入会话，与私域、官方和飞书通道<b>严格通道隔离</b>（会话 key 带 <code>local:</code> 前缀，专属 7e15 号段）。
-              回复落在内存出箱中，不碰外部网络。白名单已统一收敛至下方的「平台实例策略」集中管理。</p>
-          </div>
-
-          <label class="switch-row">
-            <span class="chan-badge chan-local" style="margin-right:8px">本地</span>
-            <span>本地通道状态：<span id="localStateHint" class="hint">未启用（在下方「平台实例策略」为本地通道配置允许的短 ID 并重启后生效）</span></span>
-          </label>
-
-          <p class="path-hint">本地通道接口地址：<code>/api/local/message</code>（需携带面板认证令牌 <code>token=...</code> 或 <code>X-Panel-Token</code> 头）。</p>
-          <div class="field">
-            <a href="/playground.html" target="_blank" class="btn-secondary" style="display:inline-block;text-decoration:none;padding:8px 16px;font-size:13px;border-radius:6px">🧪 打开交互演练场 (Playground)</a>
-            <span class="path-hint">演练场提供完整的六步治理节点时间轴可视化与端到端模拟测试。</span>
           </div>
         </div>
 
