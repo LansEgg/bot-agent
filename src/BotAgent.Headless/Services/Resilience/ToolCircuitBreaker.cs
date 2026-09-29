@@ -137,6 +137,12 @@ public sealed class ToolCircuitBreaker
             RecordTimeout();
             return new ToolRunResult<T>(false, default, "tool_timeout", true);
         }
+        catch (OperationCanceledException)
+        {
+            // 调用方主动取消：释放 half-open 探测锁并原样抛出，不记录任何失败或超时计数，避免污染熔断状态。
+            ReleaseProbeOnCancellation();
+            throw;
+        }
         catch (TimeoutException)
         {
             RecordTimeout();
@@ -202,6 +208,14 @@ public sealed class ToolCircuitBreaker
             }
 
             return SnapshotUnsafe();
+        }
+    }
+
+    private void ReleaseProbeOnCancellation()
+    {
+        lock (_gate)
+        {
+            _probeInFlight = false;
         }
     }
 
