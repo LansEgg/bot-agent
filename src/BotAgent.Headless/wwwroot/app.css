@@ -346,23 +346,28 @@ h1, h2, h3, p { margin: 0; }
 .chan-badge.chan-local { background: rgba(139, 92, 246, 0.18); color: #8b5cf6; }
 .chan-badge.chan-private { background: rgba(120, 120, 120, 0.18); color: var(--text-secondary); }
 
-input[type="search"], input[type="text"], input[type="number"], input[type="time"], textarea, select {
+input[type="search"], input[type="text"], input[type="password"], input[type="number"], input[type="time"], textarea, select {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   background: var(--control-fill);
   border: 1px solid var(--control-border);
   border-bottom: 1px solid rgba(0, 0, 0, 0.24);
   border-radius: var(--radius-ctl);
-  padding: 7px 10px;
+  padding: 8px 12px;
   color: var(--text-primary);
   outline: none;
   transition: border-color 90ms ease, background 90ms ease;
+}
+select {
+  padding-right: 28px;
 }
 [data-theme="dark"] input, [data-theme="dark"] textarea, [data-theme="dark"] select {
   border-bottom-color: rgba(255, 255, 255, 0.28);
 }
 input:focus, textarea:focus, select:focus {
   border-bottom: 2px solid var(--accent);
-  padding-bottom: 6px;
+  padding-bottom: 7px;
 }
 input[readonly] { color: var(--text-secondary); background: var(--subtle-press); cursor: default; }
 textarea { resize: vertical; line-height: 1.5; }
@@ -910,15 +915,20 @@ textarea { resize: vertical; line-height: 1.5; }
 
 .fold-toggle {
   align-self: flex-start;
-  margin: -6px 0 0;
-  padding: 0;
-  border: none;
-  background: none;
+  margin: -4px 0 2px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
+  transition: background 120ms ease;
 }
-.fold-toggle:hover { text-decoration: underline; }
+.fold-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  text-decoration: none;
+}
 
 .quota-readouts {
   display: grid;
@@ -941,12 +951,12 @@ textarea { resize: vertical; line-height: 1.5; }
   font-size: 11px;
 }
 .quota-readout strong {
-  overflow: hidden;
   color: var(--text-primary);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .quota-readout strong.warn { color: #d97706; }
 .quota-readout strong.ok { color: #16803c; }
@@ -1329,7 +1339,8 @@ input[type="range"] {
   .composer .accent-btn { min-width: 64px; height: 44px; padding: 0 14px; }
 
   /* 16px 是 iOS Safari 的分水岭：小于它，聚焦输入框时页面会被自动放大 */
-  input, textarea, select { font-size: 16px; }
+  input, textarea, select { font-size: 16px; min-height: 44px; }
+  select { padding-right: 32px; }
   .field > label { font-size: 13px; }
   .field .hint { font-size: 11.5px; }
   .switch-row { font-size: 14px; padding: 4px 0; }
@@ -1341,13 +1352,38 @@ input[type="range"] {
   .settings-inner { padding: 16px 14px 20px; gap: 12px; }
   .page-title { font-size: 22px; }
   .page-desc { font-size: 13px; }
-  .card { padding: 14px; gap: 12px; }
+  .card { padding: 14px; gap: 14px; }
   .card-head h3 { font-size: 16px; }
   .settings-footer { padding: 10px 14px 12px; gap: 8px; }
   .settings-actions { flex-wrap: wrap; gap: 8px; }
   .accent-btn.big { flex: 1 1 auto; min-width: 0; height: 44px; }
   .path-hint { flex-basis: 100%; }
   .logbox { height: 150px; font-size: 11px; }
+
+  /* 每日配额横向滑动标签与指标卡移动端适配 */
+  #quotaChanTabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    width: 100%;
+    padding-bottom: 4px;
+  }
+  #quotaChanTabs::-webkit-scrollbar { display: none; }
+  .quota-readouts {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .quota-readout {
+    padding: 10px 12px;
+  }
+  .quota-readout strong {
+    font-size: 14px;
+    line-height: 1.4;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
 
   /* 扫码登录卡片：竖排 + 大码，方便手机对着屏幕扫 */
   .login-card { margin: 10px 12px 0; padding: 14px; gap: 10px; }
@@ -1390,7 +1426,7 @@ input[type="range"] {
 }
 @media (max-width: 860px) {
   .grid-2 { grid-template-columns: 1fr; }
-  .quota-readouts { grid-template-columns: 1fr 1fr; }
+  .quota-readouts { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
   .settings-inner { padding: 18px 18px 24px; }
   .settings-footer { padding: 12px 18px 14px; }
   .login-card { flex-direction: column; align-items: stretch; margin: 12px 14px 0; }
@@ -1865,8 +1901,8 @@ input:focus, textarea:focus, select:focus { padding-bottom: 7px; border-bottom-w
   .model-provider-item { grid-template-columns: 20px minmax(0, 1fr); min-height: 48px; padding: 6px; }
   .model-provider-icon { width: 20px; height: 20px; font-size: 11px; }
   .model-provider-mark { display: none; }
-  .model-provider-copy b { font-size: 10px; }
-  .model-provider-copy small { font-size: 9px; }
+  .model-provider-copy b { font-size: 11px; white-space: normal; line-height: 1.25; }
+  .model-provider-copy small { font-size: 9.5px; white-space: normal; line-height: 1.2; word-break: break-all; }
   .model-catalog-foot { display: none; }
   .model-editor { padding: 18px 14px 20px; }
 }
