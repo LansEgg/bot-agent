@@ -97,7 +97,9 @@ public static class Program
             ("唯一落盘物", "docs/engineering/eval-results/{results.json,results.csv,summary.md}"),
         };
 
-        var outputDir = Path.Combine(repoRoot, "docs", "engineering", "eval-results");
+        var outputDir = Environment.GetEnvironmentVariable("QQCHAT_EVAL_OUTPUT_DIR") is { Length: > 0 } customOut
+            ? customOut
+            : Path.Combine(tempDir, "eval-results");
         Directory.CreateDirectory(outputDir);
         WriteJson(Path.Combine(outputDir, "results.json"), cases, metrics, isolation);
         WriteCsv(Path.Combine(outputDir, "results.csv"), cases);
