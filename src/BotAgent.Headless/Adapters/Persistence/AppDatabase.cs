@@ -121,10 +121,6 @@ public static class AppDatabase
         {
             using var cmd = conn.CreateCommand();
             cmd.CommandText = """
-                CREATE TABLE IF NOT EXISTS feishu_webhook_dedup(
-                  event_key TEXT PRIMARY KEY,
-                  seen_unix INTEGER NOT NULL
-                );
                 DELETE FROM feishu_webhook_dedup WHERE seen_unix < $cutoff;
                 INSERT OR IGNORE INTO feishu_webhook_dedup(event_key, seen_unix)
                 VALUES($key, $seen)
@@ -435,15 +431,12 @@ public static class AppDatabase
             );
 
             -- Retained legacy own-message data (including imported JSON): never infer scope from a bare id.
-            CREATE TABLE IF NOT EXISTS own_messages(
-              message_id INTEGER PRIMARY KEY,
-              text       TEXT NOT NULL,
-              at_unix    INTEGER NOT NULL
-            );
+            CREATE TABLE IF NOT EXISTS own_messages(message_id INTEGER PRIMARY KEY, text TEXT NOT NULL, at_unix INTEGER NOT NULL);
             -- Legacy rows stay untouched: a bare id has no provable platform/account/conversation scope.
             CREATE TABLE IF NOT EXISTS own_messages_scoped(
               conversation_key TEXT NOT NULL, native_message_id TEXT NOT NULL, text TEXT NOT NULL,
               at_unix INTEGER NOT NULL, PRIMARY KEY (conversation_key, native_message_id));
+            CREATE TABLE IF NOT EXISTS feishu_webhook_dedup(event_key TEXT PRIMARY KEY, seen_unix INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS trace_archive(
               trace_id TEXT PRIMARY KEY,
               tenant_id TEXT NOT NULL,
