@@ -710,6 +710,7 @@ public static partial class Program
             Check("正向 WS：完成登录号握手", protocol.ActionsReceived.Any(a => a["action"]?.GetValue<string>() == "get_login_info"));
 
             // 健康检查
+            await WaitForPortAsync(healthPort, cts.Token, bot);
             var health = await HttpGetAsync($"http://127.0.0.1:{healthPort}/healthz");
             Check("/healthz 返回 200", health.Status == 200, health.Body);
             var ready = await HttpGetAsync($"http://127.0.0.1:{healthPort}/readyz");
@@ -747,13 +748,15 @@ public static partial class Program
 
         // ---- 重启：恢复会话，且不再重复拉历史 ----
         Section("S6b 重启后从磁盘恢复会话");
+        var loginsBeforeRestart = protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "get_login_info");
         var bot2 = StartBot(env);
         try
         {
             var log = await WaitForLogLineAsync(bot2, "已恢复", TimeSpan.FromSeconds(20));
             Check("重启后恢复磁盘会话", log is not null, log ?? "(未出现恢复日志)");
-            Check("重启后重新连上协议端", await WaitUntilAsync(() => protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "get_login_info") >= 2, TimeSpan.FromSeconds(20)));
+            Check("重启后重新连上协议端", await WaitUntilAsync(() => protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "get_login_info") > loginsBeforeRestart, TimeSpan.FromSeconds(20)));
 
+            await WaitForPortAsync(healthPort, cts.Token, bot2);
             var status = await PanelGetAsync($"http://127.0.0.1:{healthPort}/status");
             Check("重启后 /status 显示已恢复会话", status.Body.Contains("\"conversations\":1") || status.Body.Contains("\"conversations\": 1"), Truncate(status.Body, 400));
 
