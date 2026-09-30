@@ -184,9 +184,9 @@ JSON inside the database never escapes Chinese characters, so `sqlite3 ... "SELE
 
 ## Fix compatibility and migration
 
-- **Feishu identity map**: runtime composition persists `data/feishu-ids-v2.json`, using a new alias range (`FeishuBase + 1e12` to `FeishuBase + 2e12`) separate from legacy 32-bit aliases. Legacy conversations are retained, but native identity bindings and history are not inherited automatically; replace old numeric whitelist entries with Feishu native IDs. See [Feishu identity and configuration isolation](<../../docs/engineering/review-feishu-50-56.md>).
-- **OwnMessage ledger**: new entries are scoped by platform, account, conversation and native message ID in `own_messages_scoped`. Legacy bare-ID rows and imported/archived JSON are retained, but ambiguous scope fails closed: no inferred ownership and no scoped lookup hit. Old binaries cannot read new scoped entries; **lossless downgrade is not provided**. Keep a pre-upgrade backup. See [settings and message-scope remediation](<../../docs/engineering/review-54-55-plan.md>).
-- **Tool hard-timeout boundary**: the deadline bounds the caller's await and requests cancellation; it does not forcibly stop the underlying operation. Work that ignores cancellation may continue and produce external side effects. See [deadline and resource lifetime](<../../docs/engineering/review-51-53-58.md>).
+- **Feishu identity map**: runtime composition persists `data/feishu-ids-v2.json`, using a new alias range (`FeishuBase + 1e12` to `FeishuBase + 2e12`) separate from legacy 32-bit aliases. Legacy conversations are retained, but native identity bindings and history are not inherited automatically; replace old numeric whitelist entries with Feishu native IDs.
+- **OwnMessage ledger**: new entries are scoped by platform, account, conversation and native message ID in `own_messages_scoped`. Legacy bare-ID rows and imported/archived JSON are retained, but ambiguous scope fails closed: no inferred ownership and no scoped lookup hit. Old binaries cannot read new scoped entries; **lossless downgrade is not provided**. Keep a pre-upgrade backup.
+- **Tool hard-timeout boundary**: the deadline bounds the caller's await and requests cancellation; it does not forcibly stop the underlying operation. Work that ignores cancellation may continue and produce external side effects.
 
 ---
 
