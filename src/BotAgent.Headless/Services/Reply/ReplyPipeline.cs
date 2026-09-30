@@ -132,9 +132,8 @@ public sealed partial class ReplyPipeline
         _turnLoop = new AgentTurnLoop(brain, traces);
         _inlineTools = new InlineTurnTools(research, approvals, participation, hooks.Log);
 
-        _replyGate = new SemaphoreSlim(
+        _replyGate = new ResizableReplyGate(
             Math.Clamp(box.Current.MaxConcurrentReplies, 1, 16));
-        _replyGatePermits = Math.Clamp(box.Current.MaxConcurrentReplies, 1, 16);
     }
 
     private AppSettings _settings => _box.Current;
@@ -154,9 +153,8 @@ public sealed partial class ReplyPipeline
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TenantReplyQueue> _pendingReplies = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, BotConversation> _pendingConversations = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _inFlight = new();
-    private SemaphoreSlim _replyGate;
+    private readonly ResizableReplyGate _replyGate;
     private int _replyWorkerRunning;
-    private volatile int _replyGatePermits;
     private long _lastActiveRequestTicks = DateTime.MinValue.Ticks; // 最近一次主动请求时间（原子读写）
 
     /// <summary>每个会话最近一次“自己主动开口”的时间（用于主动发言的冷却）。</summary>
@@ -263,7 +261,7 @@ public sealed partial class ReplyPipeline
                 return (name, quoted.Text ?? string.Empty, true, self);
             }
 
-            if (_ownLedger.TryGet(quotedId, out var mine))
+            if (_ownLedger.TryGet(conversation.SourceKey, quotedId, out var mine))
             {
                 return ("你", mine.Text, true, true);
             }
@@ -1108,35 +1106,16 @@ public sealed partial class ReplyPipeline
             }
         }
     }
-    /// <summary>延迟回收被替换掉的闸门：等所有可能还在等它的请求都结束再 Dispose。</summary>
-    private static void RetireGate(SemaphoreSlim gate)
-    {
-        _ = Task.Run(async () =>
-        {
-            await Clock.Delay(TimeSpan.FromSeconds(90)); // HttpClient 超时 60s，留余量
-            try
-            {
-                gate.Dispose();
-            }
-            catch
-            {
-                // 已释放或仍有等待者：忽略（不能影响退出流程）
-            }
-        });
-    }
     /// <summary>执行一次回复（受全局并发闸门限制）。</summary>
     private async Task RunReplyAsync(BotConversation conversation, string sourceKey, long? triggerMessageId, bool proactive = false)
     {
         _traces.Begin(sourceKey);
 
-        // 捕获当前闸门实例：配置变更会整体替换 _replyGate，
-        // Wait 与 Release 必须作用在**同一个对象**上。
-        var gate = _replyGate;
-        var acquired = false;
+        // Reserve includes queued waiters in the retired generation's lifetime.
+        var gate = _replyGate.Reserve();
         try
         {
             await gate.WaitAsync();
-            acquired = true;
             conversation.HasPendingReply = false;
             await GenerateReplyAsync(conversation, triggerMessageId, proactive);
         }
@@ -1146,19 +1125,7 @@ public sealed partial class ReplyPipeline
         }
         finally
         {
-            // 顺序很重要：先释放闸门（可能抛），再清在途标记。
-            // 任何一个环节失败都不能让 _inFlight 残留 —— 残留意味着该会话永远不再被调度。
-            if (acquired)
-            {
-                try
-                {
-                    gate.Release();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // 闸门已被回收：忽略，不能阻断下面的清理
-                }
-            }
+            gate.Dispose();
 
             _inFlight.TryRemove(sourceKey, out _);
             LastActiveRequestTime = Clock.LocalDateTime;
@@ -2001,7 +1968,7 @@ public sealed partial class ReplyPipeline
         // 只有真正发出去的段落才写进会话历史 —— 不能因为"整条返回 false"就把已发的当成没发。
         var effectiveReplyTo = platformPolicy.Feature("quote", true).Enabled ? replyTo : null;
         var sendReport = textReply is not null
-            ? await _plain.SendWithCadenceAsync(isGroup, targetId, textReply, effectiveReplyTo,
+            ? await _plain.SendWithCadenceAsync(conversation.SourceKey, isGroup, targetId, textReply, effectiveReplyTo,
                 _riskBackoff?.IsActive(conversation.SourceKey) == true ? sendDirect : directAddress)
             : CadenceSendReport.None;
         var sentText = sendReport.AnySent;

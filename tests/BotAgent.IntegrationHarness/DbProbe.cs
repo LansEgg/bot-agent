@@ -16,6 +16,15 @@ public static class DbProbe
 
     public static bool Exists(string dataDir) => File.Exists(DbPath(dataDir));
 
+    /// <summary>Standalone harness contract: EncodeStructured(TryParse(group:id)) for legacy QQ groups.</summary>
+    public static string LegacyQqGroupScope(long groupId)
+    {
+        if (groupId <= 0) throw new ArgumentOutOfRangeException(nameof(groupId));
+        // Mirrors the reviewed ConversationIdCodec / PlatformId / AccountScope contract without a bot ProjectReference.
+        return "v=1;platform=qq.private;account=legacy;kind=group;target="
+            + groupId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ";thread=";
+    }
+
     /// <summary>查一列文本（取第一行第一列）。查不到返回 null。</summary>
     public static string? Text(string dataDir, string sql, params (string Name, object? Value)[] args)
     {

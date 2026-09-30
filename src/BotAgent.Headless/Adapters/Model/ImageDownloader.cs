@@ -1,6 +1,5 @@
-using System.Text;
-using System.Net;
 using BotAgent.Domain.Ports;
+using BotAgent.Services.Net;
 
 namespace BotAgent.Adapters.Model;
 
@@ -179,13 +178,17 @@ internal sealed class ImageDownloader : IImageDownloader
     {
         try
         {
-            if (!IsSafeImageUrl(url, out var uri))
+            if (!SafeUrl.TryValidate(url, AllowPrivateHosts, out var uri, out _))
             {
                 Services.FileLog.Write("Vision", $"图片地址被拒（SSRF 防护）: {Truncate(url, 120)}");
                 return new FetchOutcome(null, false, 0);
             }
 
-            using var response = await _http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+            // 手动跳转仍共享原客户端的响应头超时，不能把 8 秒预算乘以跳数。
+            using var headersTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            headersTimeout.CancelAfter(_http.Timeout);
+            using var response = await SafeUrl.SendFollowingRedirectsAsync(
+                _http, uri, target => new HttpRequestMessage(HttpMethod.Get, target), AllowPrivateHosts, headersTimeout.Token);
             if (!response.IsSuccessStatusCode)
             {
                 // 4xx/5xx ⇒ 值得拿协议端重新签发的地址再试一次（最常见的是 rkey 过期回 400）。
@@ -279,101 +282,6 @@ internal sealed class ImageDownloader : IImageDownloader
 
             _failedUntil.Remove(url);
         }
-    }
-
-    /// <summary>
-    /// SSRF 防护：只允许公网 http(s) 图片地址。
-    /// 拦的是这类被构造出来的地址： http://127.0.0.1:6099/...（NapCat WebUI 自身）、
-    /// http://169.254.169.254/...（云元数据）、http://napcat:3001/...（容器内服务）。
-    /// 局限：不做 DNS 解析，因此无法拦截“解析到内网 IP 的公网域名”（需要出站防火墙）。
-    /// </summary>
-    private bool IsSafeImageUrl(string? url, out Uri uri)
-    {
-        uri = null!;
-
-        // 显式放行（QQCHAT_ALLOW_PRIVATE_IMAGE_HOSTS=1，仅供自建/测试）
-        if (AllowPrivateHosts)
-        {
-            if (!string.IsNullOrWhiteSpace(url) &&
-                Uri.TryCreate(url.Trim(), UriKind.Absolute, out var permissive) &&
-                (permissive.Scheme == Uri.UriSchemeHttp || permissive.Scheme == Uri.UriSchemeHttps))
-            {
-                uri = permissive;
-                return true;
-            }
-
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var parsed))
-        {
-            return false;
-        }
-
-        if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
-        {
-            return false;
-        }
-
-        var host = parsed.DnsSafeHost;
-        if (string.IsNullOrWhiteSpace(host))
-        {
-            return false;
-        }
-
-        // 单标签主机名（localhost / napcat / redis …）一律拒绝：
-        // 真实图片域名必定带点（gchat.qpic.cn 等）
-        if (!host.Contains('.'))
-        {
-            return false;
-        }
-
-        if (host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
-            host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
-            host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        // IP 字面量：拒绝回环 / 私有 / 链路本地 / 未指定
-        if (IPAddress.TryParse(host.Trim('[', ']'), out var ip))
-        {
-            if (IPAddress.IsLoopback(ip) || ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal ||
-                ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))
-            {
-                return false;
-            }
-
-            if (IsPrivateV4(ip))
-            {
-                return false;
-            }
-
-            // IPv4-mapped IPv6（::ffff:127.0.0.1）
-            if (ip.IsIPv4MappedToIPv6 && IsPrivateV4(ip.MapToIPv4()))
-            {
-                return false;
-            }
-        }
-
-        uri = parsed;
-        return true;
-    }
-
-    private static bool IsPrivateV4(IPAddress ip)
-    {
-        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
-        {
-            return false;
-        }
-
-        var b = ip.GetAddressBytes();
-        return b[0] == 10                                 // 10.0.0.0/8
-            || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)  // 172.16.0.0/12
-            || (b[0] == 192 && b[1] == 168)               // 192.168.0.0/16
-            || (b[0] == 169 && b[1] == 254)               // 169.254.0.0/16 链路本地（云元数据）
-            || b[0] == 127                                // 127.0.0.0/8
-            || b[0] == 0;                                 // 0.0.0.0/8
     }
 
     /// <summary>流式读取并限制总字节数：超过上限立即返回 null，不会把超大响应全量读进内存。</summary>

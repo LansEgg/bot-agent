@@ -116,19 +116,31 @@ public sealed partial class WebUiServer
 
         // 只接受运行时可改的字段（协议端地址、QQ 号这些仍属于容器环境变量职责）
         var auditEvent = BuildSettingsAuditEvent(body);
-        _settingsHotReload.ApplyRuntimeSettings(s =>
+        var afterPersist = new List<Action>();
+        try
         {
-            // 三段分开：行为/阈值 · 通道与 agent · 报表与模型 · 多平台设置。
-            ApplyBehaviorSettings(body, s);
-            ApplyChannelAndAgentSettings(body, s);
-            ApplyMultiPlatformSettings(body, s, platformPolicies);
-            ApplyReportingAndModelSettings(body, s, newBaseUrl);
-        }, auditEvent, _auditChain);
-
-        // 定时类功能：开关/时刻/收件人变了一定要重排定时器，否则“改了不生效”（要重启才变）
-        _healthReports?.Reapply();
-
-        AuditSecretRotations(body);
+            _settingsHotReload.ApplyRuntimeSettings(s =>
+            {
+                // 行为/阈值 · 通道与 agent · 多平台设置 · 报表与模型。
+                ApplyBehaviorSettings(body, s, afterPersist);
+                ApplyChannelAndAgentSettings(body, s);
+                ApplyMultiPlatformSettings(body, s, platformPolicies);
+                ApplyReportingAndModelSettings(body, s, newBaseUrl, afterPersist);
+            }, auditEvent, _auditChain, _ =>
+            {
+                foreach (var action in afterPersist) action();
+                // 开关/时刻/收件人变更后重排定时器，仍在 Settings writer 串行边界内。
+                _healthReports?.Reapply();
+                AuditSecretRotations(body);
+            });
+        }
+        catch (Exception ex)
+        {
+            // 提交后重建也可能失败：不把这个错误响应当成数据库一定回滚的承诺。
+            FileLog.Warn("Web", $"Settings update failed ({ex.GetType().Name})");
+            await WriteJsonAsync(context, 500, new JsonObject { ["error"] = "settings_save_failed" });
+            return;
+        }
 
         await WriteJsonAsync(context, 200, BuildSettingsPayload());
     }
@@ -293,7 +305,7 @@ public sealed partial class WebUiServer
     }
 
     /// <summary>行为与阈值：人设 / 三份白名单 / 欲望与阈值 / 各种冷却 / 上下文窗口 / 画像 / 表情包。</summary>
-    private void ApplyBehaviorSettings(JsonNode body, AppSettings s)
+    private void ApplyBehaviorSettings(JsonNode body, AppSettings s, List<Action> afterPersist)
     {
             if (body["botPersona"] is JsonNode persona) s.BotPersona = persona.GetValue<string>() ?? string.Empty;
             if (body["messageWhitelist"] is JsonNode wl) s.MessageWhitelist = wl.GetValue<string>() ?? string.Empty;
@@ -377,20 +389,20 @@ public sealed partial class WebUiServer
         if (body["clearTtsApiKey"] is JsonValue clearNode && clearNode.TryGetValue<bool>(out var clear) && clear)
         {
             _secrets.SaveTtsKey(null);
-            WriteTtsConfToHost();
+            afterPersist.Add(WriteTtsConfToHost);
             FileLog.Write("Web", "面板显式清空了 TTS 密钥（语音会发不出去，直到重新填）");
         }
         else if (body["ttsApiKey"] is JsonValue ttsKeyValue && ttsKeyValue.TryGetValue<string>(out var rawTtsKey)
                  && !string.IsNullOrWhiteSpace(rawTtsKey))
         {
             _secrets.SaveTtsKey(rawTtsKey.Trim());
-            WriteTtsConfToHost();
+            afterPersist.Add(WriteTtsConfToHost);
             FileLog.Write("Web", "面板更新了 TTS 密钥（已掩码保存，并写给 tts 容器）");
         }
 
         if (ttsConfDirty)
         {
-            WriteTtsConfToHost();
+            afterPersist.Add(WriteTtsConfToHost);
             FileLog.Write("Web", $"面板更新了云端 TTS 配置（服务商={s.TtsProvider}，地址={(s.TtsApiBase.Length == 0 ? "(容器默认)" : s.TtsApiBase)}，模型={(s.TtsModel.Length == 0 ? "(容器默认)" : s.TtsModel)}）");
         }
 
@@ -610,7 +622,7 @@ public sealed partial class WebUiServer
     }
 
     /// <summary>报表与模型：健康日报 / 表情包与戳一戳 / 模型地址与密钥 / 心情。</summary>
-    private void ApplyReportingAndModelSettings(JsonNode body, AppSettings s, string? newBaseUrl)
+    private void ApplyReportingAndModelSettings(JsonNode body, AppSettings s, string? newBaseUrl, List<Action> afterPersist)
     {
             // ---- 服务器健康日报（定时私聊推送）----
             if (body["healthReportEnabled"] is JsonNode hre) s.HealthReportEnabled = hre.GetValue<bool>();
@@ -706,16 +718,19 @@ public sealed partial class WebUiServer
         // 日志口径与 BotAgentHost 时期逐字一致（走 PanelNotifier.EmitLog → [Agent] 标签）。
         if (body["mood"] is JsonValue moodValue && moodValue.TryGetValue<string>(out var moodText))
         {
-            var moodNow = Clock.Now;
-            if (string.IsNullOrWhiteSpace(moodText))
+            afterPersist.Add(() =>
             {
-                _mood.Reset(moodNow);
-                _ui.EmitLog("心情已交回自动描述（按被戳次数）");
-            }
-            else if (_mood.SetText(moodText, moodNow))
-            {
-                _ui.EmitLog($"心情被手动改成：{_mood.Describe(moodNow)}");
-            }
+                var moodNow = Clock.Now;
+                if (string.IsNullOrWhiteSpace(moodText))
+                {
+                    _mood.Reset(moodNow);
+                    _ui.EmitLog("心情已交回自动描述（按被戳次数）");
+                }
+                else if (_mood.SetText(moodText, moodNow))
+                {
+                    _ui.EmitLog($"心情被手动改成：{_mood.Describe(moodNow)}");
+                }
+            });
         }
     }
 

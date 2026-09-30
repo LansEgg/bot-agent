@@ -24,9 +24,14 @@ public interface ISettingsRepository
     /// <summary>读出配置（读不到/解析失败 = 默认值）。</summary>
     AppSettings Load();
 
-    /// <summary>写入配置（整份覆盖）。</summary>
+    /// <summary>写入配置（整份覆盖）。失败必须抛出；调用方只有成功后才能发布运行时快照。</summary>
     void Save(AppSettings settings);
 
-    /// <summary>写入配置并可选在同一事务内写入审计记录。</summary>
-    void Save(AppSettings settings, Ops.AuditEvent? auditEvent, Ops.IAuditChain? auditChain) => Save(settings);
+    /// <summary>写入配置与审计必须原子提交；不支持原子审计的实现必须明确拒绝。</summary>
+    void Save(AppSettings settings, Ops.AuditEvent? auditEvent, Ops.IAuditChain? auditChain)
+    {
+        if (auditEvent is not null)
+            throw new NotSupportedException("Atomic settings audit is not supported by this repository.");
+        Save(settings);
+    }
 }
