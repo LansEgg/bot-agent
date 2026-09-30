@@ -2032,6 +2032,7 @@ function renderChannelStatus(channels) {
     $("setProactiveQuiet").value = r.proactiveQuietSeconds;
     $("setIgnoreBrackets").checked = r.ignoreBracketMessages === true;
     $("setFilterActionNarration").checked = r.filterActionNarration === true;
+    $("setEnableAtmosphereDamping").checked = r.enableAtmosphereDamping !== false;
     $("setEnableStickers").checked = r.enableStickers;
     $("setStickerMax").value = r.stickerLibraryMax;
     $("setStickerCandidates").value = r.stickerCandidates;
@@ -2275,6 +2276,7 @@ function renderChannelStatus(channels) {
       proactiveQuietSeconds: Number($("setProactiveQuiet").value),
       ignoreBracketMessages: $("setIgnoreBrackets").checked,
       filterActionNarration: $("setFilterActionNarration").checked,
+      enableAtmosphereDamping: $("setEnableAtmosphereDamping").checked,
       segmentDelayMs: Number($("setSegmentDelay").value),
       maxContextMessages: Number($("setMaxContext").value),
       maxMessagesPerConversation: Number($("setMaxMessages").value),
@@ -4066,6 +4068,145 @@ function renderChannelStatus(channels) {
     $("audioModal").hidden = false;
   }
 
+  async function loadJargons() {
+    const container = $("jargonListContainer");
+    const statsHint = $("jargonStatsHint");
+    if (!container || !statsHint) return;
+
+    const scope = ($("jargonScopeInput")?.value || "global").trim();
+    try {
+      const res = await api(`/api/jargons?scope=${encodeURIComponent(scope)}`);
+      const items = res?.items || [];
+      statsHint.textContent = `共 ${items.length} 条黑话`;
+
+      container.replaceChildren();
+      if (items.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.color = "var(--text-dim)";
+        empty.style.fontSize = "13px";
+        empty.style.textAlign = "center";
+        empty.style.padding = "12px";
+        empty.textContent = "当前作用域暂无黑话记录";
+        container.appendChild(empty);
+        return;
+      }
+
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.padding = "6px 8px";
+        row.style.borderBottom = "1px solid var(--border)";
+        row.style.gap = "8px";
+
+        const left = document.createElement("div");
+        left.style.display = "flex";
+        left.style.flexDirection = "column";
+        left.style.gap = "2px";
+        left.style.overflow = "hidden";
+
+        const titleRow = document.createElement("div");
+        titleRow.style.display = "flex";
+        titleRow.style.alignItems = "center";
+        titleRow.style.gap = "6px";
+
+        const phrase = document.createElement("strong");
+        phrase.style.fontSize = "13.5px";
+        phrase.textContent = item.phrase;
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.style.fontSize = "11px";
+        badge.style.padding = "1px 5px";
+        badge.textContent = `${item.status} · 命中 ${item.hitCount}`;
+
+        titleRow.appendChild(phrase);
+        titleRow.appendChild(badge);
+
+        const meaning = document.createElement("div");
+        meaning.style.fontSize = "12px";
+        meaning.style.color = "var(--text-dim)";
+        meaning.style.overflowWrap = "anywhere";
+        meaning.textContent = item.meaning;
+
+        left.appendChild(titleRow);
+        left.appendChild(meaning);
+
+        const actions = document.createElement("div");
+        actions.style.display = "flex";
+        actions.style.gap = "4px";
+        actions.style.flexShrink = "0";
+
+        if (item.status === "pending") {
+          const btnApprove = document.createElement("button");
+          btnApprove.type = "button";
+          btnApprove.className = "btn ghost-btn";
+          btnApprove.style.fontSize = "12px";
+          btnApprove.style.padding = "2px 8px";
+          btnApprove.textContent = "放行";
+          btnApprove.onclick = async () => {
+            try {
+              await api(`/api/jargons/${item.id}/status`, { method: "POST", body: { status: "confirmed" } });
+              toast(`黑话 "${item.phrase}" 已放行`);
+              loadJargons();
+            } catch (e) {
+              toast("操作失败：" + e.message);
+            }
+          };
+          actions.appendChild(btnApprove);
+        }
+
+        const btnDel = document.createElement("button");
+        btnDel.type = "button";
+        btnDel.className = "btn ghost-btn";
+        btnDel.style.fontSize = "12px";
+        btnDel.style.padding = "2px 8px";
+        btnDel.style.color = "var(--danger)";
+        btnDel.textContent = "删除";
+        btnDel.onclick = async () => {
+          if (!confirm(`确定删除黑话 "${item.phrase}" 吗？`)) return;
+          try {
+            await api(`/api/jargons/${item.id}`, { method: "DELETE" });
+            toast(`已删除黑话 "${item.phrase}"`);
+            loadJargons();
+          } catch (e) {
+            toast("删除失败：" + e.message);
+          }
+        };
+        actions.appendChild(btnDel);
+
+        row.appendChild(left);
+        row.appendChild(actions);
+        container.appendChild(row);
+      }
+    } catch (e) {
+      statsHint.textContent = "加载失败：" + e.message;
+    }
+  }
+
+  function initJargonUi() {
+    $("btnRefreshJargons")?.addEventListener("click", () => loadJargons());
+    $("btnAddJargon")?.addEventListener("click", async () => {
+      const phrase = $("newJargonPhrase")?.value?.trim();
+      const meaning = $("newJargonMeaning")?.value?.trim();
+      const scope = ($("jargonScopeInput")?.value || "global").trim();
+      if (!phrase || !meaning) {
+        toast("请完整填写黑话词汇与含义");
+        return;
+      }
+      try {
+        await api("/api/jargons", { method: "POST", body: { scope, phrase, meaning } });
+        toast(`已录入黑话 "${phrase}"`);
+        if ($("newJargonPhrase")) $("newJargonPhrase").value = "";
+        if ($("newJargonMeaning")) $("newJargonMeaning").value = "";
+        loadJargons();
+      } catch (e) {
+        toast("录入失败：" + e.message);
+      }
+    });
+  }
+
   function writeBackAudioSources() {
     $("setMusicSources").value = $("audioSources").value;
     $("setMusicUnderstandModel").value = $("audioModel").value;
@@ -5083,6 +5224,7 @@ function renderChannelStatus(channels) {
     }
     bindUi();
     bindAudioSources();
+    initJargonUi();
     initSettingsNav();
     foldCardNotes();
     renderAiMode();

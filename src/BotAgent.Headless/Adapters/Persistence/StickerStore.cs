@@ -161,6 +161,14 @@ public sealed class StickerStore : IStickerRepository
             return null;
         }
 
+        // 使用安全校验器探测文件头真实魔数，拦截伪造扩展名、脚本与超限载荷
+        if (!StickerSafetyGuard.ValidatePayload(data, StickerSafetyGuard.DefaultMaxFileBytes, out var detectedExt, out _, out var err))
+        {
+            FileLog.Warn("Sticker", $"拦截非法表情包载荷：{err}");
+            return null;
+        }
+
+        ext = detectedExt;
         var hash = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var id = hash[..8];
         ext = NormalizeExt(ext);

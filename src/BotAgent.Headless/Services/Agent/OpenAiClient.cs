@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Reply;
+using BotAgent.Domain.Atmosphere;
 using BotAgent.Services.Model;
 using BotAgent.Domain.Model;
 using BotAgent.Domain.Ports;
@@ -165,13 +166,25 @@ public sealed class OpenAiClient : IModelClient
                   .TakeLast(16)
                   .Select(m => m.QqMessageId!.Value));
 
+        // 结合 MaiBot 启发式氛围感知模型：计算连续发言疲劳阻尼与群聊活跃度动态意愿（可通过设置项关闭）
+        var effectiveDesire = AiDesire;
+        if (_settings.EnableAtmosphereDamping)
+        {
+            var atmosphere = ChatAtmosphere.Analyze(window, Clock.Now);
+            effectiveDesire = ChatAtmosphere.CalculateEffectiveDesire(
+                AiDesire,
+                atmosphere.ConsecutiveBotReplies,
+                atmosphere.SecondsSinceLastBotReply,
+                atmosphere.Activity);
+        }
+
         // 系统提示词整块在 PromptBuilder（纯字符串拼装，顺序即语义）；这里只负责"把素材交出去"。
         // 用具名实参：这条调用有 25 个参数，位置写法一旦排错就会把"开关"喂成"阈值"（编译过的错才会被抓到）。
         var systemContent = PromptBuilder.Build(new PromptBuilder.PromptRequest(
             SystemPrompt: SystemPrompt,
             BotIdentity: BotIdentity,
             Persona: BotPersona,
-            AiDesire: AiDesire,
+            AiDesire: effectiveDesire,
             Window: window,
             QuotableIds: quotableIds,
             ProfilesText: profilesText,

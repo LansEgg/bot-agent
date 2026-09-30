@@ -224,6 +224,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         // ─────────── 表情包库（列表 / 取图 / 删除 / 立即巡检 / 导入） ───────────
         new("*", PanelMatch.Exact, "/api/stickers", (r) => HandleStickersAsync(r.Context, r.Path, r.Method)),
         new("*", PanelMatch.Prefix, "/api/stickers/", (r) => HandleStickersAsync(r.Context, r.Path, r.Method)),
+
+        // ─────────── 圈子黑话/俚语（Jargon：列表 / 审核 / 录入 / 删除） ───────────
+        new("*", PanelMatch.Exact, "/api/jargons", (r) => HandleJargonsAsync(r.Context, r.Path, r.Method)),
+        new("*", PanelMatch.Prefix, "/api/jargons/", (r) => HandleJargonsAsync(r.Context, r.Path, r.Method)),
     };
 
     /// <summary>按表分派；一条都不命中就是 404（与改造前同一句）。</summary>

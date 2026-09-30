@@ -286,8 +286,12 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
             var isGroup = msg.IsGroup;
             var targetId = isGroup ? msg.GroupId : msg.UserId;
             var channel = Channels.Declared(msg.Channel);
-            var context = !string.IsNullOrEmpty(channel) ? new PlatformContext(channel, AccountScope.Default) : null;
-            var ok = (await SendWithCadenceAsync(context, isGroup, targetId, text, msg.MessageId, directAddress: msg.MentionedSelf)).AnySent;
+            var platform = !string.IsNullOrEmpty(channel) ? PlatformId.Normalize(channel) : null;
+            var account = platform is PlatformId.QqPrivate or PlatformId.QqOfficial or PlatformId.Local
+                ? AccountScope.Legacy
+                : AccountScope.Default;
+            var context = platform is not null ? new PlatformContext(platform, account) : null;
+            var ok = (await SendWithCadenceAsync(context, isGroup, targetId, text, msg.MessageId, directAddress: true)).AnySent;
             if (!ok)
             {
                 _log("[审批] 回执没发出去（协议端拒绝或超时）");

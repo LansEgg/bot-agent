@@ -46,6 +46,17 @@ public static partial class Program
                 && (search.Contains("不要每句话都搜", StringComparison.Ordinal) || search.Contains("别每句话都搜", StringComparison.Ordinal)));
             Check("保留失败诚实说明与后台动作规则",
                 new[] { "没查到", "读不到", "如实", "旧信息", "假装", "后台动作", "reply 正常写" }.All(search.Contains));
+
+            // 验证长期记忆切片与黑话的预算截断控制
+            var longEp = new string('长', 800);
+            var epReq = request with { EpisodesText = longEp };
+            var epBuilt = PromptBuilder.Build(epReq);
+            Check("记忆预算 · 记忆切片回顾截断不超过 500 字", epBuilt.Contains("[长期记忆事件回顾]") && !epBuilt.Contains(longEp) && epBuilt.Contains("…"));
+
+            var longJg = new string('词', 600);
+            var jgReq = request with { JargonText = longJg };
+            var jgBuilt = PromptBuilder.Build(jgReq);
+            Check("黑话预算 · 黑话字典说明截断不超过 400 字", !jgBuilt.Contains(longJg) && jgBuilt.Contains("…"));
         }
         finally
         {

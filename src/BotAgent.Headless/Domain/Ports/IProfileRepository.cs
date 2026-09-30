@@ -28,4 +28,13 @@ public interface IProfileRepository
         long beforeSeq = long.MaxValue,
         long beforeUnix = long.MaxValue,
         bool allScopes = false);
+
+    /// <summary>设置或清除人工覆盖画像（覆盖后优先级高于模型自动摘要）。</summary>
+    void SetProfileOverride(string uid, string scope, string? overrideText);
+
+    /// <summary>更新与该成员画像关联的证据链 JSON。</summary>
+    void SetEvidence(string uid, string scope, string evidenceJson);
+
+    /// <summary>获取画像明细（自动摘要、人工覆盖、证据链）。</summary>
+    (string AutoSummary, string OverrideText, string EvidenceJson) GetDetailedSummary(string uid, string scope);
 }

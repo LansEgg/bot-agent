@@ -53,7 +53,9 @@ public static class PromptBuilder
         /// 空 = 这次一个工具都没开 → 整段不出现（与“开关全关时提示词逐字不变”的纪律一致）。
         /// </summary>
         string? ToolList = null,
-        bool FilterActionNarration = false);
+        bool FilterActionNarration = false,
+        string? EpisodesText = null,
+        string? JargonText = null);
 
     /// <summary>把这一轮的系统提示词拼出来（纯字符串拼接，不发任何请求）。</summary>
     public static string Build(PromptRequest request)
@@ -248,6 +250,21 @@ public static class PromptBuilder
                 "⑤ 来源链接不用贴（除非有人问“哪来的”）。）";
         }
 
+        // 长期记忆事件切片回顾（RAG-lite：Token 预算严格控制 ≤ 500 字）
+        if (!string.IsNullOrWhiteSpace(request.EpisodesText))
+        {
+            var epTrimmed = request.EpisodesText.Trim();
+            if (epTrimmed.Length > 500) epTrimmed = epTrimmed[..500] + "…";
+            systemContent += "\n\n[长期记忆事件回顾]（过去发生过的关键事件，供回答时建立连贯记忆，非相关话题不必强行提及）：\n" + epTrimmed;
+        }
+
+        // 圈子黑话/俚语字典（Token 预算严格控制 ≤ 400 字）
+        if (!string.IsNullOrWhiteSpace(request.JargonText))
+        {
+            var jgTrimmed = request.JargonText.Trim();
+            if (jgTrimmed.Length > 400) jgTrimmed = jgTrimmed[..400] + "…";
+            systemContent += "\n\n" + jgTrimmed;
+        }
 
         return systemContent;
     }

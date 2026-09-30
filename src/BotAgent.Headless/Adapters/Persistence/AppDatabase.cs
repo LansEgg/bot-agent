@@ -377,12 +377,14 @@ public static class AppDatabase
 
             -- 长期画像：一个人在一个会话范围（群/私聊）里一份
             CREATE TABLE IF NOT EXISTS member_summaries(
-              uid          TEXT NOT NULL,
-              scope        TEXT NOT NULL,
-              text         TEXT NOT NULL,
-              through_seq  INTEGER NOT NULL DEFAULT 0,
-              updated_unix INTEGER NOT NULL DEFAULT 0,
-              folded_count INTEGER NOT NULL DEFAULT 0,
+              uid           TEXT NOT NULL,
+              scope         TEXT NOT NULL,
+              text          TEXT NOT NULL,
+              through_seq   INTEGER NOT NULL DEFAULT 0,
+              updated_unix  INTEGER NOT NULL DEFAULT 0,
+              folded_count  INTEGER NOT NULL DEFAULT 0,
+              override_text TEXT NOT NULL DEFAULT '',
+              evidence_json TEXT NOT NULL DEFAULT '',
               PRIMARY KEY (uid, scope)
             );
 
@@ -467,10 +469,60 @@ public static class AppDatabase
             );
             CREATE INDEX IF NOT EXISTS idx_security_audit_log_time
               ON security_audit_log(created_at, id);
-
             """);
         CreateModelProviderTable(conn);
+        CreateJargonTable(conn);
+        CreateEpisodesTable(conn);
+        CreatePromptTemplatesTable(conn);
     }
+
+    private static void CreatePromptTemplatesTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS prompt_templates(
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              key          TEXT NOT NULL,
+              version_id   TEXT NOT NULL,
+              content      TEXT NOT NULL,
+              label        TEXT,
+              is_active    INTEGER NOT NULL DEFAULT 0,
+              created_unix INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(key, version_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_prompt_templates_key ON prompt_templates(key, is_active);
+            """);
+
+    private static void CreateEpisodesTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS episodes(
+              id            INTEGER PRIMARY KEY AUTOINCREMENT,
+              scope         TEXT NOT NULL,
+              title         TEXT NOT NULL,
+              summary       TEXT NOT NULL,
+              participants  TEXT NOT NULL,
+              tags          TEXT NOT NULL,
+              importance    INTEGER NOT NULL DEFAULT 1,
+              occurred_unix INTEGER NOT NULL DEFAULT 0,
+              created_unix  INTEGER NOT NULL DEFAULT 0,
+              updated_unix  INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS ix_episodes_scope_time ON episodes(scope, occurred_unix);
+            """);
+
+    private static void CreateJargonTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS jargons(
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              scope        TEXT NOT NULL,
+              phrase       TEXT NOT NULL,
+              meaning      TEXT NOT NULL,
+              status       INTEGER NOT NULL DEFAULT 0,
+              hit_count    INTEGER NOT NULL DEFAULT 1,
+              created_unix INTEGER NOT NULL DEFAULT 0,
+              updated_unix INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(scope, phrase)
+            );
+            CREATE INDEX IF NOT EXISTS ix_jargons_scope_status ON jargons(scope, status);
+            """);
 
     private static void CreateModelProviderTable(SqliteConnection conn)
         => Exec(conn, """
@@ -603,6 +655,22 @@ public static class AppDatabase
         }
 
         // v8：飞书 Webhook event_id / nonce 去重持久化。
+
+        // v9：画像双层模型（补齐 override_text 与 evidence_json）
+        if (version < 9)
+        {
+            var hasOverride = Scalar<long>(
+                "SELECT COUNT(1) FROM pragma_table_info('member_summaries') WHERE name = 'override_text'") > 0;
+            if (!hasOverride)
+            {
+                Write(conn2 => Exec(conn2,
+                    "-- add override_text and evidence_json\n" +
+                    "ALTER TABLE member_summaries ADD COLUMN override_text TEXT NOT NULL DEFAULT '';\n" +
+                    "ALTER TABLE member_summaries ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '';"));
+            }
+
+            Write(conn2 => Exec(conn2, "PRAGMA user_version = 9;"));
+        }
     }
 
     /// <summary>
