@@ -216,10 +216,23 @@ check(
     html.indexOf('id="setFilterActionNarration"') < html.indexOf('id="stickerSettingsCard"')
 );
 check(
+  "回复节奏卡片包含氛围感知与疲劳阻尼开关 #setEnableAtmosphereDamping",
+  html.includes('id="setEnableAtmosphereDamping"') &&
+    html.indexOf('id="replyRhythmCard"') < html.indexOf('id="setEnableAtmosphereDamping"') &&
+    html.indexOf('id="setEnableAtmosphereDamping"') < html.indexOf('id="stickerSettingsCard"')
+);
+check(
   "模型卡片已移除人设、欲望与步进控件，职责纯粹",
   html.indexOf('id="modelSettingsCard"') < html.indexOf('id="setFastReply"') &&
     !(html.indexOf('id="modelSettingsCard"') < html.indexOf('id="setPersona"') &&
       html.indexOf('id="setPersona"') < html.indexOf('id="napcatCard"'))
+);
+check(
+  "设置页包含群聊黑话与俚语卡片 #jargonCard 且挂载在 chat 分类",
+  html.includes('id="jargonCard"') &&
+    html.includes('data-category="chat"') &&
+    html.includes('id="btnRefreshJargons"') &&
+    html.includes('id="btnAddJargon"')
 );
 
 /* ─────────── 1b3) 可读性：不把字堆成一团 ─────────── */

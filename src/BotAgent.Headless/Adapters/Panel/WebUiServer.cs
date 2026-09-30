@@ -114,6 +114,7 @@ public sealed partial class WebUiServer : IDisposable
     private readonly ParticipationUseCase _participation;
     private readonly AgentCommandService _agentCmds;
     private readonly ITenantQuotaLedger _quotas;
+    private readonly IJargonRepository _jargons;
     private readonly DateTimeOffset _startedAt = Clock.Now;
     private readonly CancellationTokenSource _cts = new();
 
@@ -163,7 +164,8 @@ public sealed partial class WebUiServer : IDisposable
         Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? circuitStatusProvider = null,
         IPlatformRegistry? platformRegistry = null,
         Platforms.Feishu.FeishuBotGateway? feishuGateway = null,
-         PlatformPolicyResolver? platformPolicies = null)
+         PlatformPolicyResolver? platformPolicies = null,
+        IJargonRepository? jargons = null)
     {
         _port = port;
         _box = box;
@@ -192,6 +194,7 @@ public sealed partial class WebUiServer : IDisposable
         _participation = participation;
         _agentCmds = agentCmds;
         _quotas = quotas;
+        _jargons = jargons ?? new JargonStore();
          _agentBridge = agentBridge;
         _healthReports = healthReports;
         _sessionPolicies = sessionPolicies;

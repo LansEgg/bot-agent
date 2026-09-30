@@ -17,13 +17,19 @@ Run these commands at the repository root with .NET 8 and Node.js 22:
 dotnet build src/BotAgent.Headless/BotAgent.Headless.csproj -c Release
 dotnet run --project tests/BotAgent.ArchitectureProbe/BotAgent.ArchitectureProbe.csproj -c Release
 dotnet run --project tests/BotAgent.SafetyProbe/BotAgent.SafetyProbe.csproj -c Release
+dotnet run --project tests/BotAgent.ParticipationProbe/BotAgent.ParticipationProbe.csproj -c Release
+dotnet run --project tests/BotAgent.BridgeProbe/BotAgent.BridgeProbe.csproj -c Release
+python -m unittest discover -s tests/BotAgent.BridgeProbe -p "test_*.py"
 dotnet run --project tests/BotAgent.ProductionSpecProbe/BotAgent.ProductionSpecProbe.csproj -c Release
+dotnet run --project tests/BotAgent.ConcurrencyStressProbe/BotAgent.ConcurrencyStressProbe.csproj -c Release
+dotnet run --project tests/BotAgent.ChaosFaultProbe/BotAgent.ChaosFaultProbe.csproj -c Release
+dotnet run --project tests/BotAgent.PipelineEval/BotAgent.PipelineEval.csproj -c Release
 node tests/BotAgent.FrontendProbe/probe.mjs
 dotnet build tests/BotAgent.IntegrationHarness/BotAgent.IntegrationHarness.csproj -c Release
-QQCHAT_IT_ONLY=s1 dotnet tests/BotAgent.IntegrationHarness/bin/Release/net8.0/BotAgent.IntegrationHarness.dll
+dotnet tests/BotAgent.IntegrationHarness/bin/Release/net8.0/BotAgent.IntegrationHarness.dll
 ```
 
-The integration harness starts a separate bot process; build the core project first. The synthetic `s1` scenario is a smoke test, not a substitute for the full integration suite. PRs must report skipped or environment-limited checks. `.github/workflows/ci.yml` runs this subset on `dev`, `main`, and PRs to either branch; inspect the actual run before calling it green.
+The integration harness starts a separate bot process; build the core project first. The synthetic integration suite covers all end-to-end scenarios (S1–S51). `.github/workflows/ci.yml` runs all synthetic probes, state machine verifications, and deterministic evaluations under `verify`, and partitions integration scenarios into parallel matrix slices (`Core & Chat`, `Media & Tools`, `Governance & Multi-Platform`) under `integration` on `dev`, `main`, and PRs; inspect the actual run before calling it green.
 
 ## Publishing limitation
 

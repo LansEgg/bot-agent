@@ -253,6 +253,9 @@ public sealed class AppSettings
     /// <summary>禁止回复夹带动作/心理描写（自动过滤括号动作如 (晃了晃耳朵)、（叹气）、*微笑* 等）。</summary>
     public bool FilterActionNarration { get; set; }
 
+    /// <summary>启用群聊氛围感知与发言疲劳阻尼冷却（连续发言多次后自动衰减欲望，冷清/对线时克制，防止刷屏）。</summary>
+    public bool EnableAtmosphereDamping { get; set; } = true;
+
     /// <summary>分段发送时每段之间的时间基准（毫秒）。</summary>
     public int SegmentDelayMs { get; set; } = 700;
 
@@ -586,6 +589,12 @@ public sealed class AppSettings
     /// 留空 = 不带任何附加提示词。
     /// </summary>
     public string AgentPrompt { get; set; } = DefaultAgentPrompt;
+
+    /// <summary>系统提示词出厂默认模板。</summary>
+    public const string DefaultSystemPrompt = "你是一个在聊天群里的真人群友，说话自然随性，不做作。";
+
+    /// <summary>人设档案出厂默认模板。</summary>
+    public const string DefaultPersona = "说话简短、口语化，偶尔吐槽，有自己的喜好与情绪。";
 
     /// <summary>
     /// 默认的附加提示词：开发/排查时的隐私红线。面板上的「恢复默认」按钮也读它 ——

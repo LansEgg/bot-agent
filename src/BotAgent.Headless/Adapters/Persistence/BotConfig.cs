@@ -138,6 +138,7 @@ public static class BotConfig
       [nameof(AppSettings.ProactiveQuietSeconds)] = new[] { "QQCHAT_PROACTIVE_QUIET" },
       [nameof(AppSettings.IgnoreBracketMessages)] = new[] { "QQCHAT_IGNORE_BRACKETS" },
       [nameof(AppSettings.FilterActionNarration)] = new[] { "QQCHAT_FILTER_ACTION_NARRATION" },
+      [nameof(AppSettings.EnableAtmosphereDamping)] = new[] { "QQCHAT_ENABLE_ATMOSPHERE_DAMPING" },
             [nameof(AppSettings.SegmentDelayMs)] = new[] { "QQCHAT_SEGMENT_DELAY_MS" },
             [nameof(AppSettings.MaxContextMessages)] = new[] { "QQCHAT_MAX_CONTEXT" },
             [nameof(AppSettings.ProfileLookupCount)] = new[] { "QQCHAT_PROFILE_LOOKUP" },
@@ -301,6 +302,7 @@ public static class BotConfig
         s.ProactiveQuietSeconds = Int("QQCHAT_PROACTIVE_QUIET") ?? s.ProactiveQuietSeconds;
         s.IgnoreBracketMessages = Bool("QQCHAT_IGNORE_BRACKETS") ?? s.IgnoreBracketMessages;
         s.FilterActionNarration = Bool("QQCHAT_FILTER_ACTION_NARRATION") ?? s.FilterActionNarration;
+        s.EnableAtmosphereDamping = Bool("QQCHAT_ENABLE_ATMOSPHERE_DAMPING") ?? s.EnableAtmosphereDamping;
         s.SegmentDelayMs = Int("QQCHAT_SEGMENT_DELAY_MS") ?? s.SegmentDelayMs;
         s.MaxContextMessages = Int("QQCHAT_MAX_CONTEXT") ?? s.MaxContextMessages;
         s.ProfileLookupCount = Int("QQCHAT_PROFILE_LOOKUP") ?? s.ProfileLookupCount;

@@ -850,6 +850,13 @@
             <span>禁止回复夹带动作描写（自动过滤括号动作）<span class="hint">强约束提示词并自动剥离回复中出现的 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等动作与神态心理描写，只发真正说出口的话</span></span>
           </label>
 
+          <!-- 群聊氛围感知与发言疲劳阻尼冷却开关 -->
+          <label class="switch-row">
+            <input type="checkbox" id="setEnableAtmosphereDamping" />
+            <span class="switch"></span>
+            <span>群聊动态氛围感知与疲劳阻尼冷却（借鉴 MaiBot）<span class="hint">连续发言多次后自动衰减欲望并进入冷却降温，冷清群聊减少插嘴，对线刷屏时主动克制，防止刷屏讨人嫌</span></span>
+          </label>
+
           <div class="grid-2">
             <div class="field">
               <label>AI 对话欲望<span class="hint">越高越主动参与群聊发言</span><b class="val" id="desireVal">50</b></label>
@@ -1011,6 +1018,48 @@
               句子中间的括号（「（2026）年的计划」）不碰；群友发表情/图片的记录（[表情:斜眼笑]、[图片]）不当旁白；
               带图 / 带 @ 机器人 / 私聊永不动</span></span>
           </label>
+        </div>
+
+        <!-- 群聊黑话与流行梗 (Jargon) -->
+        <div class="card" id="jargonCard" data-category="chat">
+          <div class="card-head">
+            <h3>群聊黑话与俚语 (Jargon)</h3>
+            <p>自动学习群友流行黑话与缩写，支持审核放行或手动录入。已审核黑话将融入模型 Prompt，使回复更贴近圈子风格。</p>
+          </div>
+
+          <div class="grid-2">
+            <div class="field">
+              <label>筛选作用域<span class="hint">输入群号如 group:10001 或留空/填 global 全局</span></label>
+              <input type="text" id="jargonScopeInput" placeholder="global" value="global" />
+            </div>
+            <div class="field" style="display:flex;align-items:flex-end">
+              <button type="button" class="btn" id="btnRefreshJargons" style="width:100%">刷新黑话列表</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>黑话条目列表<span class="hint" id="jargonStatsHint">加载中...</span></label>
+            <div id="jargonListContainer" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px">
+              <div style="color:var(--text-dim);font-size:13px;text-align:center;padding:12px">暂无黑话数据</div>
+            </div>
+          </div>
+
+          <div class="card-head" style="margin-top:6px">
+            <h3 style="font-size:14px">手动录入黑话</h3>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label>黑话词汇/梗短语</label>
+              <input type="text" id="newJargonPhrase" placeholder="例如：早八人、纯爱战神" />
+            </div>
+            <div class="field">
+              <label>语境与含义解释</label>
+              <input type="text" id="newJargonMeaning" placeholder="解释其真实含义与使用语境" />
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:4px">
+            <button type="button" class="btn" id="btnAddJargon">添加并直接放行</button>
+          </div>
         </div>
 
         <!-- 表情包 -->

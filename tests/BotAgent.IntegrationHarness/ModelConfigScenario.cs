@@ -47,6 +47,7 @@ public static partial class Program
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         using var bot = StartBot(env);
         await WaitForPortAsync(botWsPort, cts.Token, bot);
+        await WaitForPortAsync(panelPort, cts.Token, bot);
 
         using var protocol = new MockProtocol { SelfId = 10001 };
         await protocol.ConnectReverseAsync($"ws://127.0.0.1:{botWsPort}", cts.Token);
@@ -154,6 +155,7 @@ public static partial class Program
         using (var bot2 = StartBot(env))
         {
             await WaitForPortAsync(botWsPort, cts.Token, bot2);
+            await WaitForPortAsync(panelPort, cts.Token, bot2);
             using var protocol2 = new MockProtocol { SelfId = 10001 };
             await protocol2.ConnectReverseAsync($"ws://127.0.0.1:{botWsPort}", cts.Token);
             await WaitUntilAsync(() => bot2.OutputLines.Any(l => l.Contains("已启动")), TimeSpan.FromSeconds(20));
