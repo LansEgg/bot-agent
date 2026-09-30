@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { extractSessionSource } from "./browser-fixture.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../src/BotAgent.Headless/wwwroot");
@@ -855,8 +856,56 @@ check("★ 默认提示词由服务端下发（前端不抄一份，免得两处
 check("★ 改名输入框填真名（nameRaw）：脱敏开启时拿占位符去改名会把「群友A」写回去",
   js.includes("old.nameRaw || old.name"));
 check("★ 会话/聊天都带序号（面板的顺序 = 群里 //sessions 的顺序，//use 序号能对上）",
-  js.includes("${i + 1}) ") && js.includes("#${i + 1}") && js.includes("${i + 1}. ${c.name || k}"),
+  js.includes("${i + 1}) ") && js.includes("#${i + 1}") && js.includes("${i + 1}. ${escapeHtml(c.name || k)}"),
   "没序号的话，面板上看到第几个、群里 //use 第几个就对不上");
+const agentSessionsRenderer = js.slice(js.indexOf("async function refreshAgentSessions"), js.indexOf('$("agentSessionRefresh")'));
+const piSessionRenderer = js.slice(js.indexOf('$("agentSessionImport")'), js.indexOf('$("agentSessionNew")'));
+check("★ Agent 会话渲染统一转义接口/桥返回的文本和属性字段",
+  agentSessionsRenderer.includes("escapeHtml(c.name || k)") &&
+  agentSessionsRenderer.includes("escapeHtml(x.name)") &&
+  agentSessionsRenderer.includes("escapeHtml(r.prompt || \"\")") &&
+  agentSessionsRenderer.includes("escapeHtml(r.result)") &&
+  agentSessionsRenderer.includes('data-sess-use="${escapeHtml(x.id)}"') &&
+  piSessionRenderer.includes("escapeHtml((it.title || \"(无标题)\")") &&
+  piSessionRenderer.includes('data-pi-import="${escapeHtml(it.id || \"\")}"'),
+  "会话标题、prompt/result、pi 标题或动作属性缺少 escapeHtml");
+
+// Behavioural selector regression; real HTML parsing/XSS acceptance lives in the native-browser fixture.
+{
+  const ids = ['quote"\'<>[]:#\\ &', 'slash\\41 [id]#.:>+~*', 'x"], [data-sess-runs-box="other'];
+  const boxes = ids.map((id) => ({ dataset: { sessRunsBox: id }, style: { display: "none" } }));
+  const buttons = ids.map((id) => ({ dataset: { sessRuns: id }, addEventListener: (_event, fn) => { handlers.set(id, fn); } }));
+  const handlers = new Map();
+  const noopNode = { addEventListener() {} };
+  const table = {
+    innerHTML: "",
+    querySelector() { throw new Error("Dataset IDs must not be interpolated into a CSS selector"); },
+    querySelectorAll(selector) {
+      if (selector === "[data-sess-runs]") return buttons;
+      if (selector === "[data-sess-runs-box]") return boxes;
+      return [];
+    }
+  };
+  const select = { ...noopNode, value: "synthetic-chat", innerHTML: "" };
+  const context = {
+    $: (id) => id === "agentSessionTable" ? table : id === "agentSessionChat" ? select : noopNode,
+    withToken: (value) => value, authHeaders: (headers) => headers,
+    fetch: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ chats: { "synthetic-chat": { sessions: ids.map((id) => ({ id, name: "synthetic" })) } } }) })
+  };
+  vm.createContext(context);
+  vm.runInContext(extractSessionSource(js), context, { filename: "extracted-session-source.js" });
+  await vm.runInContext("refreshAgentSessions()", context);
+  for (let i = 0; i < ids.length; i++) {
+    let error = null;
+    try {
+      handlers.get(ids[i])();
+      check(`★ hostile ID ${i} expands only its exact session`, boxes.every((box, j) => box.style.display === (j === i ? "" : "none")));
+      handlers.get(ids[i])();
+      check(`★ hostile ID ${i} collapses its exact session`, boxes.every((box) => box.style.display === "none"));
+    } catch (e) { error = e.message; }
+    check(`★ hostile ID ${i} expansion does not build a dynamic CSS selector`, error === null, error);
+  }
+}
 
 // ─────────── 服务器健康日报（定时私聊推送）───────────
 check("面板有健康日报卡片（开关 / 时刻 / 收件人 / 预览 / 立即发 / 状态提示）",

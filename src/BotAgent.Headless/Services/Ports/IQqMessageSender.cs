@@ -22,6 +22,11 @@ public interface IQqMessageSender
     /// </summary>
     Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false);
 
+    /// <summary>完整会话 key 用于发送记账；不支持的旧实现明确拒绝，不能降级丢失账号/thread。</summary>
+    Task<CadenceSendReport> SendWithCadenceAsync(string sourceKey, bool isGroup, long targetId,
+        string reply, long? replyTo, bool directAddress = false)
+        => throw new NotSupportedException("Full conversation scope is not supported by this sender.");
+
     /// <summary>往某个会话直发一段纯文本（不走节奏分句）。</summary>
     Task SendPlainAsync(BotConversation conversation, string text);
 

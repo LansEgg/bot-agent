@@ -169,15 +169,24 @@ secrets:
 | --- | --- |
 | `data/qqchat.db` | **SQLite database**: settings, conversations, messages (including the archive), member profiles and personas, mood, songs heard, sticker index, secrets. WAL mode, accompanied by `-wal` / `-shm` |
 | `data/legacy-json/` | Archive of old JSON data (moved here after the automatic import on first start; **not deleted**) |
+| `data/feishu-ids-v2.json` | Feishu v2 native identity-to-alias map (persisted when new identities are bound); include in data backups, with no automatic legacy-alias migration |
 | `stickers/*.png` | **Sticker image data** (the index is in the database; binary data does not belong in there — backup, preview and cleanup all get awkward) |
 | `logs/qqchat.log` | Runtime log (the panel log page and `/api/logs` are just its tail; ⚠ it currently **does not rotate**, so it keeps growing) |
 
 > Why SQLite replaced "a pile of JSON": ① conversations / messages / profiles were spread across several files, a single crash could write only half of them, and cross-file transactions were impossible; ② messages are append-only, while JSON rewrote everything each time (noticeably slow at a few thousand entries); ③ the panel's "earlier messages in this group / one person's persona in one group / dig through the archive" could only be done by loading everything into memory and filtering, whereas in SQL it is one statement.
 >
-> Backup: just copy `data/qqchat.db` (together with `-wal` / `-shm`); to inspect settings with SQL, `json_extract(json,'$.AiDesire')` works.
+> Database backup: copy `data/qqchat.db` (together with `-wal` / `-shm`); when Feishu is enabled, retain and back up `data/feishu-ids-v2.json` too — restoring only the database is insufficient. To inspect settings with SQL, `json_extract(json,'$.AiDesire')` works.
 > Secrets (API keys entered in the panel) live in the `secrets` table, which is why **the database file mode is 600** (kept out of `settings`, so it never gets pasted out along with the configuration).
 
 JSON inside the database never escapes Chinese characters, so `sqlite3 ... "SELECT text FROM messages LIMIT 3"` is readable as-is.
+
+---
+
+## Fix compatibility and migration
+
+- **Feishu identity map**: runtime composition persists `data/feishu-ids-v2.json`, using a new alias range (`FeishuBase + 1e12` to `FeishuBase + 2e12`) separate from legacy 32-bit aliases. Legacy conversations are retained, but native identity bindings and history are not inherited automatically; replace old numeric whitelist entries with Feishu native IDs. See [Feishu identity and configuration isolation](<../../docs/engineering/review-feishu-50-56.md>).
+- **OwnMessage ledger**: new entries are scoped by platform, account, conversation and native message ID in `own_messages_scoped`. Legacy bare-ID rows and imported/archived JSON are retained, but ambiguous scope fails closed: no inferred ownership and no scoped lookup hit. Old binaries cannot read new scoped entries; **lossless downgrade is not provided**. Keep a pre-upgrade backup. See [settings and message-scope remediation](<../../docs/engineering/review-54-55-plan.md>).
+- **Tool hard-timeout boundary**: the deadline bounds the caller's await and requests cancellation; it does not forcibly stop the underlying operation. Work that ignores cancellation may continue and produce external side effects. See [deadline and resource lifetime](<../../docs/engineering/review-51-53-58.md>).
 
 ---
 
@@ -517,10 +526,11 @@ The following are **deliberate trade-offs**, not a to-do list:
 
 ## Tests
 
-Two layers of verification, both genuinely end-to-end (no mock stubs):
+Run these commands from the repository root. They provide local-process and isolated-container verification entry points (a real bot process with synthetic protocol/model peers), not claims that this round ran container tests, remote CI or a production deployment:
 
 ```bash
-# ① Local integration tests: a real bot process + a fake protocol side (real WebSocket) + a fake model (real HTTP)
+# ① Local integration tests: build the bot separately, then start a real process + synthetic protocol/model peers
+dotnet build src/BotAgent.Headless/BotAgent.Headless.csproj -c Release
 dotnet run --project tests/BotAgent.IntegrationHarness -c Release
 
 # ② Container tests: verify the bot as it really runs in a container (place the fake protocol side / model on the container network)
@@ -541,12 +551,17 @@ Coverage: reverse / forward WebSocket handshake, login-number detection, group a
 staying silent when the model is silent, quoted replies (a quote is attached only when someone cut in; targets the model points at are validated; no wrong credit when repeating; **incoming quoted replies are recognised too**),
 sentence splitting without losing characters, parenthetical narration tagged as `〔旁白：…〕` without triggering a reply on its own, member profile reads and writes,
 prompt assembly (persona / profiles / the `{sender}{content--time}` format), conversation recovery after a restart, and the health endpoints.
-The full suite has **729** assertions (measured 2026-09-24: **728 pass / 1 pre-existing soft warning line** — the "system prompt < 4000 characters"
-warning line, measuring ~4364 characters; **it is a sentinel, not a target, so don't move the threshold**). Inside the harness, `QQCHAT_IT_ONLY=s19` runs a single scenario.
+The harness dispatches S1, S3–S41 and S43–S51. S2 prompt assertions run inside S1; S42 (official channel) remains excluded from harness/CI regression, so official-channel end-to-end coverage is not claimed.
+The historical 2026-09-24 snapshot was 728 pass / 1 soft warning line (system prompt < 4000 characters, measuring ~4364; **it is a sentinel, not a target, so don't move the threshold**), not this round's result or a fixed current assertion count.
+`QQCHAT_IT_ONLY=s19` runs one scenario. The harness project does not reference the bot project; build the bot separately after source changes.
 
-There are also several **sub-second probes** (no database, no network, each run after changing the corresponding part): `ArchitectureProbe` (architecture ratchet, **92/0**),
-`SafetyProbe` (mechanisms and multi-platform safety boundaries, **389/0**), `ParticipationProbe` (48/0), `PipelineEval` (isolated evaluation, 68/68),
-`ProductionSpecProbe` (production specs & fallbacks, 59/0), `FrontendProbe` (panel static + runtime, **271/0**). Includes S50 Feishu Webhook (10/0) and S51 Daily Token Quota (8/0) integration verifications.
+There are also several **sub-second probes** (synthetic scenarios, no production data or services; run after changing the corresponding part): `ArchitectureProbe` (architecture ratchet),
+`SafetyProbe` (mechanisms and multi-platform safety boundaries), `ParticipationProbe`, `PipelineEval` (isolated evaluation),
+`ProductionSpecProbe` (production specs & fallbacks), and [FrontendProbe](<../../tests/BotAgent.FrontendProbe/probe.mjs>) (panel static + runtime). S50 Feishu Webhook and S51 Daily Token Quota are also in the integration scenario list; counts come from local command output:
+
+```bash
+node tests/BotAgent.FrontendProbe/probe.mjs
+```
 
 ---
 

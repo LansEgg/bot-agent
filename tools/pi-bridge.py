@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -285,7 +286,7 @@ class TaskRunner:
         with self.lock:
             self.cancelled = True
             proc = self.proc
-        if proc and proc.poll() is None:
+        if proc:
             _kill_tree(proc)
             log("任务被取消 → 已杀掉 pi")
 
@@ -297,7 +298,7 @@ class TaskRunner:
         """
         with self.lock:
             proc = self.proc
-        if proc and proc.poll() is None:
+        if proc:
             _kill_tree(proc)
             log("连接断开 → 已杀掉还在跑的 pi")
 
@@ -355,51 +356,60 @@ class TaskRunner:
         # otherwise pi-web only shows the previous turn while a task is running
         live_flush_seconds = 0.0 if os.environ.get("PI_BRIDGE_LIVE_SESSION", "1") == "0" else 4.0
         last_flush = time.time()
+        killed = threading.Event()
+        timed_out = threading.Event()
+        err_tail: list[str] = []
+        proc = None
 
         try:
             creation = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-            self.proc = subprocess.Popen(
-                args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
-                env={**os.environ, **self.server_env},   # 服务器坐标（sftp/scp 用；不含密钥）
-                # stdin 必须断开：pi 的非交互模式偶尔会问一句（项目本地文件的信任/确认），
-                # 接到控制台就会**永远等下去** —— 机器人那边看到的就是“卡住”（实测踩过）
-                stdin=subprocess.DEVNULL,
-                creationflags=creation,
-            )
-            self.send_json({"type": "started", "id": task_id, "pid": self.proc.pid})
+            with self.lock:
+                proc = subprocess.Popen(
+                    args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                    env={**os.environ, **self.server_env},
+                    # 非交互任务不允许等待控制台输入。
+                    stdin=subprocess.DEVNULL,
+                    creationflags=creation,
+                    start_new_session=os.name != "nt",
+                )
+                # 仅记录由这次 spawn 建立的组；绝不从任意 pid 推断组所有权。
+                proc._pi_bridge_pgid = proc.pid if os.name != "nt" else None
+                proc._pi_bridge_kill_lock = threading.Lock()
+                self.proc = proc
+            self.send_json({"type": "started", "id": task_id, "pid": proc.pid})
 
             # stderr 单独一个线程读到尾巴：卡住时至少能看到 pi 说了什么
-            err_tail: list[str] = []
-
             def _drain_stderr() -> None:
                 try:
-                    for line in self.proc.stderr:            # type: ignore[union-attr]
+                    for line in proc.stderr:
                         err_tail.append(line.rstrip())
                         if len(err_tail) > 40:
                             del err_tail[0]
                 except Exception:                            # noqa: BLE001
                     pass
 
-            threading.Thread(target=_drain_stderr, daemon=True).start()
+            stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+            stderr_thread.start()
 
             # 看门狗：pi 卡住（不吐任何东西）时也必须能超时杀掉 ——
             # 光靠下面那个循环里判 deadline 是不够的（没输出就永远出不来）
-            deadline = started + timeout
-            killed = threading.Event()
+            deadline = time.monotonic() + timeout
 
             def _watchdog() -> None:
-                while not killed.is_set() and time.time() < deadline:
-                    time.sleep(0.5)
-                if not killed.is_set() and self.proc and self.proc.poll() is None:
-                    _kill_tree(self.proc)
+                while not killed.wait(min(0.5, max(0, deadline - time.monotonic()))):
+                    if time.monotonic() >= deadline:
+                        break
+                if not killed.is_set():
+                    timed_out.set()
+                    _kill_tree(proc)
                     err_tail.append(f"（看门狗：超过 {timeout}s 无结果，已杀掉 pi）")
 
             threading.Thread(target=_watchdog, daemon=True).start()
 
-            for line in self.proc.stdout:                      # NDJSON 一行一个事件
-                if time.time() > deadline:
-                    _kill_tree(self.proc)
+            for line in proc.stdout:                      # NDJSON 一行一个事件
+                if time.monotonic() > deadline:
+                    _kill_tree(proc)
                     error = f"超时（{timeout} 秒）"
                     break
 
@@ -442,9 +452,12 @@ class TaskRunner:
                     self.send_json({"type": "progress", "id": task_id,
                                     "note": TOOL_HINTS.get(name, f"🔧 {name}")})
 
+            if timed_out.is_set():
+                error = f"超时（{timeout} 秒）"
             if error is None:
-                exit_code = self.proc.wait(timeout=30)
-                stderr = (self.proc.stderr.read() or "").strip() if self.proc.stderr else ""
+                exit_code = proc.wait(timeout=30)
+                stderr_thread.join(timeout=1)
+                stderr = " / ".join(err_tail)
                 if exit_code != 0:
                     # 非零退出：stderr → 事件里的 stopReason/errorMessage → 最后才是“退出码 N”
                     error = "｜".join(part for part in (
@@ -457,8 +470,14 @@ class TaskRunner:
             error = f"{type(exc).__name__}: {exc}"
         finally:
             killed.set()
+            if proc is not None:
+                _kill_tree(proc)
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
             with self.lock:
-                self.proc = None
+                if self.proc is proc:
+                    self.proc = None
                 was_cancelled = self.cancelled
 
         if error and err_tail:
@@ -513,18 +532,55 @@ def _stop_hint(event: dict) -> str | None:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """连子进程一起杀（pi 自己也会拉起子进程；只杀父进程会留下孤儿占着目录）。"""
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        else:
-            os.killpg(os.getpgid(proc.pid), 15)
-    except Exception:                                          # noqa: BLE001
+    """只杀 spawn 时证明属于本任务的组；TERM 后限时 KILL，不误杀桥自身。"""
+    with getattr(proc, "_pi_bridge_kill_lock", threading.Lock()):
+        pgid = getattr(proc, "_pi_bridge_pgid", None)
+        # 消耗所有权记录，避免 cancel/watchdog/finally 重复按旧 pid 杀组。
+        proc._pi_bridge_pgid = None
         try:
-            proc.kill()
-        except Exception:                                      # noqa: BLE001
-            pass
+            if os.name == "nt":
+                if proc.poll() is None:
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   check=False, timeout=3)
+            elif pgid == proc.pid and pgid != os.getpgrp():
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    return
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    proc.poll()  # reaps the leader, but descendants may still own the pipes
+                    try:
+                        os.killpg(pgid, 0)
+                    except ProcessLookupError:
+                        return  # group is gone: never target this old pgid again
+                    time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif proc.poll() is None:
+                # 未由本桥创建的私有组：只能终止该进程，绝不能 killpg。
+                proc.terminate()
+                _wait_process(proc, 1.5)
+                if proc.poll() is None:
+                    proc.kill()
+            _wait_process(proc, 1)
+        except (OSError, subprocess.TimeoutExpired):
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    _wait_process(proc, 1)
+                except OSError:
+                    pass
+
+
+def _wait_process(proc: subprocess.Popen, timeout: float) -> None:
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════

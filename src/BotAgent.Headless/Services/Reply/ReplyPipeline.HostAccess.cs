@@ -38,18 +38,10 @@ public sealed partial class ReplyPipeline
     /// <summary>恢复出来的会话：历史按"还没拉过"算（首次收到消息时才去拉群历史）。</summary>
     public void MarkHistoryPending(string sourceKey) => _historyRequested.TryAdd(sourceKey, 0);
 
-    /// <summary>面板改了并发上限 → 换一个新的闸门（旧的不 Dispose，让在途的那次跑完）。</summary>
+    /// <summary>配置变更只影响新预约；旧代持有者和等待者全部排空后回收。</summary>
     public void ResizeGate(int permits)
     {
-        if (permits == _replyGatePermits)
-        {
-            return;
-        }
-
-        _replyGatePermits = permits;
-        var previous = _replyGate;
-        _replyGate = new SemaphoreSlim(permits);
-        RetireGate(previous);
+        _replyGate.Resize(permits);
         _hooks.Log($"模型并发上限已改为 {permits}");
     }
 }

@@ -190,6 +190,7 @@ public sealed class HealthReportService : IDisposable
         var (text, _) = await BuildReportAsync(reportTime);
         var failures = new List<string>();
         var skipped = new List<string>();
+        var sentThisRun = 0;
 
         foreach (var uid in targets)
         {
@@ -210,6 +211,7 @@ public sealed class HealthReportService : IDisposable
                 if (result.Ok)
                 {
                     SentCount++;
+                    sentThisRun++;
                     LastSentAt = NowBeijing();
                     FileLog.Write("Health", $"健康日报已私聊发给 {uid}（{reason}，{text.Length} 字）");
                 }
@@ -231,7 +233,7 @@ public sealed class HealthReportService : IDisposable
             FileLog.Warn("Health", $"健康日报发送失败：{error}");
         }
 
-        if (skipped.Count > 0 && failures.Count == 0 && SentCount == 0)
+        if (skipped.Count > 0 && failures.Count == 0 && sentThisRun == 0)
         {
             // 全被总开关拦下：不算“失败”（不是故障），但要让面板/日志看出来发生了什么 ✗“没发”不能无声
             var note = "所有收件人所在通道的对话总开关都关着，本次没发：" + string.Join("；", skipped);

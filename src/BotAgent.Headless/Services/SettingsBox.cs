@@ -13,7 +13,7 @@ namespace BotAgent.Services;
 ///
 /// 三条纪律：
 ///   ① 读取一律走 <see cref="Current" />（各组件里那个叫 <c>_settings</c> 的只读属性就是它）；
-///   ② 写入只有 <see cref="Apply" /> 一条路（<c>_settings.X = …</c> 这种就地赋值不许再出现）；
+///   ② 写入统一走 <see cref="Apply" /> / <see cref="ApplyPersisted" />（禁止就地改共享配置）；
 ///   ③ 拿在手里的 <see cref="AppSettings" /> 是**某一版**，别跨轮长期持有它（要长期持有就持这个箱子）。
 /// </summary>
 public sealed class SettingsBox
@@ -30,21 +30,33 @@ public sealed class SettingsBox
     public AppSettings Current => Volatile.Read(ref _current);
 
     /// <summary>
-    /// 在**副本**上改 → 原子发布。返回刚发布的那一份，调用方继续用它重建派生物 / 落盘。
-    /// 副本是浅拷贝（<see cref="AppSettings.Snapshot" />）：这个类型只有标量字段，够用。
+    /// 在副本上改 → 原子发布（仅运行时，不落盘）。持久化保存必须走 ApplyPersisted。
+    /// Snapshot 同时复制嵌套的平台策略；返回刚发布的版本，不改变在途读取的旧版本。
     /// </summary>
     public AppSettings Apply(Action<AppSettings> mutate)
+        => ApplyPersisted(mutate, _ => { });
+
+    /// <summary>
+    /// 在同一 writer 边界内串行构造候选、保存、发布并重建派生状态。
+    /// 保存失败不发布、不执行 published；mutate 只应改候选，副作用放 published。
+    /// published 是提交后的操作：若它失败，异常向上传播，但已提交/发布的版本不回滚。
+    /// </summary>
+    public AppSettings ApplyPersisted(Action<AppSettings> mutate, Action<AppSettings> persist,
+        Action<AppSettings>? published = null)
     {
         ArgumentNullException.ThrowIfNull(mutate);
+        ArgumentNullException.ThrowIfNull(persist);
 
         lock (_gate)
         {
             var next = Current.Snapshot();
             mutate(next);
+            persist(next);
             // ⚠ Interlocked.Exchange 返回的是**换出去的那个旧值**，不是刚进去的新值 ——
             // 这里必须显式返回 next，否则调用方（落盘 / 重建派生物）会拿着旧的一份去用
             // （2026-09-22 踩过：内存里是新配置、库里写回旧配置，面板"改了不回滚"的用例直接红）。
             Interlocked.Exchange(ref _current, next);
+            published?.Invoke(next);
             return next;
         }
     }

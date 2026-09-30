@@ -65,10 +65,10 @@ Open `http://<host>:8080/` for the control panel: chat history, conversation man
 - **Daily token quota ledger & multi-platform panel**: manages UTC daily budgets isolated by platform (QQ Private, QQ Official, Feishu, Local Channel) and conversation tenant (`SourceKey`). The panel card permanently displays platform filter tabs with live conversation count badges, organizes tenant dropdown options by platform (`optgroup`), shows dedicated platform badges on the quota readouts, and allows configuring daily limits between `1` and `1,000,000,000` (adjusting limits preserves existing usage). When reaching the daily limit, the conversation enters energy-saving mode.
 - **Lifelike interactions & tiered memory evolution (inspired by MaiBot)**:
   - **Atmosphere awareness & fatigue damping (`QQCHAT_ENABLE_ATMOSPHERE_DAMPING`)**: dynamically analyzes message velocity and room sentiment; applies non-linear desire damping after consecutive bot turns and enforces cooldown periods, keeping conversations natural while preventing group spam.
-  - **In-group jargon and slang learning (Jargon)**: automatically captures emerging catchphrases and slang with a WebUI review queue and manual entry; approved items enrich system prompts to naturally mirror community speech styles.
-  - **Tiered episode memory & evidence-backed profiles (Episodes & Override)**: condenses historical chat into episodic units with spatial-temporal anchors; upgrades member profiles into a dual model where manual overrides take absolute precedence over AI-summarized traits.
+  - **In-group jargon and slang management (Jargon)**: provides a WebUI review queue and manual entry; `JargonService` implements candidate extraction, capacity/cooldown guards, and prompt-snippet rendering, but inbound observation, discovery scheduling, and prompt-assembly runtime call sites are not wired yet.
+  - **Tiered episode memory & evidence-backed profiles (Episodes & Override)**: the episode model and repository exist, but runtime episode extraction, recall, and prompt injection are not wired yet; member profiles use a dual model where manual overrides take absolute precedence over AI-summarized traits.
   - **Asset security guard for stickers (`StickerSafetyGuard`)**: enforces path traversal protection (`..` and absolute paths), verifies binary magic headers (PNG/JPEG/GIF/WebP), and blocks payload tampering or spoofed extensions.
-  - **Prompt template versioning & disaster recovery**: tracks version history (`v1`, `v2`...) with one-click live rollback and factory default resets.
+  - **Prompt template version repository**: implements version snapshots (`v1`, `v2`...), historical version activation, and built-in default retrieval; runtime prompt consumers and panel rollback flows are not wired yet, so this does not provide one-click live rollback.
 - **Daily health report**: once a day (18:00 by default) a private status line (memory / load / conversation count / queues / voice connectivity), **purely server-side**, depending on no external device.
 - **One-click deploy from the panel**: upload an artefact or paste a URL → the server rebuilds the image and replaces the container itself; a rollback point (`qqchat-agent:prev`) is taken automatically before deploying, and high-privilege switches are off by default.
 - **Masking on by default**: group names / nicknames / QQ numbers keep only the first 3 and last 2 characters in the panel and conversation lists (`QQCHAT_AGENT_MASK`, **on by default**); **storage and keys are untouched**, so commands and panel buttons all keep working.
@@ -107,6 +107,12 @@ NapCat container ── OneBot v11 forward WS ──┐
 | [src/BotAgent.Headless/README.en.md](src/BotAgent.Headless/README.en.md) ([中文](src/BotAgent.Headless/README.md)) | **Deployment and operations**: the full environment-variable reference, data directory, panel usage, troubleshooting, design trade-offs and operating boundaries |
 | [.env.example](.env.example) | Every configurable option, with commentary (including Docker secrets usage; comments are in Chinese) |
 
+## Fix compatibility and migration
+
+- **Feishu identity map**: runtime composition persists `data/feishu-ids-v2.json`, using a new alias range (`FeishuBase + 1e12` to `FeishuBase + 2e12`) separate from legacy 32-bit aliases. Back up this file with the data when Feishu is enabled. Legacy conversations are retained, but native identity bindings and history are not inherited automatically; replace old numeric whitelist entries with Feishu native IDs. See [Feishu identity and configuration isolation](<docs/engineering/review-feishu-50-56.md>).
+- **OwnMessage ledger**: new entries are scoped by platform, account, conversation and native message ID in `own_messages_scoped`. Legacy bare-ID rows and imported/archived JSON are retained, but ambiguous scope fails closed: no inferred ownership and no scoped lookup hit. Old binaries cannot read new scoped entries; **lossless downgrade is not provided**. Keep a pre-upgrade backup. See [settings and message-scope remediation](<docs/engineering/review-54-55-plan.md>).
+- **Tool hard-timeout boundary**: the deadline bounds the caller's await and requests cancellation; it does not forcibly stop the underlying operation. Work that ignores cancellation may continue and produce external side effects. See [deadline and resource lifetime](<docs/engineering/review-51-53-58.md>).
+
 ## 🧪 Tests
 
 The repo ships a **genuinely end-to-end** integration suite (it starts a real bot process, a real-WebSocket fake protocol side and a real-HTTP fake model):
@@ -117,9 +123,15 @@ dotnet build tests/BotAgent.IntegrationHarness -c Release
 dotnet tests/BotAgent.IntegrationHarness/bin/Release/net8.0/BotAgent.IntegrationHarness.dll
 ```
 
-It covers 50 scenario blocks (S1–S41, S43–S51: whitelist / silence / sentence splitting / memory / profiles / hot settings reload / disconnect and QR login / stickers / quoting in both directions / parenthetical narration / small emoji and pokes / hot model reconfiguration / music / links and forwards / voice / recall / web search and time / panel logs / image download (rkey expiry and caching) / burst re-evaluation / data migration / member roles / emotional companionship and proactive openers / server agent (`//` tasks · context hygiene · docker permissions · daily health report) / human approval (including approval and rejection from the panel) / participation state machine and questions / one-click panel deploy / panel tool catalogue and traces / bounded stepping loop / third local channel / panel conversation management / S50 Feishu Webhook & channel isolation / S51 Daily Token Quota panel),
-plus a set of **sub-second probes** (no database, no network): `ArchitectureProbe` (architecture ratchet **92/0**), `SafetyProbe` (mechanisms and multi-platform safety boundaries **389/0**),
-`ParticipationProbe` (48/0), `PipelineEval` (isolated evaluation 68/68), `ProductionSpecProbe` (production specs & fallbacks 59/0), `FrontendProbe` (panel static + runtime **271/0**).
+The harness dispatches S1, S3–S41 and S43–S51. S2 prompt assertions run inside S1; S42 (official channel) remains excluded from harness/CI regression, so official-channel end-to-end coverage is not claimed. Other scenarios cover: whitelist / silence / sentence splitting / memory / profiles / hot settings reload / disconnect and QR login / stickers / quoting in both directions / parenthetical narration / small emoji and pokes / hot model reconfiguration / music / links and forwards / voice / recall / web search and time / panel logs / image download (rkey expiry and caching) / burst re-evaluation / data migration / member roles / emotional companionship and proactive openers / server agent (`//` tasks · context hygiene · docker permissions · daily health report) / human approval (including approval and rejection from the panel) / participation state machine and questions / one-click panel deploy / panel tool catalogue and traces / bounded stepping loop / third local channel / panel conversation management / S50 Feishu Webhook & channel isolation / S51 Daily Token Quota panel.
+There is also a set of **sub-second probes** (synthetic scenarios, no production data or services): `ArchitectureProbe` (architecture ratchet), `SafetyProbe` (mechanisms and multi-platform safety boundaries),
+`ParticipationProbe`, `PipelineEval` (isolated evaluation), `ProductionSpecProbe` (production specs & fallbacks), and [FrontendProbe](<tests/BotAgent.FrontendProbe/probe.mjs>) (panel static + runtime). Counts come from the local command output:
+
+```bash
+node tests/BotAgent.FrontendProbe/probe.mjs
+```
+
+These are local synthetic verification entry points, not claims of a remote CI pass, production validation, publication or deployment.
 Individual scenarios or batches can be run alone with e.g. `QQCHAT_IT_ONLY=s50` or `QQCHAT_IT_ONLY=s36,s48,s50,s51`.
 
 > Note: the test project does not reference the bot project, so **after changing bot code you must build it separately**, otherwise the old DLL is what runs.

@@ -3,7 +3,7 @@ using BotAgent.Domain.Platforms;
 namespace BotAgent.Services.Ports;
 
 /// <summary>
-/// 平台中立的会话回复发送端口别名（指向 <see cref="IQqMessageSender"/>），支持通用调用方渐进迁移。
+/// 平台中立的会话回复发送端口别名；继承完整 sourceKey 记账重载，旧上下文重载保留兼容。
 /// </summary>
 public interface IConversationReplySender : IQqMessageSender
 {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Qq;
 using BotAgent.Domain.Platforms;
+using BotAgent.Domain.Messaging;
 using BotAgent.Domain.Ops;
 using BotAgent.Domain.Rendering;
 using BotAgent.Services.Conversations;
@@ -69,18 +70,31 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
     /// 返回逐段报告（issue #14）：调用方只把**真的发出去**的段落写进会话历史。
     /// </summary>
     public Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
-        => SendWithCadenceAsync(null, isGroup, targetId, reply, replyTo, directAddress);
+        => SendWithCadenceCoreAsync(null, isGroup, targetId, reply, replyTo, directAddress, null);
+
+    /// <summary>完整 sourceKey 仅用于记账，不改变现有策略、协议发送或 targetId 路由。</summary>
+    public Task<CadenceSendReport> SendWithCadenceAsync(string sourceKey, bool isGroup, long targetId,
+        string reply, long? replyTo, bool directAddress = false)
+    {
+        if (!ConversationIdCodec.TryParse(sourceKey, out var conversation))
+            return Task.FromResult(new CadenceSendReport(Array.Empty<string>(), "invalid_conversation_scope"));
+        return SendWithCadenceCoreAsync(null, isGroup, targetId, reply, replyTo, directAddress, conversation);
+    }
 
     /// <summary>
     /// 支持显式 PlatformContext 的重载：优先使用显式上下文，未提供时回退到 targetId 号段推断。
     /// </summary>
-    public async Task<CadenceSendReport> SendWithCadenceAsync(
+    public Task<CadenceSendReport> SendWithCadenceAsync(
         PlatformContext? context,
         bool isGroup,
         long targetId,
         string reply,
         long? replyTo,
         bool directAddress = false)
+        => SendWithCadenceCoreAsync(context, isGroup, targetId, reply, replyTo, directAddress, null);
+
+    private async Task<CadenceSendReport> SendWithCadenceCoreAsync(PlatformContext? context,
+        bool isGroup, long targetId, string reply, long? replyTo, bool directAddress, ConversationId? conversationScope)
     {
         var policy = context is not null && _platformPolicies is not null
             ? _platformPolicies.Resolve(context)
@@ -127,7 +141,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
 
             var shortReply = decision.Text;
             var one = await _source.SendTextAsync(isGroup, targetId, shortReply, replyToMessageId: replyTo, directAddress: true);
-            _ownLedger.Remember(one, shortReply);
+            RememberOwnMessage(conversationScope, context ?? policy?.Context, isGroup, targetId, one, shortReply);
             _traces.Node(sourceKey, TurnNodeKind.Outbound, one.Ok ? "sent" : "failed", reasonCode: decision.ReasonCode, count: shortReply.Length);
             return one.Ok
                 ? new CadenceSendReport(new[] { shortReply })
@@ -136,7 +150,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         if (!_settings.SplitReplies)
         {
             var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo, directAddress: directAddress);
-            _ownLedger.Remember(one, reply);
+            RememberOwnMessage(conversationScope, context ?? policy?.Context, isGroup, targetId, one, reply);
             return one.Ok ? new CadenceSendReport(new[] { reply }) : new CadenceSendReport(Array.Empty<string>(), "send_failed");
         }
 
@@ -144,7 +158,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         if (segments.Count <= 1)
         {
             var one = await _source.SendTextAsync(isGroup, targetId, reply, replyToMessageId: replyTo, directAddress: directAddress);
-            _ownLedger.Remember(one, reply);
+            RememberOwnMessage(conversationScope, context ?? policy?.Context, isGroup, targetId, one, reply);
             return one.Ok ? new CadenceSendReport(new[] { reply }) : new CadenceSendReport(Array.Empty<string>(), "send_failed");
         }
 
@@ -159,7 +173,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
                 targetId,
                 segments[i],
                 replyToMessageId: i == 0 ? replyTo : null, directAddress: directAddress);
-            _ownLedger.Remember(sent, segments[i]);
+            RememberOwnMessage(conversationScope, context ?? policy?.Context, isGroup, targetId, sent, segments[i]);
 
             if (!sent.Ok)
             {
@@ -220,7 +234,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
             var result = await _source.SendTextAsync(isGroup, targetId, segment);
             _traces.Node(conversation.SourceKey, TurnNodeKind.Outbound, result.Ok ? "sent" : "failed", count: segment.Length);
             _log($"agent 回话 → {(isGroup ? "群" : "私聊")}{targetId}（第 {index} 段，{segment.Length} 字，{(result.Ok ? "已发出" : "发送失败")}）: {TextRules.Shorten(segment.Replace('\n', ' '), 60)}");
-            _ownLedger.Remember(result, segment);
+            _ownLedger.Remember(conversation.SourceKey, result, segment);
 
             // 记进上下文：下一轮人设路线能看到"本机 agent 刚做了什么"，不会把它当外人说的话
             var appended = new ChatMessage
@@ -253,6 +267,29 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
                     ? Channels.Feishu
                     : Channels.Private;
         return _platformPolicies.ResolveForChannel(channel);
+    }
+
+    private void RememberOwnMessage(ConversationId? conversationScope, PlatformContext? context,
+        bool isGroup, long targetId, SendResult sent, string text)
+    {
+        if (conversationScope is not null)
+        {
+            _ownLedger.Remember(conversationScope, sent, text);
+            return;
+        }
+        if (targetId <= 0) return;
+        if (context is not null)
+        {
+            _ownLedger.Remember(new ConversationId(context.PlatformId, context.AccountScope,
+                isGroup ? ConversationKind.GroupChat : ConversationKind.PrivateChat,
+                targetId.ToString(System.Globalization.CultureInfo.InvariantCulture)), sent, text);
+            return;
+        }
+        // Compatibility send uses ChannelRouter's existing disjoint target ranges, not a global message id.
+        var channel = Channels.IsAliasId(targetId) ? Channels.Official
+            : Channels.IsLocalId(targetId) ? Channels.Local
+            : Channels.IsFeishuId(targetId) ? Channels.Feishu : Channels.Private;
+        _ownLedger.Remember(Channels.Key(channel, isGroup, targetId), sent, text);
     }
 
     private void RecordDlpBlock(ReplyAuditVerdict verdict, string route, int length)

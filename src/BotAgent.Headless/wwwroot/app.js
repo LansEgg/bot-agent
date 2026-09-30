@@ -4568,11 +4568,11 @@ function renderChannelStatus(channels) {
 
         // 聊天下拉：第一项是“全部聊天”总览（管理员要“查现在有多少个会话及其标题”）
         const keep = sel.value || "__all__";
-        sel.innerHTML = `<option value="__all__">全部聊天（共 ${all.total || 0} 个会话）</option>` +
+        sel.innerHTML = `<option value="__all__">全部聊天（共 ${escapeHtml(all.total || 0)} 个会话）</option>` +
           chats.map((k, i) => {
             const c = all.chats[k];
             // 聊天也带序号：与群里 //sessions all 的顺序一致（同一个 AllChats 顺序）
-            return `<option value="${k}">${i + 1}. ${c.name || k}（${(c.sessions || []).length}）</option>`;
+            return `<option value="${escapeHtml(k)}">${i + 1}. ${escapeHtml(c.name || k)}（${escapeHtml((c.sessions || []).length)}）</option>`;
           }).join("");
         sel.value = (keep === "__all__" || chats.includes(keep)) ? keep : "__all__";
 
@@ -4582,13 +4582,13 @@ function renderChannelStatus(channels) {
             const c = all.chats[k];
             // 每个会话前面带序号：和群里 //sessions 的顺序一样，面板看第几号、群里 //use 第几号能对上
             const titles = (c.sessions || []).map((x, i) =>
-              `${i + 1}) ${x.current ? "← " : ""}${x.name}（${x.backend === "server" ? "服务器" : (x.device || "外部")}·${x.turns}轮）`);
+              `${i + 1}) ${x.current ? "← " : ""}${escapeHtml(x.name)}（${escapeHtml(x.backend === "server" ? "服务器" : (x.device || "外部"))}·${escapeHtml(x.turns)}轮）`);
             return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0">
-              <b>${c.name || k}</b> <span class="hint">${(c.sessions || []).length} 个</span>
+              <b>${escapeHtml(c.name || k)}</b> <span class="hint">${escapeHtml((c.sessions || []).length)} 个</span>
               <div class="hint" style="margin-top:4px">${titles.join("　")}</div>
             </div>`;
           });
-          box.innerHTML = (all.total ? `<div style="padding:4px 0">会话总数：<b>${all.total}</b> 个，分布在 ${all.chatCount} 个聊天里。</div>` : "") +
+          box.innerHTML = (all.total ? `<div style="padding:4px 0">会话总数：<b>${escapeHtml(all.total)}</b> 个，分布在 ${escapeHtml(all.chatCount)} 个聊天里。</div>` : "") +
             (lines.length ? lines.join("") : '<div style="padding:6px 0">还没有 agent 会话。群里发一条 <code>//指令</code> 就有了。</div>');
           agentSessionsCache = [];
           return;
@@ -4597,7 +4597,7 @@ function renderChannelStatus(channels) {
         const list = (all.chats[key] || {}).sessions || [];
         agentSessionsCache = list;
         box.innerHTML = list.map((x, i) => {
-          const where = x.backend === "server" ? "服务器内置" : `外部 ${x.device || "设备"}`;
+          const where = x.backend === "server" ? "服务器内置" : `外部 ${escapeHtml(x.device || "设备")}`;
           const when = x.updatedAt ? new Date(x.updatedAt).toLocaleString() : "";
           const runs = x.runs || [];
           const runsHtml = runs.length === 0
@@ -4606,20 +4606,20 @@ function renderChannelStatus(channels) {
                 const st = r.ok === null || r.ok === undefined ? "⏳ 在跑" : (r.ok ? "✅" : "❌");
                 const t = r.at ? new Date(r.at).toLocaleString() : "";
                 const extra = r.ok === null || r.ok === undefined ? "" : ` · ${(r.durationMs / 1000).toFixed(1)}s${r.toolCalls ? ` · ${r.toolCalls} 次工具` : ""}`;
-                return `<div class="hint" style="margin:3px 0">${st} ${t}${extra}｜${r.prompt || ""}${r.result ? ` → ${r.result}` : ""}</div>`;
+                return `<div class="hint" style="margin:3px 0">${escapeHtml(st)} ${escapeHtml(t)}${escapeHtml(extra)}｜${escapeHtml(r.prompt || "")}${r.result ? ` → ${escapeHtml(r.result)}` : ""}</div>`;
               }).join("");
           return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0">
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <b>#${i + 1} ${x.current ? "← " : ""}${x.name}</b>
-              <span class="hint">[${where}] ${x.turns} 轮 · ${when}${x.historyChars ? ` · 上下文 ${x.historyChars} 字` : ""}${x.autoNamed ? " · 自动标题" : ""}${x.piOwned === false ? " · pi 导入" : ""} · 跑过 ${runs.length} 次</span>
-              <button class="ghost-btn" data-sess-use="${x.id}"${x.current ? " disabled" : ""}>切到这个</button>
-              <button class="ghost-btn" data-sess-rename="${x.id}">改名</button>
-              <button class="ghost-btn" data-sess-reset="${x.id}">清空</button>
-              <button class="ghost-btn" data-sess-del="${x.id}">删除</button>
-              <button class="ghost-btn" data-sess-runs="${x.id}">执行记录</button>
+              <b>#${i + 1} ${x.current ? "← " : ""}${escapeHtml(x.name)}</b>
+              <span class="hint">[${where}] ${escapeHtml(x.turns)} 轮 · ${escapeHtml(when)}${x.historyChars ? ` · 上下文 ${escapeHtml(x.historyChars)} 字` : ""}${x.autoNamed ? " · 自动标题" : ""}${x.piOwned === false ? " · pi 导入" : ""} · 跑过 ${escapeHtml(runs.length)} 次</span>
+              <button class="ghost-btn" data-sess-use="${escapeHtml(x.id)}"${x.current ? " disabled" : ""}>切到这个</button>
+              <button class="ghost-btn" data-sess-rename="${escapeHtml(x.id)}">改名</button>
+              <button class="ghost-btn" data-sess-reset="${escapeHtml(x.id)}">清空</button>
+              <button class="ghost-btn" data-sess-del="${escapeHtml(x.id)}">删除</button>
+              <button class="ghost-btn" data-sess-runs="${escapeHtml(x.id)}">执行记录</button>
             </div>
-            <div class="hint" style="margin-top:4px">${x.piSession ? `pi 会话：${x.piSession}` : ""}</div>
-            <div data-sess-runs-box="${x.id}" style="display:none;margin-top:6px;border-top:1px dashed var(--line);padding-top:6px">${runsHtml}</div>
+            <div class="hint" style="margin-top:4px">${x.piSession ? `pi 会话：${escapeHtml(x.piSession)}` : ""}</div>
+            <div data-sess-runs-box="${escapeHtml(x.id)}" style="display:none;margin-top:6px;border-top:1px dashed var(--line);padding-top:6px">${runsHtml}</div>
           </div>`;
         }).join("");
 
@@ -4628,7 +4628,9 @@ function renderChannelStatus(channels) {
           await refreshAgentSessions();
         }));
         box.querySelectorAll("[data-sess-runs]").forEach((el) => el.addEventListener("click", () => {
-          const box2 = box.querySelector(`[data-sess-runs-box="${el.dataset.sessRuns}"]`);
+          // dataset 已解码：ID 是原始数据，不可再插进 CSS selector（引号/反斜杠会改变语义）。
+          const box2 = Array.from(box.querySelectorAll("[data-sess-runs-box]"))
+            .find((node) => node.dataset.sessRunsBox === el.dataset.sessRuns);
           if (box2) box2.style.display = box2.style.display === "none" ? "" : "none";
         }));
         box.querySelectorAll("[data-sess-rename]").forEach((el) => el.addEventListener("click", async () => {
@@ -4677,13 +4679,13 @@ function renderChannelStatus(channels) {
         if (!r.connected) { out.innerHTML = '<div class="hint">外部设备不在线，列不出 pi 会话。</div>'; return; }
         if (list.length === 0) { out.innerHTML = '<div class="hint">设备上没找到 pi 会话（~/.pi/agent/sessions/… 为空？）。</div>'; return; }
 
-        out.innerHTML = `<div class="hint" style="padding:4px 0">设备上的 pi 会话（${list.length} 个，最新的在前）——点「接用」把它变成这个聊天的一个会话：</div>` +
+        out.innerHTML = `<div class="hint" style="padding:4px 0">设备上的 pi 会话（${escapeHtml(list.length)} 个，最新的在前）——点「接用」把它变成这个聊天的一个会话：</div>` +
           list.slice(0, 20).map((it) => {
             const when = it.mtime ? new Date(it.mtime * 1000).toLocaleString() : "";
             return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <b>${(it.title || "(无标题)").slice(0, 40)}</b>
-              <span class="hint">${when} · ${it.cwd || ""} · ${it.id.slice(0, 12)}…</span>
-              <button class="ghost-btn" data-pi-import="${it.id}">接用</button>
+              <b>${escapeHtml((it.title || "(无标题)").slice(0, 40))}</b>
+              <span class="hint">${escapeHtml(when)} · ${escapeHtml(it.cwd || "")} · ${escapeHtml((it.id || "").slice(0, 12))}…</span>
+              <button class="ghost-btn" data-pi-import="${escapeHtml(it.id || "")}">接用</button>
             </div>`;
           }).join("");
 
@@ -4696,7 +4698,7 @@ function renderChannelStatus(channels) {
           await refreshAgentSessions();
         }));
       } catch (e) {
-        out.innerHTML = '<div class="hint">拉取失败：' + e.message + '</div>';
+        out.innerHTML = '<div class="hint">拉取失败：' + escapeHtml(e.message) + '</div>';
       }
     });
 

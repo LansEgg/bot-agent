@@ -160,7 +160,7 @@ v=1;platform=<escaped-platform>;account=<escaped-scope>;kind=<kind>;target=<esca
 | `QuickLoginUin`、`OneBotAddress`、`OfficialEnabled` 等（[设置模型](<../../src/BotAgent.Headless/Services/AppSettings.cs>)） | 平台实例配置下的 `SelfUserId`、`Endpoint`、`Enabled` | 旧字段仅映射到固定 legacy QQ 实例，不广播到所有平台；群/私聊范围不能因中立化合并 |
 | `privateChatEnabled`、`officialEnabled` 等面板 JSON（[读写处理](<../../src/BotAgent.Headless/Adapters/Panel/WebUiServer.Settings.cs>)） | 版本化的平台实例 DTO，如 `platformInstances` 集合 | 旧端点/旧 DTO 保留投影；未加载的表单不得清空平台列表；新旧字段冲突拒绝保存 |
 | `qq` 工具名、QQ 动作 id、审批和审计 | 通用工具保持已中立 id；QQ 工具保留专有 id 或经版本化改为 `qq.*` | 不改 OneBot action 名；若变工具 id，策略白名单、历史展示、预算、票据一起迁。旧票据到期/失效后才切换，禁止别名绕过审批 |
-| `qq_message_id`、`group_id`、`own_messages.message_id`（[schema](<../../src/BotAgent.Headless/Adapters/Persistence/AppDatabase.cs>)） | 新增 scoped string 身份字段/表，领域侧用中立名 | 老列不直接 rename/drop；新表是新平台唯一真源，旧 QQ 继续旧表，详见 §3.7 |
+| `qq_message_id`、`group_id`、`own_messages.message_id`（[schema](<../../src/BotAgent.Headless/Adapters/Persistence/AppDatabase.cs>)） | 新增 scoped string 身份字段/表，领域侧用中立名 | 老列不直接 rename/drop；其余存储按 §3.7 规划；own-message 已按 [#55 修复](<review-54-55-plan.md>) 切换新增写入到 scoped 表，旧表保留但不用于识别 |
 | 数据库物理名称 `qqchat.db`（同上）及日志/运行目录 | 新安装可选中立物理名称，现有路径保留 | 物理改名不是首批必需项；必须显式路径配置与离线搬迁，严禁因新默认值启动空库；不得移动生产目录 |
 | [Compose](<../../docker-compose.yml>) 的 `qqchat` 服务、`qqchat-agent` 镜像、`qqchat-bot` 容器 | 新装模板拟采用 `botagent` / `botagent:…`；保留 QQ 适配器 profile | 新装模板与旧部署分轨，已有容器/卷/网络名不自动换；移除核心宿主对 NapCat 的强制依赖，使非 QQ 部署不拉起 NapCat |
 | [环境模板](<../../.env.example>) 中的 Compose 输入、测试与文档 | 同步新规范和兼容对照 | 模板变量≠进程变量，必须逐条核对 Compose `environment` 映射；测试辅助 `QQCHAT_IT_ONLY`、`QQCHAT_BOT_DLL` 同样需要双名解析和继承清理 |
@@ -192,6 +192,8 @@ v=1;platform=<escaped-platform>;account=<escaped-scope>;kind=<kind>;target=<esca
 ### 3.7 数据扩展与回滚门禁
 
 本节是建议的实现策略，不在本轮执行迁移。复用现有 AppDatabase 版本迁移、仓储端口及 LegacyJsonImporter，不另建一套数据库框架。
+
+**后续 #55 已实施的局部差异**：own-message 新增写入（包括 QQ）统一使用 `MessageRef` 与 `own_messages_scoped`；旧 `own_messages`/JSON 留存，不猜测其 scope，不参与 scoped 识别。此处 R1/R2 的“QQ 仍旧表”不再适用于 own-message；旧二进制不会读到新 scoped 条目，不承诺无损降级。其他会话/消息/成员表仍按本节规划，详见 [修复契约与合成验证](<review-54-55-plan.md>)。
 
 | 阶段 | 读写真源 | 可回滚范围 |
 | --- | --- | --- |

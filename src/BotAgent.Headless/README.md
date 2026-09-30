@@ -167,6 +167,7 @@ secrets:
 | --- | --- |
 | `data/qqchat.db` | **SQLite 库**：设置、会话、消息（含归档）、人物档案与画像、心情、听过的歌、表情包索引、密钥。WAL 模式，随同 `-wal/-shm` |
 | `data/legacy-json/` | 老版本 JSON 的留档（首次启动自动导入库之后移到这里，**不删**） |
+| `data/feishu-ids-v2.json` | 飞书 v2 原生身份与别名映射（新身份绑定时落盘）；必须随数据备份，旧别名不自动迁移 |
 | `stickers/*.png` | **表情包图片本体**（索引在库里；二进制不适合塞库，备份/预览/清理都麻烦） |
 | `logs/qqchat.log` | 运行日志（面板日志页 / `/api/logs` 就是它的尾部；⚠ 目前**不轮转**，会一直追加） |
 
@@ -174,10 +175,18 @@ secrets:
 > ② 消息是追加型数据，JSON 每次全量重写（几千条就明显卡）；③ 面板要的“某群更早的发言 / 某人某群的画像 / 归档翻旧账”
 > 在 JSON 上只能全量读进内存再过滤，SQL 一句就能干。
 >
-> 备份：直接拷 `data/qqchat.db`（连同 `-wal/-shm`）就完事；想用 SQL 查配置可以 `json_extract(json,'$.AiDesire')`。
+> 数据库备份：拷 `data/qqchat.db`（连同 `-wal/-shm`）；启用飞书时还要保留并备份 `data/feishu-ids-v2.json`，不能只恢复数据库。想用 SQL 查配置可以 `json_extract(json,'$.AiDesire')`。
 > 密钥（面板里填过的 API Key）存在 `secrets` 表里，所以**库文件权限是 600**（不跟 `settings` 混在一起，依然不会跟着配置一块被贴出去）。
 
 JSON 在库里一律不转义中文，`sqlite3 ... "SELECT text FROM messages LIMIT 3"` 直接看得懂。
+
+---
+
+## 修复兼容性与迁移
+
+- **飞书身份映射**：运行时装配持久化映射 `data/feishu-ids-v2.json`，使用与旧 32 位别名分离的新号段（`FeishuBase + 1e12` 至 `FeishuBase + 2e12`）。旧会话保留，但不自动关联原生身份或继承历史；旧数字白名单需重新配置为飞书原生 ID。见[飞书身份与配置隔离说明](<../../docs/engineering/review-feishu-50-56.md>)。
+- **OwnMessage 台账**：新记录按平台、账号、会话与原生消息 ID 隔离，写入 `own_messages_scoped`；旧裸数字 ID 行和旧 JSON 导入留档仍保留，但无法证明 scope 时 fail-closed，不猜归属、不作为 scoped 命中。旧版本读不到新增 scoped 记录，**不提供无损降级**，请保留升级前备份。见[设置与消息作用域修复说明](<../../docs/engineering/review-54-55-plan.md>)。
+- **工具硬超时边界**：限制的是调用方等待时长，并发出取消请求；不等于强制终止底层操作。不响应取消的操作仍可能继续并产生外部副作用。见[超时与资源生命周期说明](<../../docs/engineering/review-51-53-58.md>)。
 
 ---
 
@@ -520,10 +529,11 @@ Google/Bing/DuckDuckGo/百度 对爬虫一律回看板页或验证码；而模�
 
 ## 测试
 
-两层验证，都是真实端到端（非 mock 桩）：
+以下命令从仓库根目录运行，提供本地进程与隔离容器两层验证入口（真实机器人进程 + 合成协议端/模型），不代表本轮已执行容器测试、远端 CI 或生产部署：
 
 ```bash
-# ① 本地集成测试：起真实机器人进程 + 假协议端（真 WebSocket）+ 假模型（真 HTTP）
+# ① 本地集成测试：先单独构建机器人，再起真实进程 + 合成协议端/模型
+dotnet build src/BotAgent.Headless/BotAgent.Headless.csproj -c Release
 dotnet run --project tests/BotAgent.IntegrationHarness -c Release
 
 # ② 容器测试：验证真正跑在容器里的机器人（在容器网络里放置假协议端/假模型）
@@ -544,12 +554,17 @@ docker logs harness      # 断言结果
 模型沉默时不发言、回复引用（被插话时才带引用；模型指认的目标要经校验；复读时不挂错人；**收方向的引用回复也认得出来**）、
 分句发送不丢字、括号旁白标成 `〔旁白：…〕` 且不单独触发回复、人物档案读写、
 提示词组装（人设 / 档案 / `{发送者}{内容--时间}` 格式）、重启后会话恢复、健康端点。
-全量 **729** 条断言（2026-09-24 实测：**728 通过 / 1 条既有软提醒线** —— 那条是「系统提示 < 4000 字」的
-提醒线，实测约 4364 字，**是哨兵不是目标，别去改阈值**）；harness 里 `QQCHAT_IT_ONLY=s19` 可以只跑某个场景。
+harness 可调度 S1、S3–S41、S43–S51；S2 的提示词断言并入 S1，S42 官方通道场景仍排除在 harness/CI 回归之外，不代表已有官方通道端到端覆盖。
+2026-09-24 的历史快照为 728 通过 / 1 条软提醒线（系统提示 < 4000 字，实测约 4364 字；**是哨兵不是目标，别去改阈值**），不是本轮结果或当前固定断言总数。
+`QQCHAT_IT_ONLY=s19` 可以只跑某个场景；测试工程不引用机器人工程，改源码后必须先单独构建机器人。
 
-另有几支**秒级探针**（不连库、不连网，改完对应部分各跑一遍）：`ArchitectureProbe`（架构棘轮，**92/0**）、
-`SafetyProbe`（机制与多平台策略安全边界，**389/0**）、`ParticipationProbe`（48/0）、`PipelineEval`（隔离评测，68/68）、
-`ProductionSpecProbe`（生产契约与降级，59/0）、`FrontendProbe`（面板静态 + 运行时，**271/0**）。包含 S50 飞书 Webhook 接入（10/0）与 S51 每日 Token 配额面板（8/0）集成验证。
+另有几支**秒级探针**（合成场景，不访问生产数据或服务，改完对应部分各跑一遍）：`ArchitectureProbe`（架构棘轮）、
+`SafetyProbe`（机制与多平台策略安全边界）、`ParticipationProbe`、`PipelineEval`（隔离评测）、
+`ProductionSpecProbe`（生产契约与降级）、[FrontendProbe](<../../tests/BotAgent.FrontendProbe/probe.mjs>)（面板静态 + 运行时）。S50 飞书 Webhook 接入与 S51 每日 Token 配额面板也在集成场景列表中；计数以本地命令输出为准：
+
+```bash
+node tests/BotAgent.FrontendProbe/probe.mjs
+```
 
 ---
 

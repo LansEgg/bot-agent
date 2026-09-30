@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -15,8 +16,12 @@ public sealed class ReverseWsTransport : IOneBotTransport
     private readonly int _port;
     private readonly string? _token;
     private readonly CancellationTokenSource _cts = new();
+    private readonly object _connectionLock = new();
+    private readonly ConcurrentDictionary<TcpClient, byte> _clients = new();
+    private const int MaxPendingHandshakes = 16;
+    private int _pendingHandshakes;
     private TcpListener? _listener;
-    private WsConnection? _connection;
+    private volatile WsConnection? _connection;
     private Task? _loopTask;
 
     public event Action<string>? OnText;
@@ -48,13 +53,16 @@ public sealed class ReverseWsTransport : IOneBotTransport
     public void Stop()
     {
         _cts.Cancel();
-        try
+        lock (_connectionLock)
         {
             _connection?.Close();
+            _connection = null;
+            OnStateChanged?.Invoke(false);
         }
-        catch
+
+        foreach (var client in _clients.Keys)
         {
-            // 忽略
+            client.Dispose();
         }
 
         try
@@ -66,7 +74,6 @@ public sealed class ReverseWsTransport : IOneBotTransport
             // 忽略
         }
 
-        OnStateChanged?.Invoke(false);
     }
 
     public void Dispose() => Stop();
@@ -84,15 +91,19 @@ public sealed class ReverseWsTransport : IOneBotTransport
     {
         while (!ct.IsCancellationRequested)
         {
-            WsConnection? connection = null;
             try
             {
-                var client = await _listener!.AcceptTcpClientAsync().WaitAsync(ct);
-                connection = await WsConnection.AcceptAsync(client, _token, ct);
-                connection.TextReceived += OnText;
-                _connection = connection;
-                OnStateChanged?.Invoke(true);
-                await connection.RunAsync(ct);
+                var client = await _listener!.AcceptTcpClientAsync(ct);
+                if (Interlocked.Increment(ref _pendingHandshakes) > MaxPendingHandshakes)
+                {
+                    Interlocked.Decrement(ref _pendingHandshakes);
+                    client.Dispose();
+                    continue;
+                }
+
+                _clients.TryAdd(client, 0);
+                // Never let a silent/partial handshake hold the listener's accept loop.
+                _ = HandleClientAsync(client, ct);
             }
             catch (OperationCanceledException)
             {
@@ -100,11 +111,58 @@ public sealed class ReverseWsTransport : IOneBotTransport
             }
             catch
             {
-                // 握手失败或连接中断：继续等待下一条连入
+                // Listener stopped or accept failed: do not busy-loop during shutdown.
+                if (ct.IsCancellationRequested) break;
             }
-            finally
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
+    {
+        WsConnection? connection = null;
+        bool pending = true;
+        try
+        {
+            using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                if (ReferenceEquals(_connection, connection))
+                // ReadTimeout only bounds synchronous reads; this is an absolute async budget.
+                handshake.CancelAfter(TimeSpan.FromSeconds(10));
+                connection = await WsConnection.AcceptAsync(client, _token, handshake.Token);
+            }
+
+            Interlocked.Decrement(ref _pendingHandshakes);
+            pending = false;
+            lock (_connectionLock)
+            {
+                ct.ThrowIfCancellationRequested();
+                var previous = _connection;
+                connection.TextReceived += text =>
+                {
+                    lock (_connectionLock)
+                    {
+                        if (ReferenceEquals(_connection, connection)) OnText?.Invoke(text);
+                    }
+                };
+                _connection = connection;
+                previous?.Close();
+                OnStateChanged?.Invoke(true);
+            }
+
+            await connection.RunAsync(ct);
+        }
+        catch
+        {
+            // Timeout, invalid authorization/headers, disconnect, or stop: close only this client.
+        }
+        finally
+        {
+            if (pending) Interlocked.Decrement(ref _pendingHandshakes);
+            connection?.Close();
+            client.Dispose();
+            _clients.TryRemove(client, out _);
+            lock (_connectionLock)
+            {
+                if (connection is not null && ReferenceEquals(_connection, connection))
                 {
                     _connection = null;
                     OnStateChanged?.Invoke(false);
@@ -132,7 +190,6 @@ public sealed class ReverseWsTransport : IOneBotTransport
         public static async Task<WsConnection> AcceptAsync(TcpClient client, string? token, CancellationToken ct)
         {
             var stream = client.GetStream();
-            stream.ReadTimeout = 10000;
 
             // 读取请求头直到空行
             var headerBytes = new List<byte>();

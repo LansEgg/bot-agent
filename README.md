@@ -69,10 +69,10 @@ docker compose logs -f napcat       # 首次扫码登录（或在机器人面板
 - **每日 Token 配额账本与多平台划分面板**：按平台（QQ 私域、QQ 官方、飞书、本地通道）与会话来源（`SourceKey`）划分的 UTC 日预算管理。设置页配额卡片常驻呈现所有已支持平台的标签切换与会话计数徽标，会话租户按平台分组（`optgroup`）展示；支持按平台筛选租户、查看各租户用量（Prompt/Completion）、剩余额度与所属平台徽标，并在 `1..1,000,000,000` 范围内动态调整每日上限（调额不清零当日已用量），达到上限后自动进入节能静默。
 - **拟人化交互演进与黑话/分层记忆（借鉴 MaiBot）**：
   - **群聊氛围感知与发言疲劳阻尼（`QQCHAT_ENABLE_ATMOSPHERE_DAMPING`）**：自动分析消息密度与群聊情绪，连续发言多次后自适应非线性衰减发言欲望并强制冷却降温，冷清群聊减少插嘴，对线刷屏时主动克制，从根源上杜绝机械刷屏讨人嫌；
-  - **圈子黑话与俚语自学习（Jargon）**：自动提取群聊中的新词、流行梗并支持 WebUI 审核放行与手动录入，放行条目自动注入 Prompt 引导自然模仿群友表达；
-  - **分层长期记忆切片（Episodes）与画像证据链（Evidence & Override）**：将冗长历史提炼为具时空锚点的事件记忆单元；人物画像升级为“证据链溯源 + 人工覆盖设定”双层模型，管理员在面板中配置的专属设定具有最高裁决优先级；
+  - **圈子黑话与俚语管理（Jargon）**：提供 WebUI 审核与手动录入；`JargonService` 已实现候选提取、容量/冷却保护和 Prompt 片段渲染，但当前尚未接入入站观察、发现调度或 Prompt 组装 runtime 调用链；
+  - **分层长期记忆切片（Episodes）与画像证据链（Evidence & Override）**：Episode 模型与仓储已具备，但 runtime 提炼、召回和 Prompt 注入尚未接线；人物画像升级为“证据链溯源 + 人工覆盖设定”双层模型，管理员在面板中配置的专属设定具有最高裁决优先级；
   - **表情包资产安全防护（`StickerSafetyGuard`）**：严格防范路径穿越（`..` 与物理绝对路径），基于二进制文件头真实魔数（PNG/JPEG/GIF/WebP）进行类型与伪造检测，杜绝恶意文件上传与扩展名欺骗；
-  - **Prompt 模板切片与多版本快照回滚**：支持模板版本化演进（`v1`, `v2`...）与一键热回滚，提供可靠的出厂默认模板容灾还原。
+  - **Prompt 模板版本仓储**：已实现版本快照（`v1`, `v2`...）、历史版本激活与内置默认模板读取；当前未接入 runtime Prompt 消费或面板回滚流程，不代表已提供一键热回滚。
 - **健康日报**：每天定时（默认 18:00）私聊一条状态（内存 / 负载 / 会话数 / 队列 / 语音连通性），**纯服务器侧**、不依赖任何外部设备
 - **面板一键部署**：上传产物或填个地址 → 服务器自己重建镜像并替换容器；部署前自动留回滚点（`qqchat-agent:prev`），高权限开关默认关
 - **默认开启的脱敏**：群名 / 昵称 / QQ 号在面板与会话列表里只留前 3 后 2（`QQCHAT_AGENT_MASK`，**默认开**）；**存储与 key 保持原样**，所以命令与面板按钮都不受影响
@@ -111,6 +111,12 @@ NapCat 容器 ── OneBot v11 正向 WS ──┐
 | [src/BotAgent.Headless/README.md](src/BotAgent.Headless/README.md) | **部署与运维**：环境变量清单、数据目录、面板使用、故障排查、设计取舍与运行边界 |
 | [.env.example](.env.example) | 全部可配置项与说明（含 Docker secrets 用法） |
 
+## 修复兼容性与迁移
+
+- **飞书身份映射**：运行时装配持久化映射 `data/feishu-ids-v2.json`，使用与旧 32 位别名分离的新号段（`FeishuBase + 1e12` 至 `FeishuBase + 2e12`）；启用飞书时请随数据一起备份此文件。旧会话保留，但不自动关联原生身份或继承历史；旧数字白名单需重新配置为飞书原生 ID。见[飞书身份与配置隔离说明](<docs/engineering/review-feishu-50-56.md>)。
+- **OwnMessage 台账**：新记录按平台、账号、会话与原生消息 ID 隔离，写入 `own_messages_scoped`；旧裸数字 ID 行和旧 JSON 导入留档仍保留，但无法证明 scope 时 fail-closed，不猜归属、不作为 scoped 命中。旧版本读不到新增 scoped 记录，**不提供无损降级**，请保留升级前备份。见[设置与消息作用域修复说明](<docs/engineering/review-54-55-plan.md>)。
+- **工具硬超时边界**：限制的是调用方等待时长，并发出取消请求；不等于强制终止底层操作。不响应取消的操作仍可能继续并产生外部副作用。见[超时与资源生命周期说明](<docs/engineering/review-51-53-58.md>)。
+
 ## 🧪 测试
 
 仓库带一套**真实端到端**集成测试（起真实机器人进程 + 真 WebSocket 假协议端 + 真 HTTP 假模型）：
@@ -121,9 +127,15 @@ dotnet build tests/BotAgent.IntegrationHarness -c Release
 dotnet tests/BotAgent.IntegrationHarness/bin/Release/net8.0/BotAgent.IntegrationHarness.dll
 ```
 
-覆盖 50 段场景（S1–S41, S43–S51：白名单 / 静默 / 分句 / 记忆 / 档案 / 设置热更新 / 掉线与扫码登录 / 表情包 / 引用（发与收两个方向）/ 括号旁白 / 小表情与戳一戳 / 模型配置热改 / 听音乐 / 链接与转发 / 语音 / 撤回 / 联网搜索与时间 / 面板日志 / 图片下载（rkey 过期与缓存）/ 连珠炮补评估 / 数据迁移 / 群成员身份 / 情绪陪伴与主动开口 / 服务器 agent（`//` 任务 · 上下文卫生 · docker 权限 · 健康日报）/ 人工审批（含面板批准 / 拒绝）/ 参与状态机与提问 / 面板一键部署 / 面板工具目录与轨迹 / 有限步进循环 / 第三条本地通道 / 面板会话管理 / S50 飞书 Webhook 接入与通道隔离 / S51 每日 Token 配额面板），
-另有一整套**秒级探针**（不连库、不连网）：`ArchitectureProbe`（架构棘轮 **92/0**）、`SafetyProbe`（机制与多平台策略安全边界 **389/0**）、
-`ParticipationProbe`（48/0）、`PipelineEval`（隔离评测 68/68）、`ProductionSpecProbe`（生产契约与降级 59/0）、`FrontendProbe`（面板静态 + 运行时 **271/0**）。
+harness 可调度 S1、S3–S41、S43–S51；S2 的提示词断言并入 S1，S42 官方通道场景仍排除在 harness/CI 回归之外，不代表已有官方通道端到端覆盖。其余场景涵盖：白名单 / 静默 / 分句 / 记忆 / 档案 / 设置热更新 / 掉线与扫码登录 / 表情包 / 引用（发与收两个方向）/ 括号旁白 / 小表情与戳一戳 / 模型配置热改 / 听音乐 / 链接与转发 / 语音 / 撤回 / 联网搜索与时间 / 面板日志 / 图片下载（rkey 过期与缓存）/ 连珠炮补评估 / 数据迁移 / 群成员身份 / 情绪陪伴与主动开口 / 服务器 agent（`//` 任务 · 上下文卫生 · docker 权限 · 健康日报）/ 人工审批（含面板批准 / 拒绝）/ 参与状态机与提问 / 面板一键部署 / 面板工具目录与轨迹 / 有限步进循环 / 第三条本地通道 / 面板会话管理 / S50 飞书 Webhook 接入与通道隔离 / S51 每日 Token 配额面板。
+另有一整套**秒级探针**（合成场景，不访问生产数据或服务）：`ArchitectureProbe`（架构棘轮）、`SafetyProbe`（机制与多平台策略安全边界）、
+`ParticipationProbe`、`PipelineEval`（隔离评测）、`ProductionSpecProbe`（生产契约与降级）、[FrontendProbe](<tests/BotAgent.FrontendProbe/probe.mjs>)（面板静态 + 运行时）。计数以本地命令输出为准：
+
+```bash
+node tests/BotAgent.FrontendProbe/probe.mjs
+```
+
+这些是本地合成验证入口，不代表已通过远端 CI、验证生产或发布部署。
 单个场景可以用 `QQCHAT_IT_ONLY=s50` 或组合 `QQCHAT_IT_ONLY=s36,s48,s50,s51` 运行。
 
 > 注意：测试工程没有引用机器人工程，**改完机器人代码要单独 build 它**，否则跑的还是旧 DLL。

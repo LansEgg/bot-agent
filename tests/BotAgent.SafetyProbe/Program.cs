@@ -21,6 +21,7 @@ using BotAgent.Domain.Rendering;
 using BotAgent.Domain.Atmosphere;
 using BotAgent.Domain.Jargon;
 using BotAgent.Domain.Memory;
+using BotAgent.Domain.Messaging;
 using BotAgent.Domain.Prompts;
 using BotAgent.Services.Jargon;
 using BotAgent.Domain.Reply;
@@ -1951,11 +1952,16 @@ public static partial class Program
     /// <summary>只记一条自己发的消息：够跑"引用上一句"的识别，且**完全不碰库**。</summary>
     private sealed class FakeOwnMessageRepository : IOwnMessageRepository
     {
+        private readonly Dictionary<MessageRef, OwnMessage> _scoped = new();
         public int MaxEntries => 200;
         public List<OwnMessage> LoadRecent(int max) => new();
-        public void Upsert(long id, string text, DateTimeOffset at) => Last = new OwnMessage(id, text, at);
+        public List<OwnMessage> LoadRecentScoped(int max) => _scoped.Values.OrderByDescending(x => x.At).Take(max).ToList();
+        public void Upsert(long id, string text, DateTimeOffset at) { }
+        public void Upsert(MessageRef messageRef, string text, DateTimeOffset at)
+        {
+            _scoped[messageRef] = new OwnMessage(0, text, at) { Ref = messageRef };
+        }
         public void PruneTo(int max) { }
-        public OwnMessage? Last { get; private set; }
     }
 
     private sealed class FakeProfileRepository : IProfileRepository
@@ -2308,10 +2314,25 @@ public static partial class Program
         var ledger = new Services.Conversations.OwnMessageLedger(new FakeOwnMessageRepository(), _ => { });
         ledger.EnsureLoaded();
         var sent = new Services.Qq.SendResult(true, 9001);
-        ledger.Remember(sent, "我先把结论放这儿");
-        Check("假台账 · 记下自己发的那句", ledger.TryGet(9001, out var entry) && entry.Text == "我先把结论放这儿",
+        var sourceKey = "group:10001";
+        ledger.Remember(sourceKey, sent, "合成消息正文");
+        Check("假台账 · 按会话scope记下自己发的那句",
+            ledger.TryGet(sourceKey, 9001, out var entry) && entry.Text == "合成消息正文",
             "记不进内存台账");
-        Check("假台账 · 没发过的 id 仍然查不到（不瞎认）", !ledger.TryGet(9002, out _));
+        Check("假台账 · 同一native id在另一会话查不到",
+            !ledger.TryGet("group:10002", 9001, out _));
+        var scoped = new ConversationId(PlatformId.QqPrivate, "account-test", ConversationKind.GroupChat, "10001", "thread-test");
+        var scopedKey = ConversationIdCodec.EncodeStructured(scoped);
+        ledger.Remember(scopedKey, sent, "合成scope消息");
+        Check("假台账 · 真实sourceKey记账完整account/thread",
+            ledger.TryGet(scopedKey, 9001, out var scopedEntry) && scopedEntry.Text == "合成scope消息");
+        Check("假台账 · 同id兄弟thread不命中",
+            !ledger.TryGet(ConversationIdCodec.EncodeStructured(scoped with { ThreadId = "thread-other" }), 9001, out _));
+        Check("假台账 · 同id兄弟account不命中",
+            !ledger.TryGet(ConversationIdCodec.EncodeStructured(scoped with { AccountScope = "account-other" }), 9001, out _));
+        Check("假台账 · 裸long查询fail-closed", !ledger.TryGet(9001, out _));
+        Check("假台账 · 没发过的 scoped id 仍然查不到（不瞎认）",
+            !ledger.TryGet(sourceKey, 9002, out _));
 
         // ③ 真的跑一遍：模型客户端的解析链路（传输层换成"只会吐固定 JSON"的假件）
         var settings = new Services.AppSettings

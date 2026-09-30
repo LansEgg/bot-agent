@@ -10,15 +10,12 @@ namespace BotAgent.Adapters.Persistence;
 public sealed class AuditLogStore : IAuditChain
 {
     private const string EmptyHash = "";
-    private readonly object _gate = new();
 
     public void Append(AuditEvent auditEvent)
     {
         ArgumentNullException.ThrowIfNull(auditEvent);
-        lock (_gate)
-        {
-            AppDatabase.Write(conn => AppendInternal(conn, auditEvent));
-        }
+        // SQLite acquires the writer before reading the previous hash in both entry paths.
+        AppDatabase.Write(conn => AppendInternal(conn, auditEvent));
     }
 
     /// <summary>在已有 SQLite 事务内追加一条审计记录（保证与配置落盘处于同一事务边界）。</summary>
@@ -26,10 +23,7 @@ public sealed class AuditLogStore : IAuditChain
     {
         ArgumentNullException.ThrowIfNull(conn);
         ArgumentNullException.ThrowIfNull(auditEvent);
-        lock (_gate)
-        {
-            AppendInternal(conn, auditEvent);
-        }
+        AppendInternal(conn, auditEvent);
     }
 
     private void AppendInternal(Microsoft.Data.Sqlite.SqliteConnection conn, AuditEvent auditEvent)

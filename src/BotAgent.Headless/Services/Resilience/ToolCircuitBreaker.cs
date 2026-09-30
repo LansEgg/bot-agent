@@ -124,27 +124,41 @@ public sealed class ToolCircuitBreaker
             return new ToolRunResult<T>(false, default, "tool_circuit_open", false);
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_hardTimeout);
+        var timeoutCts = new CancellationTokenSource();
+        var cancellationGate = new object();
+        Task? cancellationWork = null;
+        Task RequestCancellation()
+        {
+            // 同一调用只启动一次取消；并发请求不能丢掉正在运行的回调任务。
+            lock (cancellationGate) return cancellationWork ??= timeoutCts.CancelAsync();
+        }
+        // 不使用 linked CTS：调用方的 Cancel 不应同步执行工具注册的阻塞/抛异常回调。
+        var callerCancellation = ct.Register(() => { _ = RequestCancellation(); });
+        var operationToken = timeoutCts.Token;
+        // Schedule invocation too: delegates may block before returning their Task.
+        var work = Task.Run(() => operation(operationToken), operationToken);
         try
         {
-            var value = await operation(timeoutCts.Token).ConfigureAwait(false);
+            var value = await work.WaitAsync(_hardTimeout, ct).ConfigureAwait(false);
             RecordSuccess();
             return new ToolRunResult<T>(true, value, "ok", false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
+            _ = RequestCancellation();
             RecordTimeout();
             return new ToolRunResult<T>(false, default, "tool_timeout", true);
         }
         catch (OperationCanceledException)
         {
+            _ = RequestCancellation();
             // 调用方主动取消：释放 half-open 探测锁并原样抛出，不记录任何失败或超时计数，避免污染熔断状态。
             ReleaseProbeOnCancellation();
             throw;
         }
         catch (TimeoutException)
         {
+            _ = RequestCancellation();
             RecordTimeout();
             return new ToolRunResult<T>(false, default, "tool_timeout", true);
         }
@@ -153,6 +167,32 @@ public sealed class ToolCircuitBreaker
             RecordFailure();
             return new ToolRunResult<T>(false, default, "tool_exception", false);
         }
+        finally
+        {
+            // 调用方不等 late work；CTS 由清理任务持有至 work 和取消回调都完成。
+            // 清理仅观察异常、释放资源，绝不再写 circuit 状态。
+            _ = ObserveAndDisposeAsync(work, callerCancellation, timeoutCts, () =>
+            {
+                lock (cancellationGate) return cancellationWork ?? Task.CompletedTask;
+            });
+        }
+    }
+
+    private static async Task ObserveAndDisposeAsync(Task work,
+        CancellationTokenRegistration callerCancellation, CancellationTokenSource source,
+        Func<Task> cancellationWork)
+    {
+        // 先解除调用方桥接，避免永不完成的工具一直保留 caller token 的注册。
+        await callerCancellation.DisposeAsync().ConfigureAwait(false);
+        callerCancellation = default; // late work 不应额外持有已解除的调用方注册句柄。
+        // 两条路径各自立即观察 fault；不能因其中一条永不完成而漏掉另一条的异常。
+        static async Task ObserveAsync(Task completion)
+        {
+            try { await completion.ConfigureAwait(false); }
+            catch { /* 结果已确定，late fault/cancel 只观察，不改状态。 */ }
+        }
+        await Task.WhenAll(ObserveAsync(work), ObserveAsync(cancellationWork())).ConfigureAwait(false);
+        source.Dispose();
     }
 
     public ToolCircuitSnapshot Snapshot()
