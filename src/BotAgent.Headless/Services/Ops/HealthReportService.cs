@@ -312,10 +312,24 @@ public sealed class HealthReportService : IDisposable
             var now = NowBeijing();
 
             // 定时器提前醒了（改过系统时间 / 从挂起恢复）→ 不发，重排一次
-            if (_nextRunAt is { } due && now < due.AddSeconds(-5))
+            if (_nextRunAt is { } due)
             {
-                Arm();
-                return;
+                if (now < due.AddSeconds(-5))
+                {
+                    Arm();
+                    return;
+                }
+
+                // 操作系统定时器抖动提早数毫秒唤醒时，补足微小余量，确保不早于整分生成与发送
+                if (now < due)
+                {
+                    var remain = due - now;
+                    if (remain > TimeSpan.Zero && remain <= TimeSpan.FromSeconds(5))
+                    {
+                        await Task.Delay(remain);
+                        now = NowBeijing();
+                    }
+                }
             }
 
             var today = DateOnly.FromDateTime(now.DateTime);
