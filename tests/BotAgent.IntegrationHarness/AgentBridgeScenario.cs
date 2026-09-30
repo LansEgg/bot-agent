@@ -46,6 +46,7 @@ public static partial class Program
         using var bot = StartBot(new Dictionary<string, string>
         {
             ["QQCHAT_DATA_DIR"] = dataDir,
+            ["QQCHAT_LOG_FILE"] = "0",
             ["QQCHAT_API_KEY"] = "sk-mock",
             ["QQCHAT_BASE_URL"] = openAi.BaseUrl,
             ["QQCHAT_MODEL"] = "mock-model",
@@ -539,10 +540,12 @@ public static partial class Program
         await protocol.SendGroupMessageAsync(groupId, 20002, "老王", "//帮我看看今天的报错日志", 15072, mentionBot: false, ct: cts.Token);
         await WaitUntilAsync(() => bridge.Tasks.Count > tasksBeforeTitle, TimeSpan.FromSeconds(30));
 
+        string? titleSessionId;
         using (var httpMid = PanelHttp(15))
         {
             var mid = JsonNode.Parse(await httpMid.GetStringAsync($"http://127.0.0.1:{healthPort}/api/agent/sessions?key=group:{groupId}"));
             var midCurrent = mid?["sessions"]?.AsArray().FirstOrDefault(s => s!["current"]?.GetValue<bool>() == true);
+            titleSessionId = midCurrent?["id"]?.GetValue<string>();
             Check("★ 发指令**不**会重命名会话（标题不会变成那条命令）",
                 midCurrent?["name"]?.GetValue<string>() != "帮我看看今天的报错日志" &&
                 midCurrent?["name"]?.GetValue<string>() != "今天的报错日志" &&
@@ -560,16 +563,43 @@ public static partial class Program
             ["toolCalls"] = 0
         });
         await WaitUntilAsync(() => Sent().Any(t => t.Contains("标题那单的结论")), TimeSpan.FromSeconds(30));
-        await WaitUntilAsync(() => openAi.TitleRequests > titleReqsBefore, TimeSpan.FromSeconds(30));
-        await Task.Delay(400);
+        // 请求计数只说明 mock 收到了请求；必须等这一份会话的标题实际更新，不能靠固定延迟。
+        var titleReady = false;
+        using (var titleHttp = PanelHttp(5))
+        using (var titleWait = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+        {
+            titleWait.CancelAfter(TimeSpan.FromSeconds(30));
+            try
+            {
+                while (!titleWait.IsCancellationRequested)
+                {
+                    var titleJson = await titleHttp.GetStringAsync(
+                        $"http://127.0.0.1:{healthPort}/api/agent/sessions?key=group:{groupId}", titleWait.Token);
+                    var titleSession = JsonNode.Parse(titleJson)?["sessions"]?.AsArray()
+                        .FirstOrDefault(s => titleSessionId is not null && s?["id"]?.GetValue<string>() == titleSessionId);
+                    if (titleSession?["name"]?.GetValue<string>() == "综结出来的会话标题" &&
+                        titleSession["autoNamed"]?.GetValue<bool>() == true)
+                    {
+                        titleReady = true;
+                        break;
+                    }
+
+                    await Task.Delay(150, titleWait.Token);
+                }
+            }
+            catch (OperationCanceledException) when (titleWait.IsCancellationRequested && !cts.IsCancellationRequested)
+            {
+                // 截止时间到了仍由下面原有断言报失败，其它请求/解析错误照常抛出。
+            }
+        }
 
         using (var http = PanelHttp(15))
         {
             var listJson = await http.GetStringAsync($"http://127.0.0.1:{healthPort}/api/agent/sessions?key=group:{groupId}");
             var sessions = JsonNode.Parse(listJson)!["sessions"]!.AsArray();
-            var current = sessions.FirstOrDefault(s => s!["current"]?.GetValue<bool>() == true);
+            var current = sessions.FirstOrDefault(s => titleSessionId is not null && s?["id"]?.GetValue<string>() == titleSessionId);
             Check("★ 跑完之后用**模型综结**的标题（不再是照搬第一句指令）",
-                current is not null && current["name"]?.GetValue<string>() == "综结出来的会话标题" &&
+                titleReady && current is not null && current["name"]?.GetValue<string>() == "综结出来的会话标题" &&
                 current["autoNamed"]?.GetValue<bool>() == true &&
                 openAi.TitleRequests > titleReqsBefore,
                 $"当前会话标题=「{current?["name"]}」autoNamed={current?["autoNamed"]} 综结请求数={openAi.TitleRequests}");

@@ -46,7 +46,10 @@ public sealed class EpisodeStore : IEpisodeRepository
                 ("$c", created),
                 ("$u", updated));
 
-            newId = AppDatabase.Scalar<long>("SELECT last_insert_rowid()");
+            // last_insert_rowid() 属于连接本身，必须在插入所用的事务连接上读取。
+            using var idCommand = conn.CreateCommand();
+            idCommand.CommandText = "SELECT last_insert_rowid()";
+            newId = Convert.ToInt64(idCommand.ExecuteScalar());
         });
 
         return Task.FromResult(newId);

@@ -315,6 +315,7 @@ public sealed class BotConversation
                     SenderId = m.SenderId,
                     ImageUrls = m.ImageUrls is { Count: > 0 } ? m.ImageUrls.ToList() : null,
                     QqMessageId = m.QqMessageId,
+                    Recalled = m.Recalled,
                     Seq = m.Seq
                 }).ToList(),
                 LastTimeUnix = LastTime.ToUnixTimeSeconds(),
@@ -364,6 +365,7 @@ public sealed class BotConversation
                 Timestamp = DateTimeOffset.FromUnixTimeSeconds(msg.TimeUnix),
                 ImageUrls = msg.ImageUrls,
                 QqMessageId = msg.QqMessageId,
+                Recalled = msg.Recalled,
                 Seq = msg.Seq
             });
         }

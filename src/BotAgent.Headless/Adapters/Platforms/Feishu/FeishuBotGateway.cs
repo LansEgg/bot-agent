@@ -30,24 +30,22 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
     private readonly SettingsBox _box;
     private readonly IHttpFetcher _http;
+    private readonly FeishuIdMap _ids;
     private readonly Action<string>? _log;
 
-    private readonly ConcurrentDictionary<string, long> _toAlias = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<long, string> _toOriginal = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seen = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<FeishuOutboxItem> _outbox = new();
     private long _lastPruneTicks;
 
-    private string _tenantToken = string.Empty;
-    private DateTimeOffset _tokenExpires = DateTimeOffset.MinValue;
+    private FeishuTokenCache? _tokenCache;
     private readonly SemaphoreSlim _tokenGate = new(1, 1);
-    private long _nextMessageId = 1;
     private bool _disposed;
 
-    public FeishuBotGateway(SettingsBox box, IHttpFetcher http, Action<string>? log = null)
+    public FeishuBotGateway(SettingsBox box, IHttpFetcher http, Action<string>? log = null, FeishuIdMap? ids = null)
     {
         _box = box ?? throw new ArgumentNullException(nameof(box));
         _http = http ?? throw new ArgumentNullException(nameof(http));
+        _ids = ids ?? new FeishuIdMap();
         _log = log;
 
         Context = new PlatformContext(PlatformId.Feishu, AccountScope.Default, "feishu-main");
@@ -79,25 +77,23 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
     public long AliasFor(string original)
     {
-        if (string.IsNullOrWhiteSpace(original)) return 0;
-        if (_toAlias.TryGetValue(original, out var existing)) return existing;
-
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(original));
-        var slot = BitConverter.ToUInt32(hash, 0) % 1_000_000_000_000L;
-        var candidate = Channels.FeishuBase + slot;
-        var guard = 0;
-        while (_toOriginal.ContainsKey(candidate) && guard++ < 1_000_000)
-        {
-            candidate++;
-            if (candidate >= Channels.LocalBase) candidate = Channels.FeishuBase;
-        }
-
-        _toAlias[original] = candidate;
-        _toOriginal[candidate] = original;
-        return candidate;
+        return _ids.AliasFor(CurrentAppId(), "participant", original);
     }
 
-    public string? OriginalOf(long alias) => _toOriginal.TryGetValue(alias, out var orig) ? orig : null;
+    public string? OriginalOf(long alias) => _ids.OriginalOf(alias, CurrentAppId(), "participant");
+
+    private string CurrentAppId() => _box.Current.FeishuAppId?.Trim() ?? string.Empty;
+    private static string IdentityKind(bool isGroup) => isGroup ? "group" : "participant";
+
+    private sealed record FeishuSettingsSnapshot(string AppId, string AppSecret, string ApiBase);
+    private sealed record FeishuTokenCache(FeishuSettingsSnapshot Settings, string Token, DateTimeOffset ExpiresAt);
+
+    private FeishuSettingsSnapshot Snapshot()
+    {
+        var settings = _box.Current;
+        var baseUri = string.IsNullOrWhiteSpace(settings.FeishuApiBase) ? "https://open.feishu.cn" : settings.FeishuApiBase.TrimEnd('/');
+        return new FeishuSettingsSnapshot(settings.FeishuAppId?.Trim() ?? string.Empty, settings.FeishuAppSecret ?? string.Empty, baseUri);
+    }
 
     public async Task<(bool Handled, int StatusCode, string ResponseBody)> HandleWebhookAsync(
         string body,
@@ -201,13 +197,6 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
             return (true, 200, "{\"code\":0,\"msg\":\"ignored_event_type\"}");
         }
 
-        ct.ThrowIfCancellationRequested();
-        if (!string.IsNullOrWhiteSpace(settings.FeishuEncryptKey)
-            && !TryMarkSeen($"nonce:{nonce}"))
-        {
-            return (true, 200, "{\"code\":0,\"msg\":\"duplicate\"}");
-        }
-
         if (!TryGetOptionalObject(payload, "event", out var evt)
             || evt is null
             || !TryGetOptionalObject(evt, "message", out var messageNode)
@@ -223,11 +212,6 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         if (string.IsNullOrWhiteSpace(eventId) && string.IsNullOrWhiteSpace(messageId))
         {
             return (false, 400, "{\"error\":\"missing_event_id\"}");
-        }
-
-        if (!TryMarkSeen(dedupKey))
-        {
-            return (true, 200, "{\"code\":0,\"msg\":\"duplicate\"}");
         }
 
         if (!TryGetOptionalString(messageNode, "chat_type", out var chatTypeValue)
@@ -263,7 +247,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         if (string.IsNullOrWhiteSpace(targetRaw)) return (false, 400, "{\"error\":\"missing_target\"}");
 
         // 白名单检查
-        if (!IsAllowed(isGroup, targetRaw))
+        if (!IsAllowed(settings, isGroup, targetRaw))
         {
             _log?.Invoke($"[飞书] 忽略未在白名单中的消息（目标长度={targetRaw.Length}）");
             return (true, 200, "{\"code\":0,\"msg\":\"not_whitelisted\"}");
@@ -273,9 +257,15 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
         var mentioned = mentions is { Count: > 0 } || text.StartsWith('@');
 
-        var internalTarget = AliasFor(targetRaw);
-        var internalSender = AliasFor(senderOpenId);
-        var internalMsgId = AliasFor(messageId);
+        var (internalTarget, internalSender, internalMsgId) = MapInboundIds(settings, isGroup, targetRaw, senderOpenId, messageId);
+        if (internalTarget == 0 || internalSender == 0 || internalMsgId == 0)
+            return (false, 503, "{\"error\":\"identity_unavailable\"}");
+
+        // A persistence failure must remain retryable; consume dedup markers only after binding succeeds.
+        ct.ThrowIfCancellationRequested();
+        if ((!string.IsNullOrWhiteSpace(settings.FeishuEncryptKey) && !TryMarkSeen($"nonce:{nonce}"))
+            || !TryMarkSeen(dedupKey))
+            return (true, 200, "{\"code\":0,\"msg\":\"duplicate\"}");
 
         var qqMsg = new QqChatMessage(
             MessageId: internalMsgId,
@@ -313,24 +303,38 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         long? replyToMessageId = null,
         bool directAddress = false)
     {
-        var rawTarget = OriginalOf(targetId);
+        var settings = Snapshot();
+        var rawTarget = _ids.OriginalOf(targetId, settings.AppId, IdentityKind(isGroup));
         if (string.IsNullOrEmpty(rawTarget))
         {
             return new SendResult(false, 0);
         }
 
         var conv = new ConversationId(PlatformId.Feishu, AccountScope.Default, isGroup ? ConversationKind.GroupChat : ConversationKind.PrivateChat, rawTarget);
-        var rawReply = replyToMessageId.HasValue ? OriginalOf(replyToMessageId.Value) : null;
+        var rawReply = replyToMessageId.HasValue ? _ids.OriginalOf(replyToMessageId.Value, settings.AppId, "message") : null;
+        if (replyToMessageId.HasValue && rawReply is null) return new SendResult(false, 0);
         var outMsg = new OutboundMessage(conv, text, rawReply);
-        var res = await SendAsync(Context, outMsg, ct).ConfigureAwait(false);
-        var numId = long.TryParse(res.MessageId, out var parsed) ? parsed : Interlocked.Increment(ref _nextMessageId);
+        var res = await SendWithSnapshotAsync(Context, outMsg, settings, ct).ConfigureAwait(false);
+        var numId = res.IsSuccess && !string.IsNullOrWhiteSpace(res.MessageId)
+            ? _ids.AliasFor(settings.AppId, "message", res.MessageId) : 0;
         return new SendResult(res.IsSuccess, numId);
     }
 
-    public async Task<DeliveryResult> SendAsync(
+    private (long Target, long Sender, long Message) MapInboundIds(AppSettings settings, bool isGroup, string target, string sender, string message)
+    {
+        var appId = settings.FeishuAppId?.Trim() ?? string.Empty;
+        return (_ids.AliasFor(appId, IdentityKind(isGroup), target),
+            _ids.AliasFor(appId, "participant", sender), _ids.AliasFor(appId, "message", message));
+    }
+
+    public Task<DeliveryResult> SendAsync(
         PlatformContext context,
         OutboundMessage message,
         CancellationToken ct = default)
+        => SendWithSnapshotAsync(context, message, Snapshot(), ct);
+
+    private async Task<DeliveryResult> SendWithSnapshotAsync(
+        PlatformContext context, OutboundMessage message, FeishuSettingsSnapshot settings, CancellationToken ct)
     {
         if (context is null || message is null)
         {
@@ -354,7 +358,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         string token;
         try
         {
-            token = await GetTenantTokenAsync(ct).ConfigureAwait(false);
+            token = await GetTenantTokenAsync(settings, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -377,9 +381,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
             return DeliveryResult.Transient(reason);
         }
 
-        var baseUri = string.IsNullOrWhiteSpace(_box.Current.FeishuApiBase)
-            ? "https://open.feishu.cn"
-            : _box.Current.FeishuApiBase.TrimEnd('/');
+        var baseUri = settings.ApiBase;
 
         var isGroup = message.Target.Kind == ConversationKind.GroupChat;
         var receiveType = isGroup ? "chat_id" : "open_id";
@@ -432,7 +434,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
             var mid = respNode?["data"]?["message_id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N");
             var key = ConversationIdCodec.Encode(message.Target);
-            _outbox.Enqueue(new FeishuOutboxItem(AliasFor(mid), key, message.Text, Clock.Now));
+            _outbox.Enqueue(new FeishuOutboxItem(_ids.AliasFor(settings.AppId, "message", mid), key, message.Text, Clock.Now));
             while (_outbox.Count > OutboxCapacity) _outbox.TryDequeue(out _);
             _log?.Invoke($"[飞书] 消息已投递（目标长度={rawTarget.Length}，长度={message.Text.Length}）");
             return DeliveryResult.Ok(mid);
@@ -464,44 +466,38 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
     public void RegisterTarget(string channel, bool isGroup, long id) { }
 
-    private bool IsAllowed(bool isGroup, string target)
+    private bool IsAllowed(AppSettings settings, bool isGroup, string target)
     {
-        var policy = (_box.Current.PlatformPolicies ?? new List<PlatformPolicySettings>())
+        var policy = (settings.PlatformPolicies ?? new List<PlatformPolicySettings>())
             .FirstOrDefault(p => p is not null && string.Equals(PlatformId.Normalize(p.PlatformId), PlatformId.Feishu, StringComparison.OrdinalIgnoreCase));
         var policyWl = isGroup ? policy?.GroupWhitelist : policy?.PrivateWhitelist;
-        var wl = !string.IsNullOrWhiteSpace(policyWl) ? policyWl : _box.Current.FeishuWhitelist;
+        var wl = !string.IsNullOrWhiteSpace(policyWl) ? policyWl : settings.FeishuWhitelist;
         if (string.IsNullOrWhiteSpace(wl)) return false;
         var tokens = wl.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Contains("*") || tokens.Contains("all", StringComparer.OrdinalIgnoreCase)) return true;
         if (tokens.Contains(target, StringComparer.OrdinalIgnoreCase)) return true;
-        var alias = AliasFor(target).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return tokens.Contains(alias, StringComparer.OrdinalIgnoreCase);
+        var alias = _ids.AliasFor(settings.FeishuAppId?.Trim() ?? string.Empty, IdentityKind(isGroup), target);
+        return alias != 0 && tokens.Contains(alias.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparer.OrdinalIgnoreCase);
     }
 
-    private async Task<string> GetTenantTokenAsync(CancellationToken ct)
+    private async Task<string> GetTenantTokenAsync(FeishuSettingsSnapshot settings, CancellationToken ct)
     {
-        if (!string.IsNullOrEmpty(_tenantToken) && Clock.Now < _tokenExpires)
-        {
-            return _tenantToken;
-        }
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(settings.AppId) || string.IsNullOrWhiteSpace(settings.AppSecret)) return string.Empty;
+        var cached = Volatile.Read(ref _tokenCache);
+        if (cached is not null && cached.Settings == settings && Clock.Now < cached.ExpiresAt) return cached.Token;
 
         await _tokenGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!string.IsNullOrEmpty(_tenantToken) && Clock.Now < _tokenExpires) return _tenantToken;
-            if (string.IsNullOrWhiteSpace(_box.Current.FeishuAppId) || string.IsNullOrWhiteSpace(_box.Current.FeishuAppSecret))
-            {
-                return string.Empty;
-            }
-
-            var baseUri = string.IsNullOrWhiteSpace(_box.Current.FeishuApiBase)
-                ? "https://open.feishu.cn"
-                : _box.Current.FeishuApiBase.TrimEnd('/');
+            cached = Volatile.Read(ref _tokenCache);
+            if (cached is not null && cached.Settings == settings && Clock.Now < cached.ExpiresAt) return cached.Token;
+            var baseUri = settings.ApiBase;
             var url = $"{baseUri}/open-apis/auth/v3/tenant_access_token/internal";
             var payload = new JsonObject
             {
-                ["app_id"] = _box.Current.FeishuAppId,
-                ["app_secret"] = _box.Current.FeishuAppSecret,
+                ["app_id"] = settings.AppId,
+                ["app_secret"] = settings.AppSecret,
             };
 
             using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
@@ -530,8 +526,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
 
             if (!string.IsNullOrEmpty(token))
             {
-                _tenantToken = token;
-                _tokenExpires = Clock.Now.AddSeconds(Math.Max(60, (expire ?? 7200) - 300));
+                Volatile.Write(ref _tokenCache, new FeishuTokenCache(settings, token, Clock.Now.AddSeconds(Math.Max(60, (expire ?? 7200) - 300))));
                 ConnectionChanged?.Invoke(true);
                 return token;
             }

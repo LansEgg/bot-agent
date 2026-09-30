@@ -23,18 +23,37 @@ namespace BotAgent.Adapters.Persistence;
 /// </summary>
 public sealed class OfficialIdMap : IOfficialIdMap
 {
-    private readonly string _path;
+    private readonly string? _path;
     private readonly object _gate = new();
     private readonly Dictionary<string, long> _toAlias = new(StringComparer.Ordinal);
     private readonly Dictionary<long, string> _toOriginal = new();
     private long _next;
     private bool _dirty;
     private DateTimeOffset _lastSave = DateTimeOffset.MinValue;
+    private readonly long _aliasBase;
+    private readonly long _aliasLimit;
+    private readonly bool _durable;
+    private readonly Func<string, bool>? _validateOriginal;
 
     public OfficialIdMap(string path)
+        : this(path, Channels.AliasBase, Channels.AliasBase + 2_000_000_000_000L, false)
+    {
+    }
+
+    /// <summary>
+    /// Reuse the bidirectional store for a separate platform range. Durable mode writes every
+    /// binding synchronously, validates restored candidates, and rejects collisions instead of probing.
+    /// A null path is an explicitly ephemeral map for offline probes only.
+    /// </summary>
+    public OfficialIdMap(string? path, long aliasBase, long aliasLimit, bool durable, Func<string, bool>? validateOriginal = null)
     {
         _path = path;
-        _next = Channels.AliasBase;
+        if (aliasBase <= 0 || aliasLimit <= aliasBase) throw new ArgumentOutOfRangeException(nameof(aliasBase));
+        _aliasBase = aliasBase;
+        _aliasLimit = aliasLimit;
+        _durable = durable;
+        _validateOriginal = validateOriginal;
+        _next = aliasBase;
         Load();
     }
 
@@ -53,10 +72,19 @@ public sealed class OfficialIdMap : IOfficialIdMap
                 return existing;
             }
 
+            if (_validateOriginal is not null && !_validateOriginal(original))
+                throw new InvalidDataException("Invalid identity key.");
+
             var alias = Allocate(original);
             _toAlias[original] = alias;
             _toOriginal[alias] = original;
-            SaveLocked();
+            try { SaveLocked(); }
+            catch
+            {
+                _toAlias.Remove(original);
+                _toOriginal.Remove(alias);
+                throw;
+            }
             return alias;
         }
     }
@@ -88,15 +116,20 @@ public sealed class OfficialIdMap : IOfficialIdMap
     private long Allocate(string original)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(original));
-        var slot = BitConverter.ToUInt32(hash, 0) % 1_000_000_000_000L; // 号段里 1e12 个位置，够用
-        var candidate = Channels.AliasBase + slot;
+        var slot = _durable
+            ? (long)(System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(hash) % (ulong)(_aliasLimit - _aliasBase))
+            : BitConverter.ToUInt32(hash, 0) % 1_000_000_000_000L;
+        var candidate = _aliasBase + slot;
+        // Durable identities cannot depend on arrival order when a candidate collides.
+        if (_durable && _toOriginal.ContainsKey(candidate))
+            throw new InvalidOperationException("Identity alias collision; explicit recovery required.");
         var guard = 0;
         while (_toOriginal.ContainsKey(candidate) && guard++ < 1_000_000)
         {
             candidate++;
-            if (candidate >= Channels.AliasBase + 2_000_000_000_000L)
+            if (candidate >= _aliasLimit)
             {
-                candidate = Channels.AliasBase; // 绕回去找
+                candidate = _aliasBase; // 绕回去找
             }
         }
 
@@ -110,6 +143,7 @@ public sealed class OfficialIdMap : IOfficialIdMap
 
     private void Load()
     {
+        if (_path is null) return;
         try
         {
             if (!File.Exists(_path))
@@ -121,6 +155,7 @@ public sealed class OfficialIdMap : IOfficialIdMap
             var entries = json?["map"]?.AsObject();
             if (entries is null)
             {
+                if (_durable) throw new InvalidDataException("Missing identity map.");
                 return;
             }
 
@@ -128,11 +163,15 @@ public sealed class OfficialIdMap : IOfficialIdMap
             {
                 if (node is null)
                 {
+                    if (_durable) throw new InvalidDataException("Invalid identity map entry.");
                     continue;
                 }
 
                 var alias = node.GetValue<long>();
-                if (alias >= Channels.AliasBase)
+                if (_durable && (alias < _aliasBase || alias >= _aliasLimit || _toOriginal.ContainsKey(alias)
+                    || (_validateOriginal is not null && !_validateOriginal(original)) || alias != Allocate(original)))
+                    throw new InvalidDataException("Invalid or ambiguous identity alias.");
+                if (alias >= _aliasBase)
                 {
                     _toAlias[original] = alias;
                     _toOriginal[alias] = original;
@@ -144,7 +183,7 @@ public sealed class OfficialIdMap : IOfficialIdMap
                 _next = _toOriginal.Keys.Max() + 1;
             }
         }
-        catch (Exception)
+        catch (Exception) when (!_durable)
         {
             // 表坏了不能拖垮启动：丢掉重建（别名会变，但会话 key 里的老别名仍能当普通号用）
             _toAlias.Clear();
@@ -156,7 +195,7 @@ public sealed class OfficialIdMap : IOfficialIdMap
     {
         // 落盘不必每次分配都写（openid 分配是偶发事件）；1 秒一次 + 进程退出时收尾即可
         _dirty = true;
-        if (Clock.Now - _lastSave < TimeSpan.FromSeconds(1))
+        if (!_durable && Clock.Now - _lastSave < TimeSpan.FromSeconds(1))
         {
             return;
         }
@@ -178,6 +217,7 @@ public sealed class OfficialIdMap : IOfficialIdMap
 
     private void SaveNowLocked()
     {
+        if (_path is null) { _dirty = false; return; }
         try
         {
             var dir = Path.GetDirectoryName(_path);
@@ -194,8 +234,8 @@ public sealed class OfficialIdMap : IOfficialIdMap
 
             var doc = new JsonObject
             {
-                ["note"] = "官方通道 openid → 别名号（只存标识，不存聊天内容）",
-                ["aliasBase"] = Channels.AliasBase,
+                ["note"] = _durable ? "平台稳定身份 → 别名号（只存标识，不存聊天内容）" : "官方通道 openid → 别名号（只存标识，不存聊天内容）",
+                ["aliasBase"] = _aliasBase,
                 ["map"] = map,
             };
 
@@ -207,7 +247,7 @@ public sealed class OfficialIdMap : IOfficialIdMap
             _dirty = false;
             _lastSave = Clock.Now;
         }
-        catch (Exception)
+        catch (Exception) when (!_durable)
         {
             // 写不进去不影响运行（内存里那份还在），下次再试
         }

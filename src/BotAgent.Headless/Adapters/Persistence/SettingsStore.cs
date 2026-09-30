@@ -57,6 +57,11 @@ public sealed class SettingsStore : ISettingsRepository
 
     public void Save(AppSettings settings, BotAgent.Services.Ops.AuditEvent? auditEvent, BotAgent.Services.Ops.IAuditChain? auditChain)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (auditEvent is not null && auditChain is not AuditLogStore)
+        {
+            throw new InvalidOperationException("Settings audit requires the same SQLite transaction.");
+        }
         try
         {
             var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
@@ -80,20 +85,14 @@ public sealed class SettingsStore : ISettingsRepository
 
                 if (auditEvent is not null)
                 {
-                    if (auditChain is AuditLogStore concreteStore)
-                    {
-                        concreteStore.AppendInTransaction(conn, auditEvent);
-                    }
-                    else
-                    {
-                        auditChain?.Append(auditEvent);
-                    }
+                    ((AuditLogStore)auditChain!).AppendInTransaction(conn, auditEvent);
                 }
             });
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[Config] 写入配置失败: {ex.Message}");
+            throw;
         }
     }
 }

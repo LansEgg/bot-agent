@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using BotAgent.Domain.Jargon;
 using BotAgent.Domain.Ports;
@@ -22,6 +23,9 @@ public sealed class JargonService
     // 节流冷却：scope -> 上次提炼时刻
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastExtractTime = new();
 
+    private readonly object _bufferGate = new();
+    private const int MaxTrackedScopes = 500;
+    private const int MaxPhrasesPerScope = 200;
     private static readonly TimeSpan ExtractCooldown = TimeSpan.FromMinutes(15);
     private const int MinOccurrencesToPropose = 2;
 
@@ -47,30 +51,34 @@ public sealed class JargonService
             return;
         }
 
-        // 防会话数量无限膨胀（有界台账：最多跟踪 500 个会话）
-        if (_phraseCounters.Count > 500 && !_phraseCounters.ContainsKey(scope))
+        // 准入与淘汰共用锁，保证并发观察也不会突破 500 会话 / 单群 200 候选词上限。
+        lock (_bufferGate)
         {
-            var first = System.Linq.Enumerable.FirstOrDefault(_phraseCounters.Keys);
-            if (first != null) _phraseCounters.TryRemove(first, out _);
-        }
-
-        var scopeCounter = _phraseCounters.GetOrAdd(scope, _ => new ConcurrentDictionary<string, int>());
-
-        // 防单群词汇无限膨胀（单群候选词上限 200，超出时淘汰低频项）
-        if (scopeCounter.Count > 200)
-        {
-            foreach (var key in scopeCounter.Keys)
+            if (!_phraseCounters.TryGetValue(scope, out var scopeCounter))
             {
-                if (scopeCounter.TryGetValue(key, out var hits) && hits <= 1)
+                if (_phraseCounters.Count >= MaxTrackedScopes)
                 {
-                    scopeCounter.TryRemove(key, out _);
+                    var first = _phraseCounters.Keys.First();
+                    _phraseCounters.TryRemove(first, out _);
+                    _lastExtractTime.TryRemove(first, out _);
                 }
-            }
-        }
 
-        foreach (var phrase in candidates)
-        {
-            scopeCounter.AddOrUpdate(phrase, 1, (_, count) => count + 1);
+                scopeCounter = new ConcurrentDictionary<string, int>();
+                _phraseCounters[scope] = scopeCounter;
+            }
+
+            foreach (var phrase in candidates)
+            {
+                // 每个新词准入前淘汰最低频项，大批量或全是高频词时也保证有界。
+                if (!scopeCounter.ContainsKey(phrase) && scopeCounter.Count >= MaxPhrasesPerScope)
+                {
+                    var leastFrequent = scopeCounter.OrderBy(pair => pair.Value)
+                        .ThenBy(pair => pair.Key, StringComparer.Ordinal).First().Key;
+                    scopeCounter.TryRemove(leastFrequent, out _);
+                }
+
+                scopeCounter.AddOrUpdate(phrase, 1, (_, count) => count + 1);
+            }
         }
     }
 
@@ -85,17 +93,21 @@ public sealed class JargonService
         }
 
         var now = Clock.Now;
-        if (_lastExtractTime.TryGetValue(scope, out var last) && now - last < ExtractCooldown)
+        ConcurrentDictionary<string, int> counter;
+        lock (_bufferGate)
         {
-            return 0; // 冷却中，避免频繁调度
-        }
+            if (_lastExtractTime.TryGetValue(scope, out var last) && now - last < ExtractCooldown)
+            {
+                return 0; // 冷却中，避免频繁调度
+            }
 
-        if (!_phraseCounters.TryGetValue(scope, out var counter) || counter.IsEmpty)
-        {
-            return 0;
-        }
+            if (!_phraseCounters.TryGetValue(scope, out counter!) || counter.IsEmpty)
+            {
+                return 0;
+            }
 
-        _lastExtractTime[scope] = now;
+            _lastExtractTime[scope] = now;
+        }
         int persistedCount = 0;
 
         foreach (var kvp in counter)
@@ -130,8 +142,11 @@ public sealed class JargonService
                     await _repo.UpsertAsync(existing).ConfigureAwait(false);
                 }
 
-                // 消费后重置内存计数
-                counter.TryRemove(phrase, out _);
+                // 消费后重置内存计数（与容量检查共用锁，避免淘汰时枚举被清空）。
+                lock (_bufferGate)
+                {
+                    counter.TryRemove(phrase, out _);
+                }
             }
         }
 

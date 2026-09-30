@@ -50,11 +50,16 @@ public sealed class PromptTemplateStore : IPromptTemplateRepository
     public Task<string> SaveVersionAsync(string key, string content, string? label = null)
     {
         var now = Clock.Now.ToUnixTimeSeconds();
-        var existingCount = AppDatabase.Scalar<long>("SELECT COUNT(1) FROM prompt_templates WHERE key = $k", ("$k", key));
-        var newVersion = $"v{existingCount + 1}";
+        var newVersion = string.Empty;
 
         AppDatabase.Write(conn =>
         {
+            // 版本分配与取消激活、插入共用写事务，避免并发保存分配到同一个版本号。
+            using var countCommand = conn.CreateCommand();
+            countCommand.CommandText = "SELECT COUNT(1) FROM prompt_templates WHERE key = $k";
+            countCommand.Parameters.AddWithValue("$k", key);
+            newVersion = $"v{Convert.ToInt64(countCommand.ExecuteScalar()) + 1}";
+
             // 将旧版本激活状态取消
             AppDatabase.Exec(conn, "UPDATE prompt_templates SET is_active = 0 WHERE key = $k", ("$k", key));
 

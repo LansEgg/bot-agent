@@ -134,6 +134,7 @@ public static partial class Program
         using var bot = StartBot(new Dictionary<string, string>
         {
             ["QQCHAT_DATA_DIR"] = dataDir,
+            ["QQCHAT_LOG_FILE"] = "0",
             ["QQCHAT_API_KEY"] = "sk-mock",
             ["QQCHAT_BASE_URL"] = openAi.BaseUrl,
             ["QQCHAT_MODEL"] = "mock-model",
@@ -214,9 +215,21 @@ public static partial class Program
         Check("★ 自己发过的消息从 JSON 导进库了（含没写时间的那条）",
             DbProbe.Count(dataDir, "SELECT COUNT(1) FROM own_messages WHERE message_id IN (7701, 7702, 7703)") == 3,
             DbProbe.Dump(dataDir, "SELECT message_id || '=' || text FROM own_messages ORDER BY message_id"));
-        Check("★ 导入后新发的回复也记进了台账（不只是老数据）",
-            DbProbe.Count(dataDir, "SELECT COUNT(1) FROM own_messages WHERE message_id > 7703") >= 1,
-            DbProbe.Dump(dataDir, "SELECT message_id FROM own_messages ORDER BY message_id"));
+        var ownScope = DbProbe.LegacyQqGroupScope(groupId);
+        var newOwnMessageId = 0L;
+        Check("★ 导入后新发的回复也记进了 scoped 台账（完整会话/native id）",
+            await WaitUntilAsync(() =>
+            {
+                newOwnMessageId = protocol.SentMessageIds.LastOrDefault();
+                return newOwnMessageId > 0 && DbProbe.Count(dataDir,
+                    "SELECT COUNT(1) FROM own_messages_scoped WHERE conversation_key = $scope AND native_message_id = $id",
+                    ("$scope", ownScope), ("$id", newOwnMessageId.ToString(System.Globalization.CultureInfo.InvariantCulture))) == 1;
+            }, TimeSpan.FromSeconds(5)),
+            DbProbe.Dump(dataDir, "SELECT conversation_key, native_message_id FROM own_messages_scoped WHERE conversation_key = $scope",
+                ("$scope", ownScope)));
+        Check("★ 导入后新回复不污染无 scope 的旧台账",
+            newOwnMessageId > 0 && DbProbe.Count(dataDir, "SELECT COUNT(1) FROM own_messages WHERE message_id = $id",
+                ("$id", newOwnMessageId)) == 0);
         Check("★ 旧的 own-messages.json 被移到 legacy-json/ 留档（不是删掉）",
             File.Exists(Path.Combine(legacyRoot, "data", "own-messages.json")) &&
             !File.Exists(Path.Combine(dataSub, "own-messages.json")));
@@ -228,6 +241,7 @@ public static partial class Program
         using var bot2 = StartBot(new Dictionary<string, string>
         {
             ["QQCHAT_DATA_DIR"] = dataDir,
+            ["QQCHAT_LOG_FILE"] = "0",
             ["QQCHAT_API_KEY"] = "sk-mock",
             ["QQCHAT_BASE_URL"] = openAi.BaseUrl,
             ["QQCHAT_MODEL"] = "mock-model",

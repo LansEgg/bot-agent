@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Ports;
+using BotAgent.Domain.Messaging;
 using BotAgent.Services;
 
 namespace BotAgent.Adapters.Persistence;
@@ -35,37 +36,58 @@ public sealed class OwnMessageStore : IOwnMessageRepository
     /// 读出最近 <paramref name="max" /> 条（按时间倒序）。首次调用会先把老的 JSON 导进来（幂等）。
     /// </summary>
     public List<OwnMessage> LoadRecent(int max = MaxEntriesConst)
+        => LoadRows(max, scoped: false);
+
+    private static List<OwnMessage> LoadRows(int max, bool scoped)
     {
         ImportIfNeeded();
         return AppDatabase.Query(
-            "SELECT message_id, text, at_unix FROM own_messages ORDER BY at_unix DESC LIMIT $max",
-            r => new OwnMessage(
-                AppDatabase.Long(r, "message_id"),
-                AppDatabase.Str(r, "text") ?? string.Empty,
-                DateTimeOffset.FromUnixTimeSeconds(AppDatabase.Long(r, "at_unix"))),
-            ("$max", max));
+            """
+            SELECT message_id, text, at_unix, conversation_key, native_message_id FROM (
+              SELECT message_id, text, at_unix, NULL AS conversation_key, NULL AS native_message_id, 0 AS scoped FROM own_messages
+              UNION ALL
+              SELECT 0, text, at_unix, conversation_key, native_message_id, 1 AS scoped FROM own_messages_scoped
+            ) WHERE scoped = $scoped ORDER BY at_unix DESC LIMIT $max
+            """,
+            r => new OwnMessage(r.GetInt64(0), r.GetString(1), DateTimeOffset.FromUnixTimeSeconds(r.GetInt64(2)))
+            {
+                Ref = !r.IsDBNull(3) && ConversationIdCodec.TryParse(r.GetString(3), out var conversation)
+                    ? new MessageRef(conversation, r.GetString(4)) : null
+            }, ("$max", max), ("$scoped", scoped ? 1 : 0));
     }
 
-    /// <summary>记一条（已存在就覆盖）。</summary>
+    /// <summary>Compatibility signature only: unknown scope must never create a new ambiguous identity.</summary>
     public void Upsert(long id, string text, DateTimeOffset at)
-    {
-        if (id <= 0 || string.IsNullOrWhiteSpace(text))
-        {
-            return;   // 没拿到消息 id 的协议端：这条记不了，不是错误
-        }
+    { }
 
+    /// <summary>Read only scoped rows. Legacy JSON is retained/imported separately, never assigned a guessed scope.</summary>
+    public List<OwnMessage> LoadRecentScoped(int max = MaxEntriesConst)
+        => LoadRows(max, scoped: true);
+
+    public void Upsert(MessageRef messageRef, string text, DateTimeOffset at)
+    {
+        ArgumentNullException.ThrowIfNull(messageRef);
+        if (string.IsNullOrWhiteSpace(messageRef.NativeMessageId) || string.IsNullOrWhiteSpace(text)) return;
+        var conversation = messageRef.Conversation;
+        if (conversation is null || !Enum.IsDefined(conversation.Kind)
+            || string.IsNullOrWhiteSpace(conversation.PlatformId) || string.IsNullOrWhiteSpace(conversation.AccountScope)
+            || string.IsNullOrWhiteSpace(conversation.NativeTargetId)
+            || !ConversationIdCodec.TryParse(ConversationIdCodec.EncodeStructured(conversation), out var canonical))
+            throw new ArgumentException("Invalid own-message conversation scope.", nameof(messageRef));
+        var key = ConversationIdCodec.EncodeStructured(canonical);
         AppDatabase.Write(conn => AppDatabase.Exec(conn,
-            "INSERT INTO own_messages(message_id, text, at_unix) VALUES($id, $text, $at) " +
-            "ON CONFLICT(message_id) DO UPDATE SET text = excluded.text, at_unix = excluded.at_unix",
-            ("$id", id), ("$text", text), ("$at", at.ToUnixTimeSeconds())));
+            "INSERT INTO own_messages_scoped(conversation_key, native_message_id, text, at_unix) " +
+            "VALUES($key, $id, $text, $at) ON CONFLICT(conversation_key, native_message_id) " +
+            "DO UPDATE SET text = excluded.text, at_unix = excluded.at_unix",
+            ("$key", key), ("$id", messageRef.NativeMessageId), ("$text", text), ("$at", at.ToUnixTimeSeconds())));
     }
 
-    /// <summary>只留最近 <paramref name="max" /> 条（按时间）。</summary>
+    /// <summary>Prune scoped rows only; do not delete ambiguous legacy data during rollout.</summary>
     public void PruneTo(int max = MaxEntriesConst)
     {
         AppDatabase.Write(conn => AppDatabase.Exec(conn,
-            "DELETE FROM own_messages WHERE message_id NOT IN (" +
-            "  SELECT message_id FROM own_messages ORDER BY at_unix DESC LIMIT $max)",
+            "DELETE FROM own_messages_scoped WHERE rowid NOT IN (" +
+            "  SELECT rowid FROM own_messages_scoped ORDER BY at_unix DESC LIMIT $max)",
             ("$max", max)));
     }
 
@@ -73,7 +95,7 @@ public sealed class OwnMessageStore : IOwnMessageRepository
     /// 把 <c>data/own-messages.json</c> 一次性导进来（幂等）。失败只记日志、不阻塞启动 ——
     /// 导不进来顶多是"部署后认不出引用"，机器人得照常能跑。
     /// </summary>
-    private void ImportIfNeeded()
+    private static void ImportIfNeeded()
     {
         try
         {

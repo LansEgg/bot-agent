@@ -77,6 +77,7 @@ public sealed record WebSearchResult(
 public sealed partial class WebSearchService
 {
     private readonly IHttpFetcher _http;
+    private readonly IHttpFetcher _pageHttp;
     private readonly Func<AppSettings> _settings;
     private readonly Action<string> _log;
     private readonly ToolCircuitBreaker? _circuit;
@@ -84,9 +85,12 @@ public sealed partial class WebSearchService
     [GeneratedRegex(@"<a\s+[^>]*href\s*=\s*""(?<u>[^""]+)""[^>]*>(?<t>[\s\S]*?)</a>", RegexOptions.IgnoreCase)]
     private static partial Regex LinkRegex();
 
-    public WebSearchService(IHttpFetcher http, Func<AppSettings> settings, Action<string> log, ToolCircuitBreaker? circuit = null)
+    public WebSearchService(IHttpFetcher http, Func<AppSettings> settings, Action<string> log,
+        ToolCircuitBreaker? circuit = null,
+        IHttpFetcher? pageHttp = null)
     {
         _http = http;
+        _pageHttp = pageHttp ?? http;
         _settings = settings;
         _log = log;
         _circuit = circuit;
@@ -334,12 +338,8 @@ public sealed partial class WebSearchService
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(timeout);
 
-                using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-                req.Headers.TryAddWithoutValidation("User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
-                req.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-
-                using var resp = await _http.SendAsync(req, cts.Token);
+                using var resp = await SafeUrl.SendFollowingRedirectsAsync(
+                    _pageHttp, uri, CreatePageRequest, AllowPrivateForTests(), cts.Token);
                 if (!resp.IsSuccessStatusCode)
                 {
                     lastError = $"{name} 返回 HTTP {(int)resp.StatusCode}";
@@ -558,11 +558,8 @@ public sealed partial class WebSearchService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            req.Headers.TryAddWithoutValidation("User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
-
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            using var resp = await SafeUrl.SendFollowingRedirectsAsync(
+                _pageHttp, uri, CreatePageRequest, AllowPrivateForTests(), cts.Token);
             if (!resp.IsSuccessStatusCode)
             {
                 return (null, $"HTTP {(int)resp.StatusCode}");
@@ -596,6 +593,15 @@ public sealed partial class WebSearchService
         {
             return (null, $"{ex.GetType().Name} {ex.Message}");
         }
+    }
+
+    /// <summary>逐跳创建页面请求，不沿用模型客户端的鉴权头。</summary>
+    private static HttpRequestMessage CreatePageRequest(Uri target)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, target);
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+        return request;
     }
 
     /// <summary>是否允许抓内网/回环地址（自建 SearxNG 时需要；与图片、链接预览共用同一个开关）。</summary>

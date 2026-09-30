@@ -337,7 +337,8 @@ internal static class CompositionRoot
             feishu = new FeishuBotGateway(
                 settingsBox,
                 new HttpFetcher(TimeSpan.FromSeconds(30), msg => FileLog.Write("Net", msg), "feishu"),
-                msg => FileLog.Write("Feishu", msg));
+                msg => FileLog.Write("Feishu", msg),
+                ids: new FeishuIdMap(Path.Combine(AppPaths.DataDir, "feishu-ids-v2.json")));
             source = source is ChannelRouter r2
                 ? new ChannelRouter(r2.Sources.Concat(new IQqChatSource[] { feishu }), msg => FileLog.Write("Channel", msg))
                 : new ChannelRouter(new IQqChatSource[] { gateway, feishu }, msg => FileLog.Write("Channel", msg));
@@ -403,10 +404,16 @@ internal static class CompositionRoot
         BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets, ModelProviderStore providerStore,
             ToolCircuitBreaker ttsBreaker, ToolCircuitBreaker searchBreaker)
     {
+        var allowPrivateOutbound = Environment.GetEnvironmentVariable("QQCHAT_ALLOW_PRIVATE_IMAGE_HOSTS") == "1";
         // 模型那条路的出网：辅助调用 60 秒、聊天按 QQCHAT_MODEL_TIMEOUT_SECONDS（默认 120）、图片下载 8 秒
         var modelAuxHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "model-aux");
         var modelChatHttp = new HttpFetcher(OpenAiClient.ModelTimeout(), msg => FileLog.Write("Net", msg), "model-chat");
-        var imageHttp = new HttpFetcher(TimeSpan.FromSeconds(8), msg => FileLog.Write("Net", msg), "image");
+        var imageHttp = new HttpFetcher(
+            TimeSpan.FromSeconds(8),
+            msg => FileLog.Write("Net", msg),
+            "image",
+            allowAutoRedirect: false,
+            rejectPrivateDestinations: !allowPrivateOutbound);
 
         // 图片下载器与传输层（模型那条路的两个 IO 件）：都在这里造，客户端只拿端口。
         var imageDownloader = new ImageDownloader(imageHttp);
@@ -491,12 +498,24 @@ internal static class CompositionRoot
                 Path.Combine(AppPaths.DataDir, "music", "audio"), new AudioCache(), msg => FileLog.Write("Music", msg)),
             source,
             msg => FileLog.Write("Music", msg));
-        var links = new LinkPreviewer(mediaHttp, () => settingsBox.Current, msg => FileLog.Write("Links", msg));
+        var linkHttp = new HttpFetcher(
+            TimeSpan.FromSeconds(45),
+            msg => FileLog.Write("Net", msg),
+            "links",
+            allowAutoRedirect: false,
+            rejectPrivateDestinations: !allowPrivateOutbound);
+        var links = new LinkPreviewer(linkHttp, () => settingsBox.Current, msg => FileLog.Write("Links", msg));
 
         // 联网研究（搜索 / 读页面）：它自己的 HttpClient 超时给宽松点（检索要等上游模型回话）
         var researchHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "search");
+        var researchPageHttp = new HttpFetcher(
+            TimeSpan.FromSeconds(60),
+            msg => FileLog.Write("Net", msg),
+            "search-page",
+            allowAutoRedirect: false,
+            rejectPrivateDestinations: !allowPrivateOutbound);
         var research = new ResearchUseCase(
-            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg), searchBreaker),
+            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg), searchBreaker, researchPageHttp),
             msg => FileLog.Write("Search", msg));
 
 
