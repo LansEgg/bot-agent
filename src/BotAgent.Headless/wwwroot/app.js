@@ -1085,12 +1085,16 @@ function renderChannelStatus(channels) {
     settingsDirty = true;
     const h = $("dirtyHint");
     if (h) h.hidden = false;
+    const hb = $("headerSaveBtn");
+    if (hb) hb.classList.add("dirty");
   }
 
   function clearSettingsDirty() {
     settingsDirty = false;
     const h = $("dirtyHint");
     if (h) h.hidden = true;
+    const hb = $("headerSaveBtn");
+    if (hb) hb.classList.remove("dirty");
   }
 
   /* ── 设置页分节导航（左侧分节栏，一次显示一节）──
@@ -1181,9 +1185,16 @@ function renderChannelStatus(channels) {
       links.forEach((b, k) => {
         const on = all ? k === links.length - 1 : k === current;
         b.classList.toggle("active", on);
-        // 窄屏那排胶囊是横向滑动的：把当前项带进可视区，否则高亮了也看不见
-        if (on && typeof b.scrollIntoView === "function") {
-          b.scrollIntoView({ block: "nearest", inline: "nearest" });
+        // 窄屏那排胶囊是横向滑动的：把当前项带进可视区，只滚动导航栏自身，绝不造成页面或视口抖动
+        if (on && nav && typeof nav.scrollTo === "function") {
+          const navRect = nav.getBoundingClientRect();
+          const btnRect = b.getBoundingClientRect();
+          if (btnRect.left < navRect.left || btnRect.right > navRect.right) {
+            nav.scrollTo({
+              left: b.offsetLeft - nav.offsetWidth / 2 + b.offsetWidth / 2,
+              behavior: "smooth"
+            });
+          }
         }
       });
       if (!keepScroll) scroller.scrollTop = 0;
@@ -1836,7 +1847,9 @@ function renderChannelStatus(channels) {
     else if (pendingAgentServerKeyClear) payload.agentServerKey = "";
 
     const btn = $("saveBtn");
+    const hbtn = $("headerSaveBtn");
     btn.disabled = true;
+    if (hbtn) hbtn.disabled = true;
     const deviceTableSkippedHere = deviceTableSkipped;
     deviceTableSkipped = false;
     // 快照一下改动序号：请求在飞时用户又改了东西的话，这次返回的刷新结果已经过时
@@ -1874,6 +1887,7 @@ function renderChannelStatus(channels) {
       toast("保存失败：" + err.message);
     } finally {
       btn.disabled = false;
+      if (hbtn) hbtn.disabled = false;
     }
   }
 
@@ -3038,6 +3052,10 @@ function renderChannelStatus(channels) {
       return false;
     }
 
+    document.body.dataset.activePage = page;
+    const hb = $("headerSaveBtn");
+    if (hb) hb.hidden = (page !== "settings");
+
     for (const b of document.querySelectorAll(".navitem, .mtab")) {
       if (b.dataset.page === page) b.classList.add("active"); else b.classList.remove("active");
     }
@@ -3324,6 +3342,8 @@ function renderChannelStatus(channels) {
     $("setVoiceEagerness").addEventListener("input", (e) => { $("voiceEagernessVal").textContent = e.target.value; });
     $("setThreshold").addEventListener("input", (e) => { $("threshVal").textContent = e.target.value; });
     $("saveBtn").addEventListener("click", saveSettings);
+    const hb = $("headerSaveBtn");
+    if (hb) hb.addEventListener("click", saveSettings);
 
     // 清除密钥：必须先确认（密钥没了机器人就发不出话，不是小事）
     $("clearApiKey").addEventListener("click", () => {

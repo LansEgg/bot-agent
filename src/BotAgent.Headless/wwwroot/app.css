@@ -152,6 +152,33 @@ h1, h2, h3, p { margin: 0; }
 
 .titlebar-right { display: flex; align-items: center; gap: 12px; }
 
+.header-save-btn {
+  display: none;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 14px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.16s ease, opacity 0.16s ease, background 0.16s ease;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.header-save-btn:active {
+  transform: scale(0.94);
+}
+.header-save-btn.dirty {
+  animation: pulse-save 1.8s ease-in-out infinite;
+}
+@keyframes pulse-save {
+  0%, 100% { box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent), 0 4px 12px color-mix(in srgb, var(--accent) 45%, transparent); }
+}
+
 .conn {
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 12px; color: var(--text-secondary);
@@ -1233,17 +1260,44 @@ input[type="range"] {
   .switch::after { width: 16px; height: 16px; top: 3px; left: 3px; }
   .switch-row input:checked + .switch::after { transform: translateX(20px); }
 
+  /* 标题栏常驻保存按钮（手机端处于设置页时展示） */
+  body[data-active-page="settings"] .header-save-btn {
+    display: inline-flex;
+  }
+
   /* 设置页 */
-  .settings-inner { padding: 16px 14px calc(84px + env(safe-area-inset-bottom, 0px)); gap: 12px; }
+  .settings-inner { padding: 16px 14px 20px; gap: 12px; }
   .page-title { font-size: 22px; }
   .page-desc { font-size: 13px; }
   .card { padding: 14px; gap: 12px; }
   .card-head h3 { font-size: 16px; }
-  .settings-footer { padding: 10px 14px 12px; gap: 8px; }
-  .settings-actions { flex-wrap: wrap; gap: 8px; }
-  .accent-btn.big { flex: 1 1 auto; min-width: 0; height: 44px; }
+  .settings-footer {
+    padding: 10px 16px calc(76px + env(safe-area-inset-bottom, 0px));
+    gap: 8px;
+    background: color-mix(in srgb, var(--card-bg) 88%, transparent);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border-top: 1px solid var(--divider);
+    box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.05);
+    z-index: 10;
+  }
+  .settings-actions { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .accent-btn.big { height: 42px; font-size: 14px; border-radius: 12px; flex: 1 1 auto; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .dirty-hint { font-size: 12px; white-space: nowrap; }
   .path-hint { flex-basis: 100%; }
   .logbox { height: 150px; font-size: 11px; }
+
+  /* 聚焦输入框唤起软键盘时：隐藏底部悬浮栏，收起保存栏底边距，防止键盘推高底栏遮挡内容 */
+  body:has(input:focus) .mtabbar,
+  body:has(textarea:focus) .mtabbar,
+  body:has(select:focus) .mtabbar {
+    display: none !important;
+  }
+  body:has(input:focus) .settings-footer,
+  body:has(textarea:focus) .settings-footer,
+  body:has(select:focus) .settings-footer {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
 
   /* 扫码登录卡片：竖排 + 大码，方便手机对着屏幕扫 */
   .login-card { margin: 10px 12px 0; padding: 14px; gap: 10px; }
@@ -1284,7 +1338,7 @@ input[type="range"] {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
-@media (max-width: 860px) {
+@media (min-width: 761px) and (max-width: 860px) {
   .grid-2 { grid-template-columns: 1fr; }
   .settings-inner { padding: 18px 18px 24px; }
   .settings-footer { padding: 12px 18px 14px; }
@@ -1559,7 +1613,6 @@ input:focus, textarea:focus, select:focus { padding-bottom: 7px; border-bottom-w
   .trace-bar { min-height: 58px; padding: 11px 14px; }
   #pageDash .dash-grid { padding: 12px 12px calc(84px + env(safe-area-inset-bottom, 0px)); gap: 10px; }
   #pageDash .dash-tile { min-height: 112px; }
-  #pageSettings .settings-inner { padding: 20px 14px 28px; }
   #pageSettings .card { padding: 16px; border-radius: 14px; }
 }
 
