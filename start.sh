@@ -136,16 +136,26 @@ if ! command -v dotnet >/dev/null 2>&1; then
 fi
 
 PROJECT_FILE="$DIR/src/BotAgent.Headless/BotAgent.Headless.csproj"
+DLL_FILE="$DIR/src/BotAgent.Headless/bin/Release/net8.0/BotAgent.Headless.dll"
+
+# 如果产物不存在，先编译
+if [ ! -f "$DLL_FILE" ]; then
+    echo "首次运行，正在编译源码 (Release)..."
+    dotnet build "$PROJECT_FILE" -c Release
+fi
 
 # 运行模式选择（直接从源码项目运行）
 if [ "$1" = "--foreground" ] || [ "$1" = "-f" ]; then
     echo "正在以前台模式从源码运行 Bot Agent..."
-    exec dotnet run --project "$PROJECT_FILE" -c Release --no-launch-profile
+    echo $$ > "$PID_FILE"
+    trap 'rm -f "$PID_FILE"' EXIT INT TERM
+    exec dotnet exec "$DLL_FILE"
 fi
 
 echo "正在以后台模式从源码运行 Bot Agent..."
-nohup dotnet run --project "$PROJECT_FILE" -c Release --no-launch-profile >> "$LOG_FILE" 2>&1 &
+nohup dotnet exec "$DLL_FILE" < /dev/null >> "$LOG_FILE" 2>&1 &
 BOT_PID=$!
+disown "$BOT_PID" 2>/dev/null || true
 echo $BOT_PID > "$PID_FILE"
 
 echo "正在启动服务，请稍候..."
