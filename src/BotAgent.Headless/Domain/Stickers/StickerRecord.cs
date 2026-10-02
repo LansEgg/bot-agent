@@ -47,6 +47,9 @@ public sealed class StickerRecord
 
     public int DescribeAttempts { get; set; }
 
+    /// <summary>租户作用域："global_approved"（跨租户批准）或具体租户 ID（如 "group:10001"）。</summary>
+    public string ScopeTenantId { get; set; } = "global_approved";
+
     [JsonIgnore]
     public string AbsolutePath { get; set; } = string.Empty;
 }

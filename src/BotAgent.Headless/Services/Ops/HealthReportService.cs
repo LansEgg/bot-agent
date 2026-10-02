@@ -176,7 +176,7 @@ public sealed class HealthReportService : IDisposable
     /// 立刻发一条（面板「现在发一条」/ 定时器到点都走这里）。
     /// 返回：(是否全部发出去了, 发的内容, 失败原因)。
     /// </summary>
-    public async Task<(bool Ok, string Text, string? Error)> SendNowAsync(string reason)
+    public async Task<(bool Ok, string Text, string? Error)> SendNowAsync(string reason, DateTimeOffset? reportTime = null)
     {
         var targets = ParseTargets(_settings.HealthReportTargets);
         if (targets.Count == 0)
@@ -187,9 +187,10 @@ public sealed class HealthReportService : IDisposable
             return (false, string.Empty, noTarget);
         }
 
-        var (text, _) = await BuildReportAsync();
+        var (text, _) = await BuildReportAsync(reportTime);
         var failures = new List<string>();
         var skipped = new List<string>();
+        var sentThisRun = 0;
 
         foreach (var uid in targets)
         {
@@ -210,6 +211,7 @@ public sealed class HealthReportService : IDisposable
                 if (result.Ok)
                 {
                     SentCount++;
+                    sentThisRun++;
                     LastSentAt = NowBeijing();
                     FileLog.Write("Health", $"健康日报已私聊发给 {uid}（{reason}，{text.Length} 字）");
                 }
@@ -231,7 +233,7 @@ public sealed class HealthReportService : IDisposable
             FileLog.Warn("Health", $"健康日报发送失败：{error}");
         }
 
-        if (skipped.Count > 0 && failures.Count == 0 && SentCount == 0)
+        if (skipped.Count > 0 && failures.Count == 0 && sentThisRun == 0)
         {
             // 全被总开关拦下：不算“失败”（不是故障），但要让面板/日志看出来发生了什么 ✗“没发”不能无声
             var note = "所有收件人所在通道的对话总开关都关着，本次没发：" + string.Join("；", skipped);
@@ -312,10 +314,24 @@ public sealed class HealthReportService : IDisposable
             var now = NowBeijing();
 
             // 定时器提前醒了（改过系统时间 / 从挂起恢复）→ 不发，重排一次
-            if (_nextRunAt is { } due && now < due.AddSeconds(-5))
+            if (_nextRunAt is { } due)
             {
-                Arm();
-                return;
+                if (now < due.AddSeconds(-5))
+                {
+                    Arm();
+                    return;
+                }
+
+                // 操作系统定时器抖动提早数毫秒唤醒时，补足微小余量，确保不早于整分生成与发送
+                if (now < due)
+                {
+                    var remain = due - now + TimeSpan.FromMilliseconds(50);
+                    if (remain > TimeSpan.Zero && remain <= TimeSpan.FromSeconds(5))
+                    {
+                        await Task.Delay(remain);
+                        now = NowBeijing();
+                    }
+                }
             }
 
             var today = DateOnly.FromDateTime(now.DateTime);
@@ -331,8 +347,9 @@ public sealed class HealthReportService : IDisposable
                 return;
             }
 
+            var scheduledTime = _nextRunAt;
             _lastSentDay = today; // 先标记：发失败也不每轮重试（失败原因进日志与面板）
-            await SendNowAsync("定时推送");
+            await SendNowAsync("定时推送", reportTime: scheduledTime);
             Arm();
         }
         catch (Exception ex)
@@ -361,9 +378,9 @@ public sealed class HealthReportService : IDisposable
     /// 采集 + 排版。返回 (文本, 告警条数)。
     /// 所有探测都必须“拿不到就不写/降级”，绝不能让一条日报因为某个探针抛异常而发不出去。
     /// </summary>
-    private async Task<(string Text, int Warnings)> BuildReportAsync()
+    private async Task<(string Text, int Warnings)> BuildReportAsync(DateTimeOffset? reportTime = null)
     {
-        var now = NowBeijing();
+        var now = reportTime ?? NowBeijing();
         var warnings = new List<string>();
         var lines = new List<string> { $"🩺 服务器健康日报 · {now:MM-dd HH:mm}" };
 

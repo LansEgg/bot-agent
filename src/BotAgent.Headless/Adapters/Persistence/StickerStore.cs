@@ -64,7 +64,7 @@ public sealed class StickerStore : IStickerRepository
                 // 图片本体仍然放 stickers/ 目录 —— 二进制大对象不适合塞库（备份/预览/清理都不方便）。
                 var loaded = AppDatabase.Query("""
                     SELECT id, hash, file, ext, bytes, added_unix, last_used_unix, uses, from_uid, from_group,
-                           description, tags, is_sticker, described, describe_attempts
+                           description, tags, is_sticker, described, describe_attempts, scope_tenant_id
                     FROM stickers
                     """, r => new StickerRecord
                 {
@@ -82,7 +82,8 @@ public sealed class StickerStore : IStickerRepository
                     Tags = ParseTags(AppDatabase.Str(r, "tags")),
                     IsSticker = AppDatabase.LongOrNull(r, "is_sticker") is long v ? v != 0 : null,
                     Described = AppDatabase.Bool(r, "described"),
-                    DescribeAttempts = AppDatabase.Int(r, "describe_attempts")
+                    DescribeAttempts = AppDatabase.Int(r, "describe_attempts"),
+                    ScopeTenantId = AppDatabase.Str(r, "scope_tenant_id") ?? "global_approved"
                 });
 
                 foreach (var item in loaded)
@@ -151,12 +152,23 @@ public sealed class StickerStore : IStickerRepository
     /// 收藏一张图。同一张内容已存在时直接返回 null（不重复存、不重复描述）。
     /// </summary>
     public StickerRecord? Add(byte[] data, string ext, string? fromUid, long fromGroup)
+        => Add(data, ext, fromUid, fromGroup, null);
+
+    public StickerRecord? Add(byte[] data, string ext, string? fromUid, long fromGroup, string? scopeTenantId)
     {
         if (data.Length == 0)
         {
             return null;
         }
 
+        // 使用安全校验器探测文件头真实魔数，拦截伪造扩展名、脚本与超限载荷
+        if (!StickerSafetyGuard.ValidatePayload(data, StickerSafetyGuard.DefaultMaxFileBytes, out var detectedExt, out _, out var err))
+        {
+            FileLog.Warn("Sticker", $"拦截非法表情包载荷：{err}");
+            return null;
+        }
+
+        ext = detectedExt;
         var hash = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var id = hash[..8];
         ext = NormalizeExt(ext);
@@ -190,7 +202,8 @@ public sealed class StickerStore : IStickerRepository
                 Bytes = data.Length,
                 AddedAt = Clock.UtcNow.ToUnixTimeSeconds(),
                 FromUid = fromUid,
-                FromGroup = fromGroup
+                FromGroup = fromGroup,
+                ScopeTenantId = string.IsNullOrWhiteSpace(scopeTenantId) ? "global_approved" : scopeTenantId.Trim()
             };
 
             _items.Add(record);
@@ -346,6 +359,9 @@ public sealed class StickerStore : IStickerRepository
     /// 关键词重合度为主，掺一点随机避免每次都发同一张。
     /// </summary>
     public List<StickerRecord> PickCandidates(string query, int count, int excludeUsedWithinSeconds = -1)
+        => PickCandidates(query, count, excludeUsedWithinSeconds, null);
+
+    public List<StickerRecord> PickCandidates(string query, int count, int excludeUsedWithinSeconds, string? tenantId)
     {
         if (count <= 0)
         {
@@ -364,7 +380,10 @@ public sealed class StickerStore : IStickerRepository
 
         lock (_gate)
         {
-            var usable = _items.Where(i => i.IsSticker == true).ToList();
+            var usable = _items.Where(i => i.IsSticker == true
+                && (string.IsNullOrWhiteSpace(tenantId)
+                    || string.Equals(i.ScopeTenantId, "global_approved", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(i.ScopeTenantId, tenantId, StringComparison.OrdinalIgnoreCase))).ToList();
             var scored = usable
                 .Select(item => (Item: item, Score: RelevanceScore(item, tokens) + random.NextDouble() * 1.2))
                 .Where(x => x.Item.LastUsedAt == 0 || now - x.Item.LastUsedAt > excludeWindow)
@@ -481,21 +500,23 @@ public sealed class StickerStore : IStickerRepository
                 {
                     AppDatabase.Exec(conn, """
                         INSERT INTO stickers(id, hash, file, ext, bytes, added_unix, last_used_unix, uses,
-                                             from_uid, from_group, description, tags, is_sticker, described, describe_attempts)
-                        VALUES($id, $h, $f, $ext, $b, $a, $lu, $u, $fu, $fg, $d, $tags, $is, $de, $da)
+                                             from_uid, from_group, description, tags, is_sticker, described, describe_attempts, scope_tenant_id)
+                        VALUES($id, $h, $f, $ext, $b, $a, $lu, $u, $fu, $fg, $d, $tags, $is, $de, $da, $st)
                         ON CONFLICT(id) DO UPDATE SET
                             hash = excluded.hash, file = excluded.file, ext = excluded.ext, bytes = excluded.bytes,
                             last_used_unix = excluded.last_used_unix, uses = excluded.uses,
                             from_uid = excluded.from_uid, from_group = excluded.from_group,
                             description = excluded.description, tags = excluded.tags, is_sticker = excluded.is_sticker,
-                            described = excluded.described, describe_attempts = excluded.describe_attempts
+                            described = excluded.described, describe_attempts = excluded.describe_attempts,
+                            scope_tenant_id = excluded.scope_tenant_id
                         """,
                         ("$id", item.Id), ("$h", item.Hash), ("$f", item.File), ("$ext", item.Ext),
                         ("$b", item.Bytes), ("$a", item.AddedAt), ("$lu", item.LastUsedAt), ("$u", item.Uses),
                         ("$fu", item.FromUid), ("$fg", item.FromGroup), ("$d", item.Desc),
                         ("$tags", item.Tags is { Count: > 0 } ? JsonSerializer.Serialize(item.Tags) : null),
                         ("$is", item.IsSticker is null ? null : (item.IsSticker.Value ? 1 : 0)),
-                        ("$de", item.Described ? 1 : 0), ("$da", item.DescribeAttempts));
+                        ("$de", item.Described ? 1 : 0), ("$da", item.DescribeAttempts),
+                        ("$st", item.ScopeTenantId));
                 }
 
                 AppDatabase.Exec(conn, "CREATE TEMP TABLE IF NOT EXISTS _keep_sticker(id TEXT PRIMARY KEY)");
@@ -560,6 +581,7 @@ public sealed class StickerStore : IStickerRepository
         Tags = new List<string>(item.Tags),
         IsSticker = item.IsSticker,
         Described = item.Described,
-        DescribeAttempts = item.DescribeAttempts
+        DescribeAttempts = item.DescribeAttempts,
+        ScopeTenantId = item.ScopeTenantId
     };
 }

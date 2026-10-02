@@ -41,6 +41,9 @@ public sealed class ChatMessage
     /// </summary>
     public bool DirectToBot { get; set; }
 
+    /// <summary>当前消息是否明确 @ 机器人；协议风控退避不把普通引用当作 @。</summary>
+    public bool MentionedBot { get; init; }
+
     /// <summary>QQ 原始消息 ID（用于历史去重）。</summary>
     public long? QqMessageId { get; init; }
 

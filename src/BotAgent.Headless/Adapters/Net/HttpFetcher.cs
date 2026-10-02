@@ -1,4 +1,6 @@
-using System.Net.Http.Headers;
+using System.Net;
+using System.Net.Sockets;
+using BotAgent.Services.Net;
 
 namespace BotAgent.Adapters.Net;
 
@@ -49,10 +51,26 @@ public sealed class HttpFetcher : IHttpFetcher, IDisposable
 {
     private readonly HttpClient _client;
 
-    public HttpFetcher(TimeSpan timeout, Action<string>? log = null, string? name = null)
+    public HttpFetcher(
+        TimeSpan timeout,
+        Action<string>? log = null,
+        string? name = null,
+        bool allowAutoRedirect = true,
+        bool rejectPrivateDestinations = false)
     {
         Timeout = timeout;
-        _client = new HttpClient { Timeout = timeout };
+        var handler = new SocketsHttpHandler
+        {
+            // 不可信目标必须由调用方逐跳校验，不能交给底层自动跳转。
+            AllowAutoRedirect = allowAutoRedirect && !rejectPrivateDestinations
+        };
+        if (rejectPrivateDestinations)
+        {
+            handler.UseProxy = false;
+            handler.ConnectCallback = ConnectPublicAsync;
+        }
+
+        _client = new HttpClient(handler) { Timeout = timeout };
 
         // 默认请求头与"这个客户端是干什么的"绑在一起（原来分散在各服务里）；
         // 需要按请求改头的调用方仍然自己塞 HttpRequestMessage（方法签名与 HttpClient 一致）。
@@ -99,6 +117,54 @@ public sealed class HttpFetcher : IHttpFetcher, IDisposable
 
     public Task<HttpResponseMessage> PostAsync(string url, HttpContent content, CancellationToken ct = default)
         => _client.PostAsync(url, content, ct);
+
+    private static async ValueTask<Stream> ConnectPublicAsync(
+        SocketsHttpConnectionContext context,
+        CancellationToken ct)
+    {
+        var addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct).ConfigureAwait(false);
+        SocketException? lastFailure = null;
+        foreach (var address in addresses)
+        {
+            if (OutboundAddressPolicy.IsBlocked(address))
+            {
+                continue;
+            }
+
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+            {
+                NoDelay = true
+            };
+            try
+            {
+                // 固定到已校验的 IP 字面量：不能再用域名连接，否则会产生第二次 DNS 解析。
+                await socket.ConnectAsync(address, context.DnsEndPoint.Port, ct).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (OperationCanceledException)
+            {
+                socket.Dispose();
+                throw;
+            }
+            catch (SocketException ex)
+            {
+                socket.Dispose();
+                lastFailure = ex;
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+
+        if (lastFailure is not null)
+        {
+            throw new HttpRequestException("无法连接允许的公网地址", lastFailure);
+        }
+
+        throw new HttpRequestException("出站地址解析为禁止的私有或不可路由地址");
+    }
 
     /// <summary>日志里只印 host + path（查询串里可能有 token / cookie）。</summary>
     private static string SafeUrl(Uri? uri)

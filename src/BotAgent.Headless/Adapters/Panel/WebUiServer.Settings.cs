@@ -96,6 +96,14 @@ public sealed partial class WebUiServer
             return;
         }
 
+        List<Domain.Platforms.PlatformPolicySettings>? platformPolicies = null;
+        if (body["platformPolicies"] is JsonNode platformPoliciesNode
+            && !TryParsePlatformPolicies(platformPoliciesNode, out platformPolicies))
+        {
+            await WriteJsonAsync(context, 400, new JsonObject { ["error"] = "invalid platformPolicies" });
+            return;
+        }
+
         // 模型端点：先校验再应用 —— 无效 URL 直接 400，不然一次手滑就把配置写坏、连不上模型。
         var newBaseUrl = body["modelBaseUrl"] is JsonNode mbu ? (mbu.GetValue<string>() ?? string.Empty).Trim() : null;
         if (newBaseUrl is { Length: > 0 } &&
@@ -107,24 +115,197 @@ public sealed partial class WebUiServer
         }
 
         // 只接受运行时可改的字段（协议端地址、QQ 号这些仍属于容器环境变量职责）
-        _settingsHotReload.ApplyRuntimeSettings(s =>
+        var auditEvent = BuildSettingsAuditEvent(body);
+        var afterPersist = new List<Action>();
+        try
         {
-            // 三段分开：行为/阈值 · 通道与 agent · 报表与模型。顺序与措辞一字未改（§5.3 兼容红线）。
-            ApplyBehaviorSettings(body, s);
-            ApplyChannelAndAgentSettings(body, s);
-            ApplyReportingAndModelSettings(body, s, newBaseUrl);
-        });
-
-        // 定时类功能：开关/时刻/收件人变了一定要重排定时器，否则“改了不生效”（要重启才变）
-        _healthReports?.Reapply();
-
-        AppendSettingsAudit(body);
+            _settingsHotReload.ApplyRuntimeSettings(s =>
+            {
+                // 行为/阈值 · 通道与 agent · 多平台设置 · 报表与模型。
+                ApplyBehaviorSettings(body, s, afterPersist);
+                ApplyChannelAndAgentSettings(body, s);
+                ApplyMultiPlatformSettings(body, s, platformPolicies);
+                ApplyReportingAndModelSettings(body, s, newBaseUrl, afterPersist);
+            }, auditEvent, _auditChain, _ =>
+            {
+                foreach (var action in afterPersist) action();
+                // 开关/时刻/收件人变更后重排定时器，仍在 Settings writer 串行边界内。
+                _healthReports?.Reapply();
+                AuditSecretRotations(body);
+            });
+        }
+        catch (Exception ex)
+        {
+            // 提交后重建也可能失败：不把这个错误响应当成数据库一定回滚的承诺。
+            FileLog.Warn("Web", $"Settings update failed ({ex.GetType().Name})");
+            await WriteJsonAsync(context, 500, new JsonObject { ["error"] = "settings_save_failed" });
+            return;
+        }
 
         await WriteJsonAsync(context, 200, BuildSettingsPayload());
     }
 
+    private void AuditSecretRotations(JsonNode body)
+    {
+        if (body["apiKey"] is not null)
+        {
+            var raw = body["apiKey"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("model_api_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["ttsKey"] is not null)
+        {
+            var raw = body["ttsKey"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("tts_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["officialAppSecret"] is not null)
+        {
+            var raw = body["officialAppSecret"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("official_secret", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["agentServerKey"] is not null)
+        {
+            var raw = body["agentServerKey"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("agent_server_key", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+        if (body["feishuAppSecret"] is not null)
+        {
+            var raw = body["feishuAppSecret"]?.GetValue<string>()?.Trim();
+            AppendSecretRotateAudit("feishu_secret", string.IsNullOrEmpty(raw) ? "cleared" : "rotated");
+        }
+    }
+
+    private static bool TryParsePlatformPolicies(
+        JsonNode node,
+        out List<Domain.Platforms.PlatformPolicySettings>? policies)
+    {
+        policies = null;
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<Domain.Platforms.PlatformPolicySettings>>(node.ToJsonString(), Json);
+            if (parsed is null || parsed.Count > 32) return false;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var policy in parsed)
+            {
+                if (policy is null) return false;
+                var platform = Domain.Platforms.PlatformId.Normalize(policy.PlatformId);
+                var account = (policy.AccountScope ?? string.Empty).Trim();
+                if (platform.Length is 0 or > 80 || account.Length is 0 or > 80
+                    || !platform.All(IsPolicyKeyChar) || !account.All(IsPolicyKeyChar)
+                    || !seen.Add(platform + "|" + account)
+                    || (policy.GroupWhitelist?.Length ?? 0) > 4096
+                    || (policy.PrivateWhitelist?.Length ?? 0) > 4096)
+                {
+                    return false;
+                }
+
+                policy.PlatformId = platform;
+                policy.AccountScope = account;
+                policy.GroupWhitelist ??= string.Empty;
+                policy.PrivateWhitelist ??= string.Empty;
+                policy.FeatureOverrides ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                policy.AllowedActions ??= new List<string>();
+                if (policy.FeatureOverrides.Count > 32 || policy.AllowedActions.Count > 64
+                    || policy.FeatureOverrides.Keys.Any(k => k.Length > 64 || !k.All(IsPolicyKeyChar))
+                    || policy.AllowedActions.Any(a => string.IsNullOrWhiteSpace(a) || a.Length > 80))
+                {
+                    return false;
+                }
+            }
+
+            policies = parsed;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPolicyKeyChar(char value)
+        => char.IsAsciiLetterOrDigit(value) || value is '.' or '_' or '-';
+
+    private void ApplyMultiPlatformSettings(
+        JsonNode body,
+        AppSettings s,
+        List<Domain.Platforms.PlatformPolicySettings>? platformPolicies)
+    {
+        if (body["platformPolicies"] is not null && platformPolicies is not null)
+        {
+            s.PlatformPolicies = platformPolicies;
+            foreach (var p in platformPolicies)
+            {
+                var norm = Domain.Platforms.PlatformId.Normalize(p.PlatformId);
+                if (norm == Domain.Platforms.PlatformId.QqPrivate)
+                {
+                    if (p.GroupWhitelist is not null) s.WhitelistGroups = p.GroupWhitelist;
+                    if (p.PrivateWhitelist is not null) s.WhitelistPrivates = p.PrivateWhitelist;
+                }
+                else if (norm == Domain.Platforms.PlatformId.QqOfficial)
+                {
+                    if (p.GroupWhitelist is not null) s.OfficialWhitelistGroups = p.GroupWhitelist;
+                    if (p.PrivateWhitelist is not null) s.OfficialWhitelistPrivates = p.PrivateWhitelist;
+                }
+                else if (norm == Domain.Platforms.PlatformId.Feishu)
+                {
+                    if (p.GroupWhitelist is not null || p.PrivateWhitelist is not null)
+                    {
+                        s.FeishuWhitelist = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : (p.PrivateWhitelist ?? string.Empty);
+                    }
+                }
+                else if (norm == Domain.Platforms.PlatformId.Local)
+                {
+                    if (p.GroupWhitelist is not null || p.PrivateWhitelist is not null)
+                    {
+                        s.LocalChannelIds = !string.IsNullOrWhiteSpace(p.GroupWhitelist) ? p.GroupWhitelist : (p.PrivateWhitelist ?? string.Empty);
+                    }
+                }
+            }
+        }
+
+        if (body["feishuEnabled"] is JsonNode fe) s.FeishuEnabled = fe.GetValue<bool>();
+        if (body["feishuAppId"] is JsonNode fai) s.FeishuAppId = fai.GetValue<string>().Trim();
+        if (body["feishuVerificationToken"] is JsonNode fvt) s.FeishuVerificationToken = fvt.GetValue<string>().Trim();
+        if (body["feishuWhitelist"] is JsonNode fwl) s.FeishuWhitelist = fwl.GetValue<string>().Trim();
+        if (body["feishuApiBase"] is JsonNode fab) s.FeishuApiBase = fab.GetValue<string>().Trim();
+
+        // 飞书 AppSecret：与官方通道 AppSecret / TTS Key 相同口径
+        if (body["clearFeishuAppSecret"] is JsonValue clearFas && clearFas.TryGetValue<bool>(out var clearFasOk) && clearFasOk)
+        {
+            _secrets.SaveFeishuSecret(null);
+            s.FeishuAppSecret = (Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_APP_SECRET")
+                ?? Environment.GetEnvironmentVariable("QQCHAT_FEISHU_APP_SECRET") ?? string.Empty).Trim();
+            FileLog.Write("Web", "面板清空了飞书通道 AppSecret（回退环境变量）");
+        }
+        else if (body["feishuAppSecret"] is JsonValue fas && fas.TryGetValue<string>(out var rawFeishuSecret)
+                 && !string.IsNullOrWhiteSpace(rawFeishuSecret))
+        {
+            var newSecret = rawFeishuSecret.Trim();
+            _secrets.SaveFeishuSecret(newSecret);
+            s.FeishuAppSecret = newSecret;
+            FileLog.Write("Web", "面板更新了飞书通道 AppSecret（已掩码保存；重启后生效）");
+        }
+
+        // 飞书 EncryptKey
+        if (body["clearFeishuEncryptKey"] is JsonValue clearFek && clearFek.TryGetValue<bool>(out var clearFekOk) && clearFekOk)
+        {
+            _secrets.SaveFeishuEncryptKey(null);
+            s.FeishuEncryptKey = (Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_ENCRYPT_KEY")
+                ?? Environment.GetEnvironmentVariable("QQCHAT_FEISHU_ENCRYPT_KEY") ?? string.Empty).Trim();
+            FileLog.Write("Web", "面板清空了飞书通道 EncryptKey（回退环境变量）");
+        }
+        else if (body["feishuEncryptKey"] is JsonValue fek && fek.TryGetValue<string>(out var rawFeishuKey)
+                 && !string.IsNullOrWhiteSpace(rawFeishuKey))
+        {
+            var newKey = rawFeishuKey.Trim();
+            _secrets.SaveFeishuEncryptKey(newKey);
+            s.FeishuEncryptKey = newKey;
+            FileLog.Write("Web", "面板更新了飞书通道 EncryptKey（已掩码保存；重启后生效）");
+        }
+    }
+
     /// <summary>行为与阈值：人设 / 三份白名单 / 欲望与阈值 / 各种冷却 / 上下文窗口 / 画像 / 表情包。</summary>
-    private void ApplyBehaviorSettings(JsonNode body, AppSettings s)
+    private void ApplyBehaviorSettings(JsonNode body, AppSettings s, List<Action> afterPersist)
     {
             if (body["botPersona"] is JsonNode persona) s.BotPersona = persona.GetValue<string>() ?? string.Empty;
             if (body["messageWhitelist"] is JsonNode wl) s.MessageWhitelist = wl.GetValue<string>() ?? string.Empty;
@@ -132,6 +313,13 @@ public sealed partial class WebUiServer
         if (body["whitelistPrivates"] is JsonNode wlp) s.WhitelistPrivates = wlp.GetValue<string>() ?? string.Empty;
             if (body["aiDesire"] is JsonNode desire) s.AiDesire = Math.Clamp(desire.GetValue<int>(), 0, 100);
         if (body["suitabilityThreshold"] is JsonNode th) s.SuitabilityThreshold = Math.Clamp(th.GetValue<int>(), 0, 100);
+        if (body["adaptiveSamplingEnabled"] is JsonNode ase) s.AdaptiveSamplingEnabled = ase.GetValue<bool>();
+        if (body["rationalTemperature"] is JsonNode rt) s.RationalTemperature = Math.Clamp(rt.GetValue<double>(), 0.0, 2.0);
+        if (body["rationalTopP"] is JsonNode rtp) s.RationalTopP = Math.Clamp(rtp.GetValue<double>(), 0.0, 1.0);
+        if (body["emotionalTemperature"] is JsonNode et) s.EmotionalTemperature = Math.Clamp(et.GetValue<double>(), 0.0, 2.0);
+        if (body["emotionalTopP"] is JsonNode etp) s.EmotionalTopP = Math.Clamp(etp.GetValue<double>(), 0.0, 1.0);
+        if (body["defaultTemperature"] is JsonNode dt) s.DefaultTemperature = Math.Clamp(dt.GetValue<double>(), 0.0, 2.0);
+        if (body["defaultTopP"] is JsonNode dtp) s.DefaultTopP = Math.Clamp(dtp.GetValue<double>(), 0.0, 1.0);
         // 批次 E：聊天侧有限步进循环的上限（1 = 与改造前逐字一致；钳到 1..3，与 AgentTurnLoop 同一口径）
         if (body["maxAgentSteps"] is JsonNode steps) s.MaxAgentSteps = Math.Clamp(steps.GetValue<int>(), 1, 3);
         // 批次 F：本地通道名单（空 = 整条通道都不建；改它要重启才生效 —— 通道是在装配点建的，热更新只改名单）
@@ -148,6 +336,8 @@ public sealed partial class WebUiServer
             if (body["proactiveCooldownSeconds"] is JsonNode pcd) s.ProactiveCooldownSeconds = Math.Clamp(pcd.GetValue<int>(), 60, 86400);
             if (body["proactiveQuietSeconds"] is JsonNode pq) s.ProactiveQuietSeconds = Math.Clamp(pq.GetValue<int>(), 1, 3600);
             if (body["ignoreBracketMessages"] is JsonNode ibm) s.IgnoreBracketMessages = ibm.GetValue<bool>();
+            if (body["filterActionNarration"] is JsonNode fan) s.FilterActionNarration = fan.GetValue<bool>();
+            if (body["enableAtmosphereDamping"] is JsonNode ead) s.EnableAtmosphereDamping = ead.GetValue<bool>();
             if (body["segmentDelayMs"] is JsonNode sd) s.SegmentDelayMs = Math.Max(0, sd.GetValue<int>());
             if (body["maxContextMessages"] is JsonNode mc) s.MaxContextMessages = Math.Clamp(mc.GetValue<int>(), 10, 1000);
             if (body["profileLookupCount"] is JsonNode pl) s.ProfileLookupCount = Math.Clamp(pl.GetValue<int>(), 0, 50);
@@ -199,20 +389,20 @@ public sealed partial class WebUiServer
         if (body["clearTtsApiKey"] is JsonValue clearNode && clearNode.TryGetValue<bool>(out var clear) && clear)
         {
             _secrets.SaveTtsKey(null);
-            WriteTtsConfToHost();
+            afterPersist.Add(WriteTtsConfToHost);
             FileLog.Write("Web", "面板显式清空了 TTS 密钥（语音会发不出去，直到重新填）");
         }
         else if (body["ttsApiKey"] is JsonValue ttsKeyValue && ttsKeyValue.TryGetValue<string>(out var rawTtsKey)
                  && !string.IsNullOrWhiteSpace(rawTtsKey))
         {
             _secrets.SaveTtsKey(rawTtsKey.Trim());
-            WriteTtsConfToHost();
+            afterPersist.Add(WriteTtsConfToHost);
             FileLog.Write("Web", "面板更新了 TTS 密钥（已掩码保存，并写给 tts 容器）");
         }
 
         if (ttsConfDirty)
         {
-            WriteTtsConfToHost();
+            afterPersist.Add(WriteTtsConfToHost);
             FileLog.Write("Web", $"面板更新了云端 TTS 配置（服务商={s.TtsProvider}，地址={(s.TtsApiBase.Length == 0 ? "(容器默认)" : s.TtsApiBase)}，模型={(s.TtsModel.Length == 0 ? "(容器默认)" : s.TtsModel)}）");
         }
 
@@ -432,7 +622,7 @@ public sealed partial class WebUiServer
     }
 
     /// <summary>报表与模型：健康日报 / 表情包与戳一戳 / 模型地址与密钥 / 心情。</summary>
-    private void ApplyReportingAndModelSettings(JsonNode body, AppSettings s, string? newBaseUrl)
+    private void ApplyReportingAndModelSettings(JsonNode body, AppSettings s, string? newBaseUrl, List<Action> afterPersist)
     {
             // ---- 服务器健康日报（定时私聊推送）----
             if (body["healthReportEnabled"] is JsonNode hre) s.HealthReportEnabled = hre.GetValue<bool>();
@@ -528,29 +718,40 @@ public sealed partial class WebUiServer
         // 日志口径与 BotAgentHost 时期逐字一致（走 PanelNotifier.EmitLog → [Agent] 标签）。
         if (body["mood"] is JsonValue moodValue && moodValue.TryGetValue<string>(out var moodText))
         {
-            var moodNow = Clock.Now;
-            if (string.IsNullOrWhiteSpace(moodText))
+            afterPersist.Add(() =>
             {
-                _mood.Reset(moodNow);
-                _ui.EmitLog("心情已交回自动描述（按被戳次数）");
-            }
-            else if (_mood.SetText(moodText, moodNow))
-            {
-                _ui.EmitLog($"心情被手动改成：{_mood.Describe(moodNow)}");
-            }
+                var moodNow = Clock.Now;
+                if (string.IsNullOrWhiteSpace(moodText))
+                {
+                    _mood.Reset(moodNow);
+                    _ui.EmitLog("心情已交回自动描述（按被戳次数）");
+                }
+                else if (_mood.SetText(moodText, moodNow))
+                {
+                    _ui.EmitLog($"心情被手动改成：{_mood.Describe(moodNow)}");
+                }
+            });
         }
     }
 
     private JsonObject BuildSettingsPayload()
-
     {
         var s = _settings;
 
         return new JsonObject
         {
-            ["runtime"] = new JsonObject
-            {
-                ["botPersona"] = s.BotPersona,
+            ["runtime"] = BuildRuntimePayload(s),
+            // 只读：容器环境变量职责，改这里无效（见 BuildEnvPayload）
+            ["env"] = BuildEnvPayload(s),
+            ["settingsFile"] = _settingsRepo.FilePath
+        };
+    }
+
+    private JsonObject BuildRuntimePayload(AppSettings s)
+    {
+        var runtime = new JsonObject
+        {
+            ["botPersona"] = s.BotPersona,
                 ["messageWhitelist"] = s.MessageWhitelist,
         ["whitelistGroups"] = s.WhitelistGroups,
         ["whitelistPrivates"] = s.WhitelistPrivates,
@@ -562,6 +763,13 @@ public sealed partial class WebUiServer
                 ["fastModel"] = s.FastModel,
                 ["replyModel"] = s.ReplyModel,
         ["suitabilityThreshold"] = s.SuitabilityThreshold,
+        ["adaptiveSamplingEnabled"] = s.AdaptiveSamplingEnabled,
+        ["rationalTemperature"] = s.RationalTemperature,
+        ["rationalTopP"] = s.RationalTopP,
+        ["emotionalTemperature"] = s.EmotionalTemperature,
+        ["emotionalTopP"] = s.EmotionalTopP,
+        ["defaultTemperature"] = s.DefaultTemperature,
+        ["defaultTopP"] = s.DefaultTopP,
         ["maxAgentSteps"] = s.MaxAgentSteps,
         ["localChannelIds"] = s.LocalChannelIds,
         ["agentServerUseGate"] = s.AgentServerUseGate,
@@ -575,6 +783,8 @@ public sealed partial class WebUiServer
                 ["proactiveCooldownSeconds"] = s.ProactiveCooldownSeconds,
                 ["proactiveQuietSeconds"] = s.ProactiveQuietSeconds,
                 ["ignoreBracketMessages"] = s.IgnoreBracketMessages,
+                ["filterActionNarration"] = s.FilterActionNarration,
+                ["enableAtmosphereDamping"] = s.EnableAtmosphereDamping,
                 ["segmentDelayMs"] = s.SegmentDelayMs,
                 ["maxContextMessages"] = s.MaxContextMessages,
                 ["profileLookupCount"] = s.ProfileLookupCount,
@@ -586,20 +796,6 @@ public sealed partial class WebUiServer
                 ["profileSummaryThreshold"] = s.ProfileSummaryThreshold,
                 ["profileSummaryMaxChars"] = s.ProfileSummaryMaxChars,
                 ["profileSummaryIntervalSeconds"] = s.ProfileSummaryIntervalSeconds,
-                ["enableVoice"] = s.EnableVoice,
-        ["voiceName"] = s.VoiceName,
-        ["voiceSpeed"] = s.VoiceSpeed,
-            ["voicePitch"] = s.VoicePitch,
-            ["voiceVol"] = s.VoiceVol,
-            ["voiceEmotion"] = s.VoiceEmotion,
-        ["voiceMaxChars"] = s.VoiceMaxChars,
-        ["voiceEagerness"] = s.VoiceEagerness,
-        ["ttsServiceUrl"] = s.TtsServiceUrl,
-        ["ttsProvider"] = s.TtsProvider,
-        ["ttsApiBase"] = s.TtsApiBase,
-        ["ttsModel"] = s.TtsModel,
-        ["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey()),
-        ["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey()),
 
         // 官方通道（QQ 开放平台）：与私域并存，两边会话/上下文/白名单互不串台。
         // secret 不在这里回（密钥只从环境变量读，面板不回显）。
@@ -732,11 +928,51 @@ public sealed partial class WebUiServer
         // 当前心情（可手改；空 = 由代码按被戳次数自动描述）
         ["mood"] = _mood.CurrentText(Clock.Now) ?? string.Empty,
         ["moodSummary"] = _mood.Describe(Clock.Now)
-            },
-            // 只读：容器环境变量职责，改这里无效（见 BuildEnvPayload）
-            ["env"] = BuildEnvPayload(s),
-            ["settingsFile"] = _settingsRepo.FilePath
         };
+
+        PopulateVoiceSettings(runtime, s);
+        return runtime;
+    }
+
+    private void PopulateVoiceSettings(JsonObject runtime, AppSettings s)
+    {
+        runtime["enableVoice"] = s.EnableVoice;
+        runtime["voiceName"] = s.VoiceName;
+        runtime["voiceSpeed"] = s.VoiceSpeed;
+        runtime["voicePitch"] = s.VoicePitch;
+        runtime["voiceVol"] = s.VoiceVol;
+        runtime["voiceEmotion"] = s.VoiceEmotion;
+        runtime["voiceMaxChars"] = s.VoiceMaxChars;
+        runtime["voiceEagerness"] = s.VoiceEagerness;
+        runtime["ttsServiceUrl"] = s.TtsServiceUrl;
+        runtime["ttsProvider"] = s.TtsProvider;
+        runtime["ttsApiBase"] = s.TtsApiBase;
+        runtime["ttsModel"] = s.TtsModel;
+        runtime["ttsKeyConfigured"] = !string.IsNullOrWhiteSpace(_secrets.LoadTtsKey());
+        runtime["ttsKeyMasked"] = MaskSecret(_secrets.LoadTtsKey());
+        PopulatePlatformSettings(runtime, s);
+    }
+
+    private void PopulatePlatformSettings(JsonObject runtime, AppSettings s)
+    {
+        runtime["feishuEnabled"] = s.FeishuEnabled;
+        runtime["platformPolicies"] = JsonSerializer.SerializeToNode(s.PlatformPolicies ?? new(), Json) ?? new JsonArray();
+        runtime["feishuAppId"] = s.FeishuAppId;
+        runtime["feishuSecretConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuAppSecret);
+        runtime["feishuSecretMasked"] = MaskSecret(s.FeishuAppSecret);
+        runtime["feishuSecretSource"] = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_APP_SECRET"))
+            || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("QQCHAT_FEISHU_APP_SECRET"))
+            ? "env"
+            : (string.IsNullOrWhiteSpace(_secrets.LoadFeishuSecret()) ? "none" : "panel");
+        runtime["feishuVerificationToken"] = s.FeishuVerificationToken;
+        runtime["feishuEncryptKeyConfigured"] = !string.IsNullOrWhiteSpace(s.FeishuEncryptKey);
+        runtime["feishuEncryptKeyMasked"] = MaskSecret(s.FeishuEncryptKey);
+        runtime["feishuEncryptKeySource"] = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BOTAGENT_FEISHU_ENCRYPT_KEY"))
+            || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("QQCHAT_FEISHU_ENCRYPT_KEY"))
+            ? "env"
+            : (string.IsNullOrWhiteSpace(_secrets.LoadFeishuEncryptKey()) ? "none" : "panel");
+        runtime["feishuWhitelist"] = s.FeishuWhitelist;
+        runtime["feishuApiBase"] = s.FeishuApiBase;
     }
 
     /// <summary>

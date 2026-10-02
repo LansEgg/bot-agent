@@ -59,6 +59,7 @@ public static partial class Program
         using var bot = StartBot(new Dictionary<string, string>
         {
             ["QQCHAT_DATA_DIR"] = dataDir,
+            ["QQCHAT_LOG_FILE"] = "0",
             ["QQCHAT_API_KEY"] = "sk-mock",
             ["QQCHAT_BASE_URL"] = openAi.BaseUrl,
             ["QQCHAT_MODEL"] = "mock-model",
@@ -390,7 +391,7 @@ public static partial class Program
         // 根因：判断“他是在回我”只看了内存表（上限 200、**重启就清空**），
         //       而每次部署都会重启容器 —— 部署之前发的那些全认不出来；群里不 @ 就不触发，于是整条被静默丢掉。
         // 现场二：引用的原文本地也查不到（重启后既不在内存表、也没留在上下文窗口）→ 模型只看到“更早的一条”。
-        // 现在：① 自己发过的消息 id 落盘（批次 3 起是 own_messages 表，之前是 data/own-messages.json）；② 引自己的判定也看会话历史；
+        // 现在：① 新消息以完整会话 scope + native id 落盘（own_messages_scoped，旧表/JSON 仅保留）；② 引自己的判定也看会话历史；
         //       ③ 协议端在 reply 段里带了被引用者 QQ 时直接采信；④ 本地全查不到时后台 get_msg 把原文补写回去。
         var lastBotMsgId = protocol.SentMessageIds.Last();
         var lastBotText = protocol.ActionsReceived
@@ -398,11 +399,24 @@ public static partial class Program
             .Select(MessageText)
             .Last(t => !string.IsNullOrWhiteSpace(t));
 
-        // 判据从"文件里有这个 id"改成"台账表里有这一行"：存储介质批次 3 换成了 SQLite（见 Batch 3），
-        // 这一条要钉的是**行为**（持久化了），不是介质本身。
-        Check("★ 自己发过的消息会落盘（以前只在内存里，一重启就失忆）",
-            DbProbe.Count(dataDir, "SELECT COUNT(1) FROM own_messages WHERE message_id = $id", ("$id", lastBotMsgId)) == 1,
-            $"台账最近 5 行：{DbProbe.Dump(dataDir, "SELECT message_id FROM own_messages ORDER BY at_unix DESC LIMIT 5")}");
+        // 这段场景只向当前群发送：确认全局递增回执 id 不是另一目标的消息，再验完整 scope。
+        var outboundBeforeRestart = protocol.ActionsReceived
+            .Where(a => a["action"]?.GetValue<string>() is "send_group_msg" or "send_private_msg").ToList();
+        Check("★ 待重启引用的发送回执属于当前群（不是其他会话的全局 id）",
+            outboundBeforeRestart.Count > 0 && outboundBeforeRestart.All(a =>
+                a["action"]?.GetValue<string>() == "send_group_msg" && a["params"]?["group_id"]?.GetValue<long>() == groupId),
+            $"出站动作数：{outboundBeforeRestart.Count}");
+        var ownScope = DbProbe.LegacyQqGroupScope(groupId);
+        var nativeId = lastBotMsgId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // 协议回执先到、台账稍后写完：等确切 key/native id 落盘，不靠 sleep 或 scoped 总数。
+        Check("★ 自己发过的消息会落盘（完整平台/账号/会话/native id）",
+            await WaitUntilAsync(() => DbProbe.Count(dataDir,
+                "SELECT COUNT(1) FROM own_messages_scoped WHERE conversation_key = $scope AND native_message_id = $id",
+                ("$scope", ownScope), ("$id", nativeId)) == 1, TimeSpan.FromSeconds(5)),
+            DbProbe.Dump(dataDir, "SELECT conversation_key, native_message_id FROM own_messages_scoped WHERE native_message_id = $id",
+                ("$id", nativeId)));
+        Check("★ 新发消息不写回缺 scope 的 legacy 台账",
+            DbProbe.Count(dataDir, "SELECT COUNT(1) FROM own_messages WHERE message_id = $id", ("$id", lastBotMsgId)) == 0);
 
         await bot.StopAsync();
         bot.Dispose();
@@ -411,6 +425,7 @@ public static partial class Program
         using var bot2 = StartBot(new Dictionary<string, string>
         {
             ["QQCHAT_DATA_DIR"] = dataDir,
+            ["QQCHAT_LOG_FILE"] = "0",
             ["QQCHAT_API_KEY"] = "sk-mock",
             ["QQCHAT_BASE_URL"] = openAi.BaseUrl,
             ["QQCHAT_MODEL"] = "mock-model",
@@ -455,6 +470,7 @@ public static partial class Program
         using var bot3 = StartBot(new Dictionary<string, string>
         {
             ["QQCHAT_DATA_DIR"] = freshDir,
+            ["QQCHAT_LOG_FILE"] = "0",
             ["QQCHAT_API_KEY"] = "sk-mock",
             ["QQCHAT_BASE_URL"] = openAi.BaseUrl,
             ["QQCHAT_MODEL"] = "mock-model",

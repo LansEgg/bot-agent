@@ -119,6 +119,8 @@ public static partial class Program
             await Scenario("s47", RunTurnLoopScenarioAsync);
             await Scenario("s48", RunLocalChannelScenarioAsync);
             await Scenario("s49", RunConversationManagementScenarioAsync);
+            await Scenario("s50", RunFeishuPlatformScenarioAsync);
+            await Scenario("s51", RunQuotaPanelScenarioAsync);
         // s42（官方通道）**暂未接入回归**：2026-09-21 子代理写的这套端到端场景只跑到 7✓/9✗
         // 而且**会挂死**（假网关推事件的时序 + 等待没上超时）。已确认的结论：官方出站（token→/gateway/bot→
         // identify）与入站事件分发**都是通的**（机器人日志里能看到官方那条的“忽略（不在白名单）: 群 8000…”，
@@ -133,6 +135,12 @@ public static partial class Program
 
         Console.WriteLine(new string('─', 70));
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
+        if (_failed == 0 && _passed == 0)
+        {
+            Console.Error.WriteLine("失败：未匹配或未执行任何测试场景（零场景通过护栏）");
+            return 1;
+        }
+
         return _failed == 0 ? 0 : 1;
     }
 
@@ -199,6 +207,8 @@ public static partial class Program
 
         // ② 群友闲聊（未 @）→ 模型选择沉默
         await protocol.SendGroupMessageAsync(99999, 20003, "小李", "我也想问", 7002, ct: cts.Token);
+        await WaitUntilAsync(() => openAi.Requests.Count >= 2, TimeSpan.FromSeconds(10));
+        await Task.Delay(300);
 
         // ③ 再 @ 一条，紧接着别人插话 → 回复应带引用（指明回的是哪条）
         await protocol.SendGroupMessageAsync(99999, 20002, "老王", "就是登录那块", 7003, mentionBot: true, ct: cts.Token);
@@ -305,12 +315,12 @@ public static partial class Program
         var linesBeforeDoubleEmpty = bot.OutputLines.Count;
         openAi.EmptyChoicesTimes = 2;
         await protocol.SendGroupMessageAsync(99999, 20003, "老王", "@机器人 连续空", 7007, mentionBot: true, ct: cts.Token);
-        await WaitUntilAsync(() => bot.OutputLines.Skip(linesBeforeDoubleEmpty).Any(l => l.Contains("上游空响应") || l.Contains("连续两次都没给 choices")),
+        await WaitUntilAsync(() => bot.OutputLines.Skip(linesBeforeDoubleEmpty).Any(l => l.Contains("上游连续两次空响应")),
             TimeSpan.FromSeconds(60));
         await Task.Delay(500);
         var newLines = bot.OutputLines.Skip(linesBeforeDoubleEmpty).ToList();
         Check("★ 连续两次空 → 这轮不说话，且日志写明“上游空响应”（不再冒充“模型选择沉默”）",
-            newLines.Any(l => l.Contains("上游空响应") || l.Contains("连续两次都没给 choices")) &&
+            newLines.Any(l => l.Contains("上游连续两次空响应")) &&
             !newLines.Any(l => l.Contains("模型选择沉默")),
             string.Join(" | ", newLines.Where(l => l.Contains("空") || l.Contains("沉默")).TakeLast(3)));
         Check("★ 空结果不会凭空发出消息",
@@ -357,15 +367,18 @@ public static partial class Program
                 "/msg" + System.Text.RegularExpressions.Regex.Matches(r.ToJsonString(), "\\\"role\\\"").Count)));
 
         // 再发一条“同一条带图消息”的后续 → 上下文里再也不会重新把那张图送上去
+        // 注意：只检查聊天主请求（messages 超过 2 条），排除后台表情包描述等独立短请求（那些只有 2 条消息且本来就是识图的）
         var reqsBeforeImg2 = openAi.Requests.Count;
         openAi.EmptyChoicesWhenImages = false;
         openAi.EnqueueReply("""{"suitability": 70, "reply": "接着说"}""");
         await protocol.SendGroupMessageAsync(99999, 20005, "老王", "@机器人 继续", 7009, mentionBot: true, ct: cts.Token);
-        await WaitUntilAsync(() => openAi.Requests.Count > reqsBeforeImg2, TimeSpan.FromSeconds(60));
+        await WaitUntilAsync(() => openAi.Requests.Skip(reqsBeforeImg2).Any(r => (r["messages"]?.AsArray().Count ?? 0) > 2), TimeSpan.FromSeconds(60));
         await Task.Delay(500);
+        var nextChatReqs = openAi.Requests.Skip(reqsBeforeImg2).Where(r => (r["messages"]?.AsArray().Count ?? 0) > 2).ToList();
         Check("★ 被拉黑的图不会反复重送（后续请求里那张图不再出现）",
-            !openAi.Requests.Skip(reqsBeforeImg2).Any(r => r.ToJsonString().Contains("image_url")),
-            $"后续请求 {openAi.Requests.Count - reqsBeforeImg2} 个，带 image_url 的 {openAi.Requests.Skip(reqsBeforeImg2).Count(r => r.ToJsonString().Contains("image_url"))} 个");
+            nextChatReqs.Count > 0 &&
+            !nextChatReqs.Any(r => r.ToJsonString().Contains("image_url", StringComparison.Ordinal)),
+            $"后续聊天请求 {nextChatReqs.Count} 个，带 image_url 的 {nextChatReqs.Count(r => r.ToJsonString().Contains("image_url", StringComparison.Ordinal))} 个");
 
         // ---- 慢上游超时（管理员 11:32 截图：TaskCanceledException 60 秒超时 → 一整轮没了）----
         // 现在：聊天超时改成 120 秒（可调）+ 超时也“退让重试一次（第二次 30 秒封顶）”。
@@ -377,8 +390,9 @@ public static partial class Program
         openAi.EnqueueReply("""{"suitability": 90, "reply": "超时那次的无效回复"}""");
         openAi.EnqueueReply("""{"suitability": 90, "reply": "慢也答上了"}""");
         await protocol.SendGroupMessageAsync(99999, 20006, "老王", "@机器人 慢慢想", 7010, mentionBot: true, ct: cts.Token);
-        // 第一次请求一落到假上游就把延迟调回 0：模拟“第一次卡住、重试那下很快”（真上游换账号后常见）
+        // 第一次请求一落到假上游并且开始延迟后，再把后续延迟调回 0：模拟“第一次卡住、重试那下很快”（真上游换账号后常见）
         await WaitUntilAsync(() => openAi.Requests.Count > reqsBeforeSlow, TimeSpan.FromSeconds(30));
+        await Task.Delay(200);
         openAi.ResponseDelayMs = 0;
         await WaitUntilAsync(() => protocol.ActionsReceived
             .Where(a => a["action"]?.GetValue<string>() == "send_group_msg")
@@ -696,6 +710,7 @@ public static partial class Program
             Check("正向 WS：完成登录号握手", protocol.ActionsReceived.Any(a => a["action"]?.GetValue<string>() == "get_login_info"));
 
             // 健康检查
+            await WaitForPortAsync(healthPort, cts.Token, bot);
             var health = await HttpGetAsync($"http://127.0.0.1:{healthPort}/healthz");
             Check("/healthz 返回 200", health.Status == 200, health.Body);
             var ready = await HttpGetAsync($"http://127.0.0.1:{healthPort}/readyz");
@@ -733,13 +748,15 @@ public static partial class Program
 
         // ---- 重启：恢复会话，且不再重复拉历史 ----
         Section("S6b 重启后从磁盘恢复会话");
+        var loginsBeforeRestart = protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "get_login_info");
         var bot2 = StartBot(env);
         try
         {
             var log = await WaitForLogLineAsync(bot2, "已恢复", TimeSpan.FromSeconds(20));
             Check("重启后恢复磁盘会话", log is not null, log ?? "(未出现恢复日志)");
-            Check("重启后重新连上协议端", await WaitUntilAsync(() => protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "get_login_info") >= 2, TimeSpan.FromSeconds(20)));
+            Check("重启后重新连上协议端", await WaitUntilAsync(() => protocol.ActionsReceived.Count(a => a["action"]?.GetValue<string>() == "get_login_info") > loginsBeforeRestart, TimeSpan.FromSeconds(20)));
 
+            await WaitForPortAsync(healthPort, cts.Token, bot2);
             var status = await PanelGetAsync($"http://127.0.0.1:{healthPort}/status");
             Check("重启后 /status 显示已恢复会话", status.Body.Contains("\"conversations\":1") || status.Body.Contains("\"conversations\": 1"), Truncate(status.Body, 400));
 

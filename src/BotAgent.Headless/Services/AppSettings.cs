@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BotAgent.Domain.Platforms;
 
 namespace BotAgent.Services;
 
@@ -65,6 +66,32 @@ public sealed class AppSettings
     public string? ApiKeyOverride { get; set; }
 
     public int MaxTokens { get; set; } = 2048;
+
+    // ---------- 自适应采样超参数 (理性/感性动态温度与 top_p) ----------
+    /// <summary>是否开启动态自适应采样（理性问题降温提准确率，感性互动升温保灵动）。默认开。</summary>
+    public bool AdaptiveSamplingEnabled { get; set; } = true;
+    /// <summary>理性问题目标温度（0.0 ~ 2.0），默认 0.3。</summary>
+    public double RationalTemperature { get; set; } = 0.3;
+    /// <summary>理性问题收窄采样 Top_P（0.0 ~ 1.0），默认 0.3。</summary>
+    public double RationalTopP { get; set; } = 0.3;
+    /// <summary>感性互动目标温度（0.0 ~ 2.0），默认 0.85。</summary>
+    public double EmotionalTemperature { get; set; } = 0.85;
+    /// <summary>感性互动放宽采样 Top_P（0.0 ~ 1.0），默认 0.9。</summary>
+    public double EmotionalTopP { get; set; } = 0.9;
+    /// <summary>基准默认温度（未开自适应或中性时的温度），默认 0.7。</summary>
+    public double DefaultTemperature { get; set; } = 0.7;
+    /// <summary>基准默认 Top_P（未开自适应或中性时），默认 0.85。</summary>
+    public double DefaultTopP { get; set; } = 0.85;
+
+    /// <summary>构造当前生效的自适应采样配置契约。</summary>
+    public Domain.Reply.AdaptiveSamplingConfig ToSamplingConfig() => new(
+        AdaptiveSamplingEnabled,
+        RationalTemperature,
+        RationalTopP,
+        EmotionalTemperature,
+        EmotionalTopP,
+        DefaultTemperature,
+        DefaultTopP);
 
     // ---------- OneBot 通道 ----------
 
@@ -223,6 +250,12 @@ public sealed class AppSettings
     /// </summary>
     public bool IgnoreBracketMessages { get; set; }
 
+    /// <summary>禁止回复夹带动作/心理描写。发送前由模型仅删除或局部自然改写确认的动作旁白；数学公式、普通括号、代码和链接保持原文，判断失败则保留整条回复。</summary>
+    public bool FilterActionNarration { get; set; }
+
+    /// <summary>启用群聊氛围感知与发言疲劳阻尼冷却（连续发言多次后自动衰减欲望，冷清/对线时克制，防止刷屏）。</summary>
+    public bool EnableAtmosphereDamping { get; set; } = true;
+
     /// <summary>分段发送时每段之间的时间基准（毫秒）。</summary>
     public int SegmentDelayMs { get; set; } = 700;
 
@@ -287,6 +320,13 @@ public sealed class AppSettings
 
     /// <summary>同时向模型发起的最大请求数（按会话串行、跨会话并发）。</summary>
     public int MaxConcurrentReplies { get; set; } = 2;
+
+    // ---------- 平台策略覆盖（按 platformId + accountScope） ----------
+
+    /// <summary>
+    /// 平台策略的显式覆盖。旧字段仍是兼容 fallback；凭据永远不进入这里。
+    /// </summary>
+    public List<PlatformPolicySettings> PlatformPolicies { get; set; } = new();
 
     // ---------- 对话总开关（两个通道各自可单独静音） ----------
 
@@ -398,6 +438,31 @@ public sealed class AppSettings
 
     /// <summary>取 access_token 的地址，留空 = <c>https://bots.qq.com/app/getAppAccessToken</c>（同样是为了可测）。</summary>
     public string OfficialTokenUrl { get; set; } = string.Empty;
+
+    // ---------- 飞书通道（Feishu Bot API） ----------
+
+    /// <summary>启用飞书机器人通道（默认关）。</summary>
+    public bool FeishuEnabled { get; set; }
+
+    /// <summary>飞书应用 App ID（cli_xxx）。</summary>
+    public string FeishuAppId { get; set; } = string.Empty;
+
+    /// <summary>飞书应用 App Secret（只从环境变量或密钥库读，不落 settings.json）。</summary>
+    [JsonIgnore]
+    public string FeishuAppSecret { get; set; } = string.Empty;
+
+    /// <summary>飞书事件回调 Verification Token。</summary>
+    public string FeishuVerificationToken { get; set; } = string.Empty;
+
+    /// <summary>飞书事件签名 Encrypt Key（可选，只从环境变量或密钥库读）。</summary>
+    [JsonIgnore]
+    public string FeishuEncryptKey { get; set; } = string.Empty;
+
+    /// <summary>飞书通道白名单（写群 chat_id / 用户 open_id 或映射后的内部号，逗号分隔；空 = 拒绝）。</summary>
+    public string FeishuWhitelist { get; set; } = string.Empty;
+
+    /// <summary>飞书 REST 接口根地址（留空 = https://open.feishu.cn，留口子给本地合成测试）。</summary>
+    public string FeishuApiBase { get; set; } = string.Empty;
 
     // ---------- 链接与分享卡片 ----------
 
@@ -524,6 +589,12 @@ public sealed class AppSettings
     /// 留空 = 不带任何附加提示词。
     /// </summary>
     public string AgentPrompt { get; set; } = DefaultAgentPrompt;
+
+    /// <summary>系统提示词出厂默认模板。</summary>
+    public const string DefaultSystemPrompt = "你是一个在聊天群里的真人群友，说话自然随性，不做作。";
+
+    /// <summary>人设档案出厂默认模板。</summary>
+    public const string DefaultPersona = "说话简短、口语化，偶尔吐槽，有自己的喜好与情绪。";
 
     /// <summary>
     /// 默认的附加提示词：开发/排查时的隐私红线。面板上的「恢复默认」按钮也读它 ——
@@ -898,5 +969,13 @@ public sealed class AppSettings
     ///   • **写**：<see cref="SettingsBox.Apply" /> 在副本上改完再整体发布（review-findings #4）。
     /// 只读用途时：不要对副本调用保存 / 写回。
     /// </summary>
-    public AppSettings Snapshot() => (AppSettings)MemberwiseClone();
+    public AppSettings Snapshot()
+    {
+        var copy = (AppSettings)MemberwiseClone();
+        copy.PlatformPolicies = (PlatformPolicies ?? new List<PlatformPolicySettings>())
+            .Where(p => p is not null)
+            .Select(p => p.Clone())
+            .ToList();
+        return copy;
+    }
 }

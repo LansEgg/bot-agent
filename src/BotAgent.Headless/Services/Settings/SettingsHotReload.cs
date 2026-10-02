@@ -68,15 +68,24 @@ public sealed class SettingsHotReload
     private AppSettings _settings => _box.Current;
 
     /// <summary>
-    /// 运行时改配置：白名单/人设/欲望/阈值/限流等立即生效，并落盘 settings.json。
+    /// 保存成功后发布设置并重建白名单/人设/阈值/限流等运行时派生状态。
+    /// 保存失败保持旧版本；提交后重建失败会抛出，但不伪造数据库回滚。
     /// 模型地址与 OneBot 地址不在运行时生效（属于容器环境变量职责），由 UI 明确标注。
     /// </summary>
-    public void ApplyRuntimeSettings(Action<AppSettings> mutate)
+    public void ApplyRuntimeSettings(Action<AppSettings> mutate, AuditEvent? auditEvent = null,
+        IAuditChain? auditChain = null, Action<AppSettings>? published = null)
     {
-        // 在**副本**上改、改完原子换引用：之后就启动的每一轮读到的都是完整的新版，
-        // 而正在处理的那一轮继续用它入口取的那份快照（review-findings #4）。
-        var next = _box.Apply(mutate);
+        _box.ApplyPersisted(mutate,
+            next => _settingsRepo.Save(next, auditEvent, auditChain),
+            next =>
+            {
+                RebuildRuntime();
+                published?.Invoke(next);
+            });
+    }
 
+    private void RebuildRuntime()
+    {
         // 能力策略快照：改完设置立刻按新开关重建（正在处理的那一轮仍用旧快照，V3 §5.3）
         _approvals.RebuildPolicy();
 
@@ -106,7 +115,6 @@ public sealed class SettingsHotReload
         // 定时器类配置（静默兜底 / 画像巡检）：只在真的改了时才重建，否则不生效
         _scheduler.RebuildIfNeeded();
 
-        _settingsRepo.Save(next);
         _ui.EmitLog("配置已更新");
         _ui.NotifyConversationsChanged();
         _ui.NotifyStateChanged();

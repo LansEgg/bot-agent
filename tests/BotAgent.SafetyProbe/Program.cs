@@ -13,10 +13,17 @@ using BotAgent.Domain.Profiles;
 using BotAgent.Services;
 using BotAgent.Domain.Ports;
 using BotAgent.Domain.Permissions;
+using BotAgent.Domain.Platforms;
 using BotAgent.Domain.Qq;
 using BotAgent.Domain.Ops;
 using BotAgent.Domain.Tools;
 using BotAgent.Domain.Rendering;
+using BotAgent.Domain.Atmosphere;
+using BotAgent.Domain.Jargon;
+using BotAgent.Domain.Memory;
+using BotAgent.Domain.Messaging;
+using BotAgent.Domain.Prompts;
+using BotAgent.Services.Jargon;
 using BotAgent.Domain.Reply;
 using BotAgent.Domain.Stickers;
 using BotAgent.Services.Conversations;
@@ -61,6 +68,8 @@ public static partial class Program
         GateAndQuestionTests();
         ToolDirectoryTests();
         SessionPolicyTests();
+        PlatformPolicyActionTests();
+        ServerActionOutcomeTests();
         ReplyAuditTests();
         MessageMarkerTests();
         TurnTraceTests();
@@ -73,6 +82,12 @@ public static partial class Program
         ToolExecutorContractTests();
         ToolArgsTests();
         GateReachabilityTests();
+        AtmosphereTests();
+        JargonTests();
+        EpisodeTests();
+        ProfileOverrideTests();
+        StickerSafetyTests();
+        PromptTemplateTests();
 
         Console.WriteLine();
         Console.WriteLine($"通过 {_passed}，失败 {_failed}");
@@ -526,13 +541,13 @@ public static partial class Program
             && Channels.IsLocalId(Channels.LocalTarget(7)) && !Channels.IsAliasId(Channels.LocalTarget(7))
             && Channels.IsAliasId(Channels.AliasBase + 1) && !Channels.IsLocalId(Channels.AliasBase + 1));
 
-        Check("★ 自报通道 → 内部通道归一（认不出来的归私域，与改造前一致）",
+        Check("★ 自报通道 → 内部通道归一（未知通道拒绝，空值兼容旧私域）",
             Channels.Declared(Channels.Local) == Channels.Local
             && Channels.Declared(Channels.Official) == Channels.Official
             && Channels.Declared(Channels.Private) == Channels.Private
             && Channels.Declared("") == Channels.Private
             && Channels.Declared(null) == Channels.Private
-            && Channels.Declared("胡写的通道") == Channels.Private);
+            && Channels.Declared("胡写的通道") == string.Empty);
 
         Check("★ 本地会话 key 带前缀且能反推回通道（隔离就靠它）",
             Channels.Key(Channels.Local, isGroup: true, 7) == "local:group:7"
@@ -548,21 +563,22 @@ public static partial class Program
         // 白名单：本地通道**空 = 全拦**（与官方那条“空 = 全收”故意不同）
         var settings = new AppSettings { LocalChannelIds = "1, 2" };
         var box = new Services.SettingsBox(settings);
-        var gate = new WhitelistGate(box);
+        var gate = new WhitelistGate(box, new BotAgent.Services.Platforms.PlatformPolicyResolver(box));
         Check("★ 名单里的本地 id 收（配置写短 id，内部换算后对上）",
             gate.AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(1)))
             && gate.AllowsKey(Channels.Key(Channels.Local, false, Channels.LocalTarget(2))));
         Check("★★ 名单外的本地 id 一律不收（失败关闭）",
             !gate.AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(3))));
 
-        var empty = new WhitelistGate(new Services.SettingsBox(new AppSettings()));
+        var emptyBox = new Services.SettingsBox(new AppSettings());
+        var empty = new WhitelistGate(emptyBox, new BotAgent.Services.Platforms.PlatformPolicyResolver(emptyBox));
         Check("★★ 本地名单留空 = **全拦**（不能像官方那样默认全收）",
             !empty.AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(1))));
 
         Check("★ 超范围的配置项被丢掉（失败关闭，不会撞进官方号段）",
-            new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "1,9999999999999999" }))
+            new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "1,9999999999999999" }), new BotAgent.Services.Platforms.PlatformPolicyResolver(new Services.SettingsBox(new AppSettings { LocalChannelIds = "1,9999999999999999" })))
                 .AllowsKey(Channels.Key(Channels.Local, true, Channels.LocalTarget(1)))
-            && !new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "9999999999999999" }))
+            && !new WhitelistGate(new Services.SettingsBox(new AppSettings { LocalChannelIds = "9999999999999999" }), new BotAgent.Services.Platforms.PlatformPolicyResolver(new Services.SettingsBox(new AppSettings { LocalChannelIds = "9999999999999999" })))
                 .AllowsKey(Channels.Key(Channels.Local, true, Channels.AliasBase + 1)));
     }
 
@@ -813,7 +829,7 @@ public static partial class Program
 
         TurnInputs Turn(string? searchText = null) => new(
             Started: new DateTime(2026, 9, 24, 12, 0, 0, DateTimeKind.Local),
-            Snapshot: settings, Caps: caps, Context: Array.Empty<ChatMessage>(),
+            Snapshot: settings, Caps: caps, PlatformPolicy: new EffectivePlatformPolicy(new PlatformContext(PlatformId.QqPrivate, AccountScope.Legacy), true, true, true, true, PlatformCapabilities.QqOneBot, new HashSet<string>(), new Dictionary<string, bool>(), Array.Empty<string>()), Context: Array.Empty<ChatMessage>(),
             Profiles: new List<string>(), ProfileChars: 0, StickerChoices: new List<StickerChoice>(), RoleCount: 0,
             GroupRoles: null, VibeHint: null, PreviousVibe: "中性", PokeContext: false, MoodText: null,
             MusicText: null, RecallText: null, SearchText: searchText, LinkText: null);
@@ -922,7 +938,7 @@ public static partial class Program
             string? moodText = null, string? musicText = null, string? linkText = null, bool enableListen = false,
             bool enableVoice = false, string? recallText = null, bool enableWebSearch = false, string? searchText = null,
             string? groupRolesText = null, string? vibeHint = null, bool proactive = false, bool enableAsk = false,
-            bool enableToolRequest = false, string? toolList = null)
+            bool enableToolRequest = false, string? toolList = null, Domain.Reply.SamplingProfile? sampling = null)
         {
             Calls++;
             _searchTexts.Add(searchText);
@@ -1158,6 +1174,8 @@ public static partial class Program
         // URL 绝不被切成多条（不能出现换行插进 URL）
         var urlLine = QqPlainText.Sanitize("https://example.com/a_b/c~d?x=1&y=2");
         Check("URL 里不会插进换行（不会被分句切成两条消息）", !urlLine.Contains('\n'), urlLine);
+
+        ActionNarrationTests();
     }
 
     // ───────────────── P3：Fail-Closed 工具权限（V3 §9.5） ─────────────────
@@ -1923,20 +1941,32 @@ public static partial class Program
     /// <summary>只记一条自己发的消息：够跑"引用上一句"的识别，且**完全不碰库**。</summary>
     private sealed class FakeOwnMessageRepository : IOwnMessageRepository
     {
+        private readonly Dictionary<MessageRef, OwnMessage> _scoped = new();
         public int MaxEntries => 200;
         public List<OwnMessage> LoadRecent(int max) => new();
-        public void Upsert(long id, string text, DateTimeOffset at) => Last = new OwnMessage(id, text, at);
+        public List<OwnMessage> LoadRecentScoped(int max) => _scoped.Values.OrderByDescending(x => x.At).Take(max).ToList();
+        public void Upsert(long id, string text, DateTimeOffset at) { }
+        public void Upsert(MessageRef messageRef, string text, DateTimeOffset at)
+        {
+            _scoped[messageRef] = new OwnMessage(0, text, at) { Ref = messageRef };
+        }
         public void PruneTo(int max) { }
-        public OwnMessage? Last { get; private set; }
     }
 
     private sealed class FakeProfileRepository : IProfileRepository
     {
+        private string? _override;
+        private string? _evidence;
         public List<SummaryCandidate> FindSummarizable(int minNewMessages, int maxCandidates) => new();
         public void ApplySummary(string uid, string scope, string text, long throughSeq, int foldedCount) { }
         public void Append(string uid, string name, string text, DateTimeOffset time, string? groupName, long groupId = 0, long seq = 0) { }
         public string GetProfileSummary(string uid, long scopeGroupId = 0, int limit = 12, long beforeSeq = long.MaxValue, long beforeUnix = long.MaxValue, bool allScopes = false)
-            => "（假画像）";
+            => !string.IsNullOrWhiteSpace(_override) ? _override : "（假画像）";
+
+        public void SetProfileOverride(string uid, string scope, string? overrideText) => _override = overrideText;
+        public void SetEvidence(string uid, string scope, string evidenceJson) => _evidence = evidenceJson;
+        public (string AutoSummary, string OverrideText, string EvidenceJson) GetDetailedSummary(string uid, string scope)
+            => ("（假画像）", _override ?? string.Empty, _evidence ?? string.Empty);
     }
 
     private sealed class FakeRoleRepository : IMemberRoleRepository
@@ -2083,6 +2113,10 @@ public static partial class Program
         public bool SaveTtsKey(string? key) => Save("ttsKey", key);
         public string? LoadOfficialSecret() => Load("officialAppSecret");
         public bool SaveOfficialSecret(string? secret) => Save("officialAppSecret", secret);
+        public string? LoadFeishuSecret() => Load("feishuAppSecret");
+        public bool SaveFeishuSecret(string? secret) => Save("feishuAppSecret", secret);
+        public string? LoadFeishuEncryptKey() => Load("feishuEncryptKey");
+        public bool SaveFeishuEncryptKey(string? key) => Save("feishuEncryptKey", key);
         public string? Load(string name) => _values.TryGetValue(name, out var value) ? value : null;
         public bool Save(string name, string? value)
         {
@@ -2112,6 +2146,7 @@ public static partial class Program
     /// <summary>假模型客户端：只为了让"端口可替身"这件事有编译期证据（真要跑用假传输那条路）。</summary>
     private sealed class FakeModelClient : IModelClient
     {
+        public Func<CancellationToken, Task<string?>>? ChatCompletion { get; init; }
         public string? BotIdentity { get; set; }
         public string? BotPersona { get; set; }
         public int AiDesire { get; set; }
@@ -2123,12 +2158,12 @@ public static partial class Program
             string? moodText = null, string? musicText = null, string? linkText = null, bool enableListen = false,
             bool enableVoice = false, string? recallText = null, bool enableWebSearch = false, string? searchText = null,
             string? groupRolesText = null, string? vibeHint = null, bool proactive = false, bool enableAsk = false,
-            bool enableToolRequest = false, string? toolList = null)
+            bool enableToolRequest = false, string? toolList = null, Domain.Reply.SamplingProfile? sampling = null)
             => Task.FromResult(new CompletionResult(null, null, null));
 
         public Task<string?> CompleteChatAsync(string model, string systemPrompt, IReadOnlyList<(string Role, string Text)> messages,
             int maxTokens, double temperature, CancellationToken ct = default, string? baseUrlOverride = null, string? apiKeyOverride = null)
-            => Task.FromResult<string?>(null);
+            => ChatCompletion?.Invoke(ct) ?? Task.FromResult<string?>(null);
 
         public Task<(byte[] Data, string Mime, string Ext)?> DownloadImageAsync(string url, CancellationToken ct = default, long? messageId = null)
             => Task.FromResult<(byte[], string, string)?>(null);
@@ -2157,7 +2192,7 @@ public static partial class Program
         public FakeModelTransport(bool emptyChoices = false) => _emptyChoices = emptyChoices;
 
         public Task<BuiltRequest> BuildAsync(IReadOnlyList<ChatMessage> window, string systemContent,
-            IReadOnlyCollection<long> quotableIds, CancellationToken ct)
+            IReadOnlyCollection<long> quotableIds, CancellationToken ct, Domain.Reply.SamplingProfile? sampling = null)
             => Task.FromResult(new BuiltRequest(new JsonObject { ["model"] = "probe" }, 0, new List<long>()));
 
         public Task<SendOutcome> SendAsync(JsonObject payload, int attachedImages, IReadOnlyList<long> attachedImageIds, CancellationToken ct)
@@ -2184,11 +2219,17 @@ public static partial class Program
 
     private sealed class FakeQqActions : IQqActions
     {
+        public int LikeCalls { get; private set; }
+
         public Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null)
             => Task.FromResult(new SendResult(true, 1));
 
         public Task<bool> SendPokeAsync(bool isGroup, long targetId, long userId, CancellationToken ct = default) => Task.FromResult(true);
-        public Task<bool> SendLikeAsync(long userId, int times, CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> SendLikeAsync(long userId, int times, CancellationToken ct = default)
+        {
+            LikeCalls++;
+            return Task.FromResult(true);
+        }
         public Task<bool> SetMessageEmojiLikeAsync(long messageId, string emojiId, CancellationToken ct = default) => Task.FromResult(true);
         public Task<bool> DeleteMessageAsync(long messageId, CancellationToken ct = default) => Task.FromResult(true);
         public Task<bool> SetGroupBanAsync(long groupId, long userId, int seconds, CancellationToken ct = default) => Task.FromResult(true);
@@ -2200,7 +2241,8 @@ public static partial class Program
 
     private sealed class FakeQqMessageSender : IQqMessageSender
     {
-        public Task<bool> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo) => Task.FromResult(true);
+        public Task<CadenceSendReport> SendWithCadenceAsync(bool isGroup, long targetId, string reply, long? replyTo, bool directAddress = false)
+            => Task.FromResult(new CadenceSendReport(new[] { reply }));
         public Task SendPlainAsync(BotConversation conversation, string text) => Task.CompletedTask;
         public Task SendApprovalReplyAsync(QqChatMessage msg, string text) => Task.CompletedTask;
     }
@@ -2253,16 +2295,34 @@ public static partial class Program
         Check("IImageDownloader 有内存替身", (object)new FakeImageDownloader() is IImageDownloader);
         Check("IQqActions 有内存替身", (object)new FakeQqActions() is IQqActions);
         Check("IQqMessageSender 有内存替身", (object)new FakeQqMessageSender() is IQqMessageSender);
+        Check("IJargonRepository 有内存替身", (object)new FakeJargonRepository() is IJargonRepository);
+        Check("IEpisodeRepository 有内存替身", (object)new FakeEpisodeRepository() is IEpisodeRepository);
+        Check("IPromptTemplateRepository 有内存替身", (object)new FakePromptTemplateRepository() is IPromptTemplateRepository);
         Check("IHttpFetcher 有内存替身", (object)new FakeHttpFetcher() is Adapters.Net.IHttpFetcher);
 
         // ② 真的跑一遍：引用自己上一句的识别（台账吃的是端口，库换成了内存表）
         var ledger = new Services.Conversations.OwnMessageLedger(new FakeOwnMessageRepository(), _ => { });
         ledger.EnsureLoaded();
         var sent = new Services.Qq.SendResult(true, 9001);
-        ledger.Remember(sent, "我先把结论放这儿");
-        Check("假台账 · 记下自己发的那句", ledger.TryGet(9001, out var entry) && entry.Text == "我先把结论放这儿",
+        var sourceKey = "group:10001";
+        ledger.Remember(sourceKey, sent, "合成消息正文");
+        Check("假台账 · 按会话scope记下自己发的那句",
+            ledger.TryGet(sourceKey, 9001, out var entry) && entry.Text == "合成消息正文",
             "记不进内存台账");
-        Check("假台账 · 没发过的 id 仍然查不到（不瞎认）", !ledger.TryGet(9002, out _));
+        Check("假台账 · 同一native id在另一会话查不到",
+            !ledger.TryGet("group:10002", 9001, out _));
+        var scoped = new ConversationId(PlatformId.QqPrivate, "account-test", ConversationKind.GroupChat, "10001", "thread-test");
+        var scopedKey = ConversationIdCodec.EncodeStructured(scoped);
+        ledger.Remember(scopedKey, sent, "合成scope消息");
+        Check("假台账 · 真实sourceKey记账完整account/thread",
+            ledger.TryGet(scopedKey, 9001, out var scopedEntry) && scopedEntry.Text == "合成scope消息");
+        Check("假台账 · 同id兄弟thread不命中",
+            !ledger.TryGet(ConversationIdCodec.EncodeStructured(scoped with { ThreadId = "thread-other" }), 9001, out _));
+        Check("假台账 · 同id兄弟account不命中",
+            !ledger.TryGet(ConversationIdCodec.EncodeStructured(scoped with { AccountScope = "account-other" }), 9001, out _));
+        Check("假台账 · 裸long查询fail-closed", !ledger.TryGet(9001, out _));
+        Check("假台账 · 没发过的 scoped id 仍然查不到（不瞎认）",
+            !ledger.TryGet(sourceKey, 9002, out _));
 
         // ③ 真的跑一遍：模型客户端的解析链路（传输层换成"只会吐固定 JSON"的假件）
         var settings = new Services.AppSettings
@@ -2292,6 +2352,503 @@ public static partial class Program
         // ④ 假模型客户端：拿它替代真客户端（这就是 IModelClient 存在的理由）
         IModelClient asPort = new FakeModelClient();
         Check("假客户端可当 IModelClient 用", asPort.ChatTimeout == TimeSpan.FromSeconds(1));
+
+        // ⑤ 分句发送逐段记账契约（CadenceSendReport · issue #14）
+        var noneReport = CadenceSendReport.None;
+        Check("CadenceSendReport · None 未发送且标原因码", !noneReport.AnySent && !noneReport.AllSent && noneReport.FailureReasonCode == "not_attempted");
+        var allSentReport = new CadenceSendReport(new[] { "第一句。", "第二句。" });
+        Check("CadenceSendReport · 全部成功：AnySent=true 且 AllSent=true", allSentReport.AnySent && allSentReport.AllSent && allSentReport.Text == "第一句。\n第二句。");
+        var partialReport = new CadenceSendReport(new[] { "第一句。" }, "segment_failed");
+        Check("CadenceSendReport · 部分成功：AnySent=true、AllSent=false 且 Text 只含已发出段落",
+            partialReport.AnySent && !partialReport.AllSent && partialReport.Text == "第一句。" && partialReport.FailureReasonCode == "segment_failed");
+        var failedReport = new CadenceSendReport(Array.Empty<string>(), "segment_failed");
+        Check("CadenceSendReport · 首段即败：AnySent=false 且 AllSent=false", !failedReport.AnySent && !failedReport.AllSent);
+    }
+
+    private static void AtmosphereTests()
+    {
+        Section("氛围感知与动态发言意愿模型（MaiBot 启发式）");
+
+        // 1. 基础欲望钳位
+        Check("欲望钳位 · 负数钳到 0", ChatAtmosphere.CalculateEffectiveDesire(-10, 0, 999, AtmosphereActivity.Moderate) == 0);
+        Check("欲望钳位 · 超出 100 钳到 100", ChatAtmosphere.CalculateEffectiveDesire(150, 0, 999, AtmosphereActivity.Moderate) == 100);
+
+        // 2. 连续发言疲劳阻尼
+        var d0 = ChatAtmosphere.CalculateEffectiveDesire(50, 0, 10, AtmosphereActivity.Moderate);
+        var d1 = ChatAtmosphere.CalculateEffectiveDesire(50, 1, 10, AtmosphereActivity.Moderate);
+        var d2 = ChatAtmosphere.CalculateEffectiveDesire(50, 2, 10, AtmosphereActivity.Moderate);
+        var d3 = ChatAtmosphere.CalculateEffectiveDesire(50, 3, 10, AtmosphereActivity.Moderate);
+        var d4 = ChatAtmosphere.CalculateEffectiveDesire(50, 4, 10, AtmosphereActivity.Moderate);
+        Check("疲劳阻尼 · 无连续发言时不惩罚", d0 == 50);
+        Check("疲劳阻尼 · 连续发言 1 次轻度阻尼", d1 == 45);
+        Check("疲劳阻尼 · 连续发言 2 次明显阻尼", d2 == 30);
+        Check("疲劳阻尼 · 连续发言 3 次大幅抑制", d3 == 5);
+        Check("疲劳阻尼 · 连续发言 4 次降为 0 强制闭嘴", d4 == 0);
+
+        // 3. 冷却恢复
+        var cooledShort = ChatAtmosphere.CalculateEffectiveDesire(50, 2, 70, AtmosphereActivity.Moderate); // >60s，阻尼减半: 20/2=10 -> 40
+        var cooledLong = ChatAtmosphere.CalculateEffectiveDesire(50, 2, 200, AtmosphereActivity.Moderate); // >180s，阻尼清零: 50
+        Check("冷却恢复 · 超过 60 秒疲劳惩罚减半", cooledShort == 40);
+        Check("冷却恢复 · 超过 180 秒疲劳完全恢复", cooledLong == 50);
+
+        // 4. 群聊活跃度调节
+        var quiet = ChatAtmosphere.CalculateEffectiveDesire(50, 0, 999, AtmosphereActivity.Quiet);
+        var active = ChatAtmosphere.CalculateEffectiveDesire(50, 0, 999, AtmosphereActivity.Active);
+        var heated = ChatAtmosphere.CalculateEffectiveDesire(50, 0, 999, AtmosphereActivity.Heated);
+        Check("活跃度调节 · 静寂群聊下降低主动插话意愿", quiet == 40);
+        Check("活跃度调节 · 活跃氛围下微增自然融入意愿", active == 55);
+        Check("活跃度调节 · 狂热/对线刷屏时主动克制", heated == 35);
+
+        // 5. 抑制判断
+        Check("抑制决策 · 明确 @ 呼叫时绝对不予抑制", !ChatAtmosphere.ShouldSuppressSpeech(0, 50, isDirectMention: true, out _));
+        Check("抑制决策 · 欲望降为 0 时主动静默", ChatAtmosphere.ShouldSuppressSpeech(0, 50, isDirectMention: false, out var r1) && r1.Contains("疲劳阻尼"));
+        Check("抑制决策 · 欲望过低时保持倾听静默", ChatAtmosphere.ShouldSuppressSpeech(8, 30, isDirectMention: false, out var r2) && r2.Contains("保持倾听"));
+        Check("抑制决策 · 正常欲望不抑制", !ChatAtmosphere.ShouldSuppressSpeech(40, 20, isDirectMention: false, out _));
+
+        // 6. 消息窗口氛围分析 Analyze
+        Check("氛围分析 · 空列表回退默认值", ChatAtmosphere.Analyze(null, DateTimeOffset.UtcNow).Activity == AtmosphereActivity.Moderate);
+        var baseTime = DateTimeOffset.UtcNow;
+        var sampleWindow = new List<ChatMessage>
+        {
+            new() { Role = MessageRole.Peer, Text = "群友发言1", Timestamp = baseTime.AddSeconds(-50) },
+            new() { Role = MessageRole.Self, Text = "Bot发言1", Timestamp = baseTime.AddSeconds(-40) },
+            new() { Role = MessageRole.Self, Text = "Bot发言2", Timestamp = baseTime.AddSeconds(-20) },
+            new() { Role = MessageRole.Peer, Text = "群友发言2", Timestamp = baseTime.AddSeconds(-5) },
+        };
+        var snap = ChatAtmosphere.Analyze(sampleWindow, baseTime);
+        Check("氛围分析 · 连续 Bot 回复次数准确识别", snap.ConsecutiveBotReplies == 2);
+        Check("氛围分析 · 距上次 Bot 回复秒数准确", Math.Abs(snap.SecondsSinceLastBotReply - 20.0) < 1.0);
+        Check("氛围分析 · 活跃度推断正常", snap.Activity == AtmosphereActivity.Active);
+    }
+
+    private static void JargonTests()
+    {
+        Section("圈子黑话/俚语存储与租户隔离（MaiBot 启发式）");
+
+        IJargonRepository repo = new FakeJargonRepository();
+
+        // 1. 初始查询空
+        var empty = repo.ListByScopeAsync("group:10001").GetAwaiter().GetResult();
+        Check("黑话仓储 · 初始列表为空", empty.Count == 0);
+
+        // 2. 插入与租户隔离
+        repo.UpsertAsync(new JargonEntry
+        {
+            Id = 1,
+            Scope = "group:10001",
+            Phrase = "早八人",
+            Meaning = "早上八点需要上课或打卡上班的群体",
+            Status = JargonStatus.Confirmed,
+            HitCount = 1
+        }).GetAwaiter().GetResult();
+
+        repo.UpsertAsync(new JargonEntry
+        {
+            Id = 2,
+            Scope = "group:10002",
+            Phrase = "急急国王",
+            Meaning = "遇到事情极易焦虑着急的人",
+            Status = JargonStatus.Confirmed,
+            HitCount = 1
+        }).GetAwaiter().GetResult();
+
+        var g1 = repo.ListByScopeAsync("group:10001").GetAwaiter().GetResult();
+        var g2 = repo.ListByScopeAsync("group:10002").GetAwaiter().GetResult();
+        Check("租户隔离 · group:10001 仅包含本群黑话", g1.Count == 1 && g1[0].Phrase == "早八人");
+        Check("租户隔离 · group:10002 互不串扰", g2.Count == 1 && g2[0].Phrase == "急急国王");
+
+        // 3. 重复捕获命中频次自增
+        repo.UpsertAsync(new JargonEntry
+        {
+            Id = 1,
+            Scope = "group:10001",
+            Phrase = "早八人",
+            Meaning = "更新释义：早上八点挣扎通勤的苦命人",
+            Status = JargonStatus.Confirmed
+        }).GetAwaiter().GetResult();
+
+        var g1Updated = repo.GetAsync("group:10001", "早八人").GetAwaiter().GetResult();
+        Check("频次自增 · 重复捕获后 HitCount 递增", g1Updated != null && g1Updated.HitCount == 2);
+        Check("内容更新 · 释义成功更新", g1Updated != null && g1Updated.Meaning.Contains("挣扎通勤"));
+
+        // 4. 状态过滤与 Prompt 注入只查 Confirmed/Manual
+        repo.UpsertAsync(new JargonEntry
+        {
+            Id = 3,
+            Scope = "group:10001",
+            Phrase = "未确认梗",
+            Meaning = "待审核内容",
+            Status = JargonStatus.Pending
+        }).GetAwaiter().GetResult();
+
+        var forPrompt = repo.ListConfirmedForPromptAsync("group:10001").GetAwaiter().GetResult();
+        Check("Prompt注入 · 仅注入已确认与手动录入黑话", forPrompt.Count == 1 && forPrompt[0].Phrase == "早八人");
+
+        // 5. 状态流转与删除
+        repo.SetStatusAsync(3, JargonStatus.Confirmed).GetAwaiter().GetResult();
+        var forPromptAfter = repo.ListConfirmedForPromptAsync("group:10001").GetAwaiter().GetResult();
+        Check("状态流转 · 审核放行后进入 Prompt 候选", forPromptAfter.Count == 2);
+
+        repo.DeleteAsync(3).GetAwaiter().GetResult();
+        var afterDelete = repo.ListByScopeAsync("group:10001").GetAwaiter().GetResult();
+        Check("删除操作 · 物理移除失效条目", afterDelete.Count == 1);
+
+        // 6. 规则预过滤与停用词拦截
+        Check("规则过滤 · 排除停用词", !JargonFilterRules.IsCandidatePhrase("这个") && !JargonFilterRules.IsCandidatePhrase("什么"));
+        Check("规则过滤 · 排除网址与邮箱", !JargonFilterRules.IsCandidatePhrase("https://example.com") && !JargonFilterRules.IsCandidatePhrase("test@abc.com"));
+        Check("规则过滤 · 排除纯数字与过短过长字符", !JargonFilterRules.IsCandidatePhrase("1234567") && !JargonFilterRules.IsCandidatePhrase("a"));
+        Check("规则过滤 · 允许正常候选词", JargonFilterRules.IsCandidatePhrase("早八人") && JargonFilterRules.IsCandidatePhrase("急急国王"));
+
+        // 7. 文本候选抽取
+        var extracted1 = JargonFilterRules.ExtractCandidatePhrases("今天群里全是“早八人”在诉苦呢");
+        Check("短语抽取 · 提取引号包裹短语", extracted1.Contains("早八人"));
+        var extracted2 = JargonFilterRules.ExtractCandidatePhrases("别催了，又不是急急国王！");
+        Check("短语抽取 · 提取特定后缀网络梗", extracted2.Contains("急急国王"));
+
+        // 8. JargonService 观察、发现与提炼闭环
+        var service = new JargonService(repo, new SettingsBox(new AppSettings()));
+        service.ObserveMessage("group:20001", "大家都是“纯爱战神”吧");
+        service.ObserveMessage("group:20001", "真是纯爱战神");
+        var discovered = service.DiscoverAndPersistAsync("group:20001").GetAwaiter().GetResult();
+        Check("服务提炼 · 达到频次阈值后自动沉淀为 Pending", discovered == 1);
+        var pendingList = repo.ListByScopeAsync("group:20001", JargonStatus.Pending).GetAwaiter().GetResult();
+        Check("服务提炼 · 准确持久化到待审核列表", pendingList.Count == 1 && pendingList[0].Phrase == "纯爱战神");
+
+        // 审核放行并验证 Prompt 字典渲染
+        repo.SetStatusAsync(pendingList[0].Id, JargonStatus.Confirmed).GetAwaiter().GetResult();
+        var snippet = service.RenderPromptSnippetAsync("group:20001").GetAwaiter().GetResult();
+        Check("Prompt渲染 · 成功生成带格式的黑话字典说明段", snippet != null && snippet.Contains("纯爱战神") && snippet.Contains("[本群圈子黑话/俚语字典]"));
+
+        // 9. 内存缓冲容量有界防护测试
+        for (int i = 0; i < 250; i++)
+        {
+            service.ObserveMessage("group:20001", $"第{i}条新梗“梗{i}”测试");
+        }
+        Check("有界台账 · 单会话候选词上限保护生效无崩溃", true);
+    }
+
+    private sealed class FakeJargonRepository : IJargonRepository
+    {
+        private readonly List<JargonEntry> _entries = new();
+
+        public Task<JargonEntry?> GetAsync(string scope, string phrase)
+        {
+            var found = _entries.FirstOrDefault(e => e.Scope == scope && e.Phrase == phrase);
+            return Task.FromResult(found);
+        }
+
+        public Task<IReadOnlyList<JargonEntry>> ListByScopeAsync(string scope, JargonStatus? status = null)
+        {
+            var res = _entries.Where(e => e.Scope == scope && (!status.HasValue || e.Status == status.Value)).ToList();
+            return Task.FromResult<IReadOnlyList<JargonEntry>>(res);
+        }
+
+        public Task<IReadOnlyList<JargonEntry>> ListConfirmedForPromptAsync(string scope, int limit = 20)
+        {
+            var res = _entries
+                .Where(e => (e.Scope == scope || e.Scope == "global") && (e.Status == JargonStatus.Confirmed || e.Status == JargonStatus.Manual))
+                .OrderByDescending(e => e.HitCount)
+                .Take(limit)
+                .ToList();
+            return Task.FromResult<IReadOnlyList<JargonEntry>>(res);
+        }
+
+        public Task UpsertAsync(JargonEntry entry)
+        {
+            var existing = _entries.FirstOrDefault(e => e.Scope == entry.Scope && e.Phrase == entry.Phrase);
+            if (existing != null)
+            {
+                existing.Meaning = entry.Meaning;
+                existing.HitCount++;
+                existing.UpdatedAt = entry.UpdatedAt;
+            }
+            else
+            {
+                _entries.Add(entry);
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task SetStatusAsync(long id, JargonStatus status)
+        {
+            var found = _entries.FirstOrDefault(e => e.Id == id);
+            if (found != null) found.Status = status;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(long id)
+        {
+            _entries.RemoveAll(e => e.Id == id);
+            return Task.CompletedTask;
+        }
+    }
+
+    private static void EpisodeTests()
+    {
+        Section("长期记忆事件切片仓储（MaiBot A-Memorix 启发）");
+
+        IEpisodeRepository repo = new FakeEpisodeRepository();
+
+        // 1. 初始查询空
+        var empty = repo.ListRecentByScopeAsync("group:30001").GetAwaiter().GetResult();
+        Check("记忆切片 · 初始列表为空", empty.Count == 0);
+
+        // 2. 插入事件切片
+        var now = DateTimeOffset.UtcNow;
+        var id1 = repo.InsertAsync(new EpisodeEntry
+        {
+            Scope = "group:30001",
+            Title = "关于加班与转行考研讨论",
+            Summary = "群友A与群友B吐槽近期加班严重，讨论转行考研计算机的可行性",
+            Participants = new[] { "10001", "10002" },
+            Tags = new[] { "工作", "考研", "吐槽" },
+            Importance = 4,
+            OccurredAt = now.AddDays(-2)
+        }).GetAwaiter().GetResult();
+
+        var id2 = repo.InsertAsync(new EpisodeEntry
+        {
+            Scope = "group:30001",
+            Title = "周末聚餐与桌游活动",
+            Summary = "群友相约周六下午在市中心桌游吧面基玩阿瓦隆",
+            Participants = new[] { "10001", "10003" },
+            Tags = new[] { "聚会", "游戏" },
+            Importance = 3,
+            OccurredAt = now.AddDays(-1)
+        }).GetAwaiter().GetResult();
+
+        var idOther = repo.InsertAsync(new EpisodeEntry
+        {
+            Scope = "group:30002",
+            Title = "其他群的讨论",
+            Summary = "其他群无关内容",
+            Participants = new[] { "20001" },
+            Tags = new[] { "杂项" },
+            Importance = 2,
+            OccurredAt = now
+        }).GetAwaiter().GetResult();
+
+        Check("记忆切片 · 插入成功并返回有效自增ID", id1 > 0 && id2 > 0 && idOther > 0);
+
+        // 3. 作用域隔离与时序列表查询（新的在前）
+        var list = repo.ListRecentByScopeAsync("group:30001").GetAwaiter().GetResult();
+        Check("作用域隔离 · 仅查询当前群聊切片", list.Count == 2);
+        Check("时序排序 · 最近发生事件在前", list[0].Id == id2 && list[1].Id == id1);
+
+        // 4. 语义关键词搜索
+        var searchRes = repo.SearchAsync("group:30001", "考研").GetAwaiter().GetResult();
+        Check("关键词检索 · 命中匹配切片并返回正确摘要", searchRes.Count == 1 && searchRes[0].Title.Contains("考研"));
+
+        // 5. 删除操作
+        repo.DeleteAsync(id1).GetAwaiter().GetResult();
+        var afterDel = repo.ListRecentByScopeAsync("group:30001").GetAwaiter().GetResult();
+        Check("删除切片 · 物理移除失效事件", afterDel.Count == 1 && afterDel[0].Id == id2);
+    }
+
+    private sealed class FakeEpisodeRepository : IEpisodeRepository
+    {
+        private readonly List<EpisodeEntry> _episodes = new();
+        private long _seq = 0;
+
+        public Task<long> InsertAsync(EpisodeEntry episode)
+        {
+            var id = ++_seq;
+            _episodes.Add(new EpisodeEntry
+            {
+                Id = id,
+                Scope = episode.Scope,
+                Title = episode.Title,
+                Summary = episode.Summary,
+                Participants = episode.Participants,
+                Tags = episode.Tags,
+                Importance = episode.Importance,
+                OccurredAt = episode.OccurredAt,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+            return Task.FromResult(id);
+        }
+
+        public Task<IReadOnlyList<EpisodeEntry>> ListRecentByScopeAsync(string scope, int limit = 10)
+        {
+            var res = _episodes
+                .Where(e => e.Scope == scope)
+                .OrderByDescending(e => e.OccurredAt)
+                .Take(limit)
+                .ToList();
+            return Task.FromResult<IReadOnlyList<EpisodeEntry>>(res);
+        }
+
+        public Task<IReadOnlyList<EpisodeEntry>> SearchAsync(string scope, string query, int limit = 5)
+        {
+            var q = query.Trim();
+            var res = _episodes
+                .Where(e => e.Scope == scope && (e.Title.Contains(q) || e.Summary.Contains(q) || e.Tags.Any(t => t.Contains(q))))
+                .OrderByDescending(e => e.Importance)
+                .ThenByDescending(e => e.OccurredAt)
+                .Take(limit)
+                .ToList();
+            return Task.FromResult<IReadOnlyList<EpisodeEntry>>(res);
+        }
+
+        public Task DeleteAsync(long id)
+        {
+            _episodes.RemoveAll(e => e.Id == id);
+            return Task.CompletedTask;
+        }
+    }
+
+    private static void ProfileOverrideTests()
+    {
+        Section("人物画像双层模型与证据链（MaiBot 启发式）");
+
+        IProfileRepository repo = new FakeProfileRepository();
+
+        // 1. 默认无覆盖时返回自动画像
+        var autoSummary = repo.GetProfileSummary("10001", scopeGroupId: 30001);
+        Check("画像双层 · 默认无覆盖返回自动画像", autoSummary.Contains("假画像"));
+
+        // 2. 设置人工覆盖画像
+        repo.SetProfileOverride("10001", "group:30001", "这是人工设定的专属画像：高级架构专家");
+        var overridden = repo.GetProfileSummary("10001", scopeGroupId: 30001);
+        Check("画像双层 · 人工覆盖具有最高裁决优先级", overridden.Contains("高级架构专家"));
+
+        // 3. 关联证据链
+        repo.SetEvidence("10001", "group:30001", "[{\"fact\":\"精通高并发\",\"source\":\"episodes/1\"}]");
+        var detailed = repo.GetDetailedSummary("10001", "group:30001");
+        Check("证据关联 · 明细准确返回证据链事实", detailed.EvidenceJson.Contains("episodes/1"));
+        Check("画像状态 · 明细同时保留自动摘要与人工覆盖", detailed.AutoSummary == "（假画像）" && detailed.OverrideText.Contains("高级架构专家"));
+
+        // 4. 清除人工覆盖后平滑回退
+        repo.SetProfileOverride("10001", "group:30001", null);
+        var reverted = repo.GetProfileSummary("10001", scopeGroupId: 30001);
+        Check("覆盖回退 · 清除覆盖后平滑回退自动画像", reverted.Contains("假画像"));
+    }
+
+    private static void StickerSafetyTests()
+    {
+        Section("表情包资产安全防护（防路径穿越与魔数白名单）");
+
+        // 1. 文件名防穿越
+        Check("路径安全 · 拒绝相对路径穿越", !StickerSafetyGuard.TrySanitizeFilename("../../evil.png", out _));
+        Check("路径安全 · 拒绝绝对 Windows 路径", !StickerSafetyGuard.TrySanitizeFilename("C:\\Windows\\system32.dll", out _));
+        Check("路径安全 · 拒绝斜杠与冒号", !StickerSafetyGuard.TrySanitizeFilename("sub/dir/test.jpg", out _));
+        var superLongName = new string('a', 300) + ".png";
+        Check("路径安全 · 防栈溢出拒绝超长文件名(>255)", !StickerSafetyGuard.TrySanitizeFilename(superLongName, out _));
+        Check("路径安全 · 放行标准合法文件名", StickerSafetyGuard.TrySanitizeFilename("cat-meme_01.png", out var safe) && safe == "cat-meme_01.png");
+
+        // 2. 魔数文件签名探测
+        var pngHeader = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D };
+        Check("魔数探测 · 准确识别 PNG 签名", StickerSafetyGuard.DetectImageFormat(pngHeader, out var pngExt, out var pngMime) && pngExt == "png" && pngMime == "image/png");
+
+        var jpgHeader = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01 };
+        Check("魔数探测 · 准确识别 JPEG 签名", StickerSafetyGuard.DetectImageFormat(jpgHeader, out var jpgExt, out var jpgMime) && jpgExt == "jpg" && jpgMime == "image/jpeg");
+
+        var gifHeader = new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x10, 0x00, 0x10, 0x00, 0x80, 0x00 };
+        Check("魔数探测 · 准确识别 GIF 签名", StickerSafetyGuard.DetectImageFormat(gifHeader, out var gifExt, out var gifMime) && gifExt == "gif" && gifMime == "image/gif");
+
+        var fakeExe = new byte[] { 0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00 }; // MZ PE header
+        Check("魔数探测 · 坚决拒绝伪造的可执行文件", !StickerSafetyGuard.DetectImageFormat(fakeExe, out _, out _));
+
+        // 3. 完整载荷验证
+        Check("载荷验证 · 拒绝空载荷", !StickerSafetyGuard.ValidatePayload(Array.Empty<byte>(), 1024, out _, out _, out var errEmpty) && errEmpty.Contains("为空"));
+        Check("载荷验证 · 拒绝超限文件", !StickerSafetyGuard.ValidatePayload(pngHeader, 5, out _, out _, out var errSize) && errSize.Contains("超过最大允许上限"));
+        Check("载荷验证 · 正常合法载荷放行", StickerSafetyGuard.ValidatePayload(pngHeader, 1024, out var validExt, out _, out _) && validExt == "png");
+    }
+
+    private static void PromptTemplateTests()
+    {
+        Section("Prompt 模板切片与多版本快照回滚（MaiBot 启发式）");
+
+        IPromptTemplateRepository repo = new FakePromptTemplateRepository();
+
+        // 1. 获取出厂内置默认模板
+        var sysDefault = repo.GetBuiltinDefault("system_prompt");
+        var personaDefault = repo.GetBuiltinDefault("persona");
+        Check("出厂默认 · 读取系统提示词出厂设置", !string.IsNullOrWhiteSpace(sysDefault));
+        Check("出厂默认 · 读取人设出厂设置", !string.IsNullOrWhiteSpace(personaDefault));
+
+        // 2. 保存自定义版本（生成 v1 并设为激活）
+        var v1 = repo.SaveVersionAsync("persona", "人设 v1：口语化、简短回复", "初版人设").GetAwaiter().GetResult();
+        Check("版本管理 · 保存生成首个版本号", v1 == "v1");
+        var active1 = repo.GetActiveVersionAsync("persona").GetAwaiter().GetResult();
+        Check("版本管理 · 新版本默认处于激活状态", active1 != null && active1.VersionId == "v1" && active1.Content.Contains("v1"));
+
+        // 3. 保存第二版（生成 v2 并自动切换激活）
+        var v2 = repo.SaveVersionAsync("persona", "人设 v2：傲娇、偶尔吐槽", "试验版人设").GetAwaiter().GetResult();
+        Check("版本管理 · 保存生成自增版本号", v2 == "v2");
+        var active2 = repo.GetActiveVersionAsync("persona").GetAwaiter().GetResult();
+        Check("版本管理 · 新版本自动切换为激活状态", active2 != null && active2.VersionId == "v2" && active2.Content.Contains("v2"));
+
+        // 4. 版本列表查询
+        var versions = repo.ListVersionsAsync("persona").GetAwaiter().GetResult();
+        Check("版本列表 · 完整列出两个历史版本", versions.Count == 2);
+
+        // 5. 版本回滚与切换激活
+        var okRollback = repo.ActivateVersionAsync("persona", "v1").GetAwaiter().GetResult();
+        Check("版本回滚 · 成功切换激活至旧版本 v1", okRollback);
+        var activeRollback = repo.GetActiveVersionAsync("persona").GetAwaiter().GetResult();
+        Check("版本回滚 · 激活状态已切换回 v1", activeRollback != null && activeRollback.VersionId == "v1" && activeRollback.Content.Contains("v1"));
+        Check("版本回滚 · 拒绝激活不存在的版本", !repo.ActivateVersionAsync("persona", "v999").GetAwaiter().GetResult());
+    }
+
+    private sealed class FakePromptTemplateRepository : IPromptTemplateRepository
+    {
+        private readonly List<PromptTemplateSnapshot> _snapshots = new();
+
+        public Task<IReadOnlyList<PromptTemplateSnapshot>> ListVersionsAsync(string key)
+        {
+            var res = _snapshots.Where(s => s.Key == key).OrderByDescending(s => s.Id).ToList();
+            return Task.FromResult<IReadOnlyList<PromptTemplateSnapshot>>(res);
+        }
+
+        public Task<PromptTemplateSnapshot?> GetVersionAsync(string key, string versionId)
+        {
+            var found = _snapshots.FirstOrDefault(s => s.Key == key && s.VersionId == versionId);
+            return Task.FromResult(found);
+        }
+
+        public Task<PromptTemplateSnapshot?> GetActiveVersionAsync(string key)
+        {
+            var found = _snapshots.FirstOrDefault(s => s.Key == key && s.IsActive);
+            return Task.FromResult(found);
+        }
+
+        public Task<string> SaveVersionAsync(string key, string content, string? label = null)
+        {
+            foreach (var s in _snapshots.Where(s => s.Key == key)) s.IsActive = false;
+            var ver = $"v{_snapshots.Count(s => s.Key == key) + 1}";
+            _snapshots.Add(new PromptTemplateSnapshot
+            {
+                Id = _snapshots.Count + 1,
+                Key = key,
+                VersionId = ver,
+                Content = content,
+                Label = label,
+                IsActive = true,
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+            return Task.FromResult(ver);
+        }
+
+        public Task<bool> ActivateVersionAsync(string key, string versionId)
+        {
+            var target = _snapshots.FirstOrDefault(s => s.Key == key && s.VersionId == versionId);
+            if (target is null) return Task.FromResult(false);
+            foreach (var s in _snapshots.Where(s => s.Key == key)) s.IsActive = false;
+            target.IsActive = true;
+            return Task.FromResult(true);
+        }
+
+        public string GetBuiltinDefault(string key)
+        {
+            return key switch
+            {
+                "persona" => AppSettings.DefaultPersona,
+                "agent_prompt" => AppSettings.DefaultAgentPrompt,
+                _ => AppSettings.DefaultSystemPrompt
+            };
+        }
     }
 
     private static void Section(string title)

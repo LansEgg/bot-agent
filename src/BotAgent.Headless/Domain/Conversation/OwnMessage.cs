@@ -1,3 +1,5 @@
+using BotAgent.Domain.Messaging;
+
 namespace BotAgent.Domain.Conversation;
 
 /// <summary>
@@ -6,4 +8,8 @@ namespace BotAgent.Domain.Conversation;
 /// 为什么在 Domain：它**是端口签名的一部分**（<c>IOwnMessageRepository</c> 的返回类型），
 /// 而端口不能引用适配层类型（§3.2 的 <c>db → service</c>）—— 所以随端口一起下沉。
 /// </summary>
-public sealed record OwnMessage(long Id, string Text, DateTimeOffset At);
+public sealed record OwnMessage(long Id, string Text, DateTimeOffset At)
+{
+    /// <summary>Full scoped identity. Null means retained, ambiguous legacy data: never a scoped lookup hit.</summary>
+    public MessageRef? Ref { get; init; }
+}

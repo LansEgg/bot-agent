@@ -56,4 +56,7 @@ public sealed record TurnTrace(
     DateTimeOffset StartedAt,
     string Outcome,
     int TotalMs,
-    IReadOnlyList<TurnNode> Nodes);
+    IReadOnlyList<TurnNode> Nodes,
+    int PromptTokens = 0,
+    int CompletionTokens = 0,
+    int FallbackHops = 0);

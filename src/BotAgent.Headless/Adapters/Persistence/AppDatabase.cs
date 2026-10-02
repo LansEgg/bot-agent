@@ -63,13 +63,13 @@ public static class AppDatabase
             {
                 DataSource = FilePath,
                 Mode = SqliteOpenMode.ReadWriteCreate,
-                Pooling = true
+                Pooling = true,
+                DefaultTimeout = 30
             }.ToString();
 
             using (var conn = Open())
             {
-                Exec(conn, "PRAGMA journal_mode=WAL;");      // 读写不互相阻塞（容器里只有一个进程，但线程很多）
-                Exec(conn, "PRAGMA synchronous=NORMAL;");    // WAL 下够安全，写入快很多
+                Exec(conn, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"); // WAL 下减少读写互相阻塞并提升写入稳定性
                 Migrate(conn);
             }
 
@@ -82,7 +82,7 @@ public static class AppDatabase
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
-        Exec(conn, "PRAGMA busy_timeout=5000;");   // 并发写：等一会儿而不是立刻抛 SQLITE_BUSY
+        Exec(conn, "PRAGMA busy_timeout=30000;");   // 并发写：等一会儿而不是立刻抛 SQLITE_BUSY
         Exec(conn, "PRAGMA foreign_keys=ON;");
         return conn;
     }
@@ -98,6 +98,40 @@ public static class AppDatabase
         }
 
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>执行写入 SQL，返回受影响的行数。</summary>
+    public static int ExecCount(SqliteConnection conn, string sql, params (string Name, object? Value)[] args)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+        {
+            cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+
+        return cmd.ExecuteNonQuery();
+    }
+
+    public static bool TryRegisterFeishuWebhook(string eventKey, DateTimeOffset seenAt, TimeSpan ttl)
+    {
+        var inserted = false;
+        var cutoff = seenAt.ToUnixTimeSeconds() - Math.Max(1, (long)ttl.TotalSeconds);
+        Write(conn =>
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                DELETE FROM feishu_webhook_dedup WHERE seen_unix < $cutoff;
+                INSERT OR IGNORE INTO feishu_webhook_dedup(event_key, seen_unix)
+                VALUES($key, $seen)
+                RETURNING event_key;
+                """;
+            cmd.Parameters.AddWithValue("$cutoff", cutoff);
+            cmd.Parameters.AddWithValue("$key", eventKey);
+            cmd.Parameters.AddWithValue("$seen", seenAt.ToUnixTimeSeconds());
+            inserted = cmd.ExecuteScalar() is not null;
+        });
+        return inserted;
     }
 
     /// <summary>写事务（同步）：回调里做若干条写操作，异常整体回滚。</summary>
@@ -339,12 +373,14 @@ public static class AppDatabase
 
             -- 长期画像：一个人在一个会话范围（群/私聊）里一份
             CREATE TABLE IF NOT EXISTS member_summaries(
-              uid          TEXT NOT NULL,
-              scope        TEXT NOT NULL,
-              text         TEXT NOT NULL,
-              through_seq  INTEGER NOT NULL DEFAULT 0,
-              updated_unix INTEGER NOT NULL DEFAULT 0,
-              folded_count INTEGER NOT NULL DEFAULT 0,
+              uid           TEXT NOT NULL,
+              scope         TEXT NOT NULL,
+              text          TEXT NOT NULL,
+              through_seq   INTEGER NOT NULL DEFAULT 0,
+              updated_unix  INTEGER NOT NULL DEFAULT 0,
+              folded_count  INTEGER NOT NULL DEFAULT 0,
+              override_text TEXT NOT NULL DEFAULT '',
+              evidence_json TEXT NOT NULL DEFAULT '',
               PRIMARY KEY (uid, scope)
             );
 
@@ -390,17 +426,17 @@ public static class AppDatabase
               tags              TEXT,
               is_sticker        INTEGER,
               described         INTEGER NOT NULL DEFAULT 0,
-              describe_attempts INTEGER NOT NULL DEFAULT 0
+              describe_attempts INTEGER NOT NULL DEFAULT 0,
+              scope_tenant_id   TEXT NOT NULL DEFAULT 'global_approved'
             );
 
-            -- 机器人自己发出去的消息（id → 原话 + 时间）：认出"别人引用回复了我说的哪一句"。
-            -- 以前是 data/own-messages.json（每记一条就整份重写）；搬进库后单条 upsert + 按时间剪枝。
-            -- 为什么值得落库：每次部署都会重启，只在内存里的话"引用机器人上一句"会被整片认不出来（踩过）。
-            CREATE TABLE IF NOT EXISTS own_messages(
-              message_id INTEGER PRIMARY KEY,
-              text       TEXT NOT NULL,
-              at_unix    INTEGER NOT NULL
-            );
+            -- Retained legacy own-message data (including imported JSON): never infer scope from a bare id.
+            CREATE TABLE IF NOT EXISTS own_messages(message_id INTEGER PRIMARY KEY, text TEXT NOT NULL, at_unix INTEGER NOT NULL);
+            -- Legacy rows stay untouched: a bare id has no provable platform/account/conversation scope.
+            CREATE TABLE IF NOT EXISTS own_messages_scoped(
+              conversation_key TEXT NOT NULL, native_message_id TEXT NOT NULL, text TEXT NOT NULL,
+              at_unix INTEGER NOT NULL, PRIMARY KEY (conversation_key, native_message_id));
+            CREATE TABLE IF NOT EXISTS feishu_webhook_dedup(event_key TEXT PRIMARY KEY, seen_unix INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS trace_archive(
               trace_id TEXT PRIMARY KEY,
               tenant_id TEXT NOT NULL,
@@ -429,7 +465,85 @@ public static class AppDatabase
             CREATE INDEX IF NOT EXISTS idx_security_audit_log_time
               ON security_audit_log(created_at, id);
             """);
+        CreateModelProviderTable(conn);
+        CreateJargonTable(conn);
+        CreateEpisodesTable(conn);
+        CreatePromptTemplatesTable(conn);
     }
+
+    private static void CreatePromptTemplatesTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS prompt_templates(
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              key          TEXT NOT NULL,
+              version_id   TEXT NOT NULL,
+              content      TEXT NOT NULL,
+              label        TEXT,
+              is_active    INTEGER NOT NULL DEFAULT 0,
+              created_unix INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(key, version_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_prompt_templates_key ON prompt_templates(key, is_active);
+            """);
+
+    private static void CreateEpisodesTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS episodes(
+              id            INTEGER PRIMARY KEY AUTOINCREMENT,
+              scope         TEXT NOT NULL,
+              title         TEXT NOT NULL,
+              summary       TEXT NOT NULL,
+              participants  TEXT NOT NULL,
+              tags          TEXT NOT NULL,
+              importance    INTEGER NOT NULL DEFAULT 1,
+              occurred_unix INTEGER NOT NULL DEFAULT 0,
+              created_unix  INTEGER NOT NULL DEFAULT 0,
+              updated_unix  INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS ix_episodes_scope_time ON episodes(scope, occurred_unix);
+            """);
+
+    private static void CreateJargonTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS jargons(
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              scope        TEXT NOT NULL,
+              phrase       TEXT NOT NULL,
+              meaning      TEXT NOT NULL,
+              status       INTEGER NOT NULL DEFAULT 0,
+              hit_count    INTEGER NOT NULL DEFAULT 1,
+              created_unix INTEGER NOT NULL DEFAULT 0,
+              updated_unix INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(scope, phrase)
+            );
+            CREATE INDEX IF NOT EXISTS ix_jargons_scope_status ON jargons(scope, status);
+            """);
+
+    private static void CreateModelProviderTable(SqliteConnection conn)
+        => Exec(conn, """
+            CREATE TABLE IF NOT EXISTS model_providers(
+              id                         TEXT PRIMARY KEY,
+              priority                   INTEGER NOT NULL,
+              name                       TEXT NOT NULL,
+              base_url                   TEXT NOT NULL,
+              model_name                 TEXT NOT NULL,
+              secret_key_ref             TEXT NOT NULL,
+              is_enabled                 INTEGER NOT NULL DEFAULT 1,
+              circuit_state              TEXT NOT NULL DEFAULT 'closed',
+              consecutive_hard_failures  INTEGER NOT NULL DEFAULT 0,
+              cooldown_until             TEXT,
+              updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS tenant_quotas(
+              tenant_id              TEXT PRIMARY KEY,
+              daily_token_limit      INTEGER NOT NULL DEFAULT 50000,
+              used_prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+              used_completion_tokens INTEGER NOT NULL DEFAULT 0,
+              reset_date             TEXT NOT NULL DEFAULT '',
+              energy_saving          INTEGER NOT NULL DEFAULT 0,
+              updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """);
 
     /// <summary>
     /// 按 <c>PRAGMA user_version</c> 逐版补列：v1 基线、v2 会话 next_seq、v3 成员消息主键补 group_id、
@@ -456,7 +570,8 @@ public static class AppDatabase
             Write(conn2 => Exec(conn2, "PRAGMA user_version = 2;"));
         }
 
-        // v3：member_messages 的主键补上 group_id（旧版 A/B 群序号重叠会互相覆盖）        if (version < 3)
+        // v3：member_messages 的主键补上 group_id（旧版 A/B 群序号重叠会互相覆盖）
+        if (version < 3)
         {
             var pkHasGroup = Scalar<long>("""
                 SELECT COUNT(1) FROM pragma_table_info('member_messages') WHERE name = 'group_id' AND pk > 0
@@ -501,6 +616,98 @@ public static class AppDatabase
             Write(conn2 => Exec(conn2, "PRAGMA user_version = 4;"));
         }
 
+        // v6：Provider 注册表与熔断状态持久化；新库建表已完成，旧库在这里补齐版本标记。
+        if (version < 6)
+        {
+            Write(CreateModelProviderTable);
+            Write(conn2 => Exec(conn2, "PRAGMA user_version = 6;"));
+        }
 
+        // v7：多租户隔离与配额（stickers 补 scope_tenant_id、新增 tenant_quotas 表）
+        if (version < 7)
+        {
+            var hasScopeTenant = Scalar<long>(
+                "SELECT COUNT(1) FROM pragma_table_info('stickers') WHERE name = 'scope_tenant_id'") > 0;
+            if (!hasScopeTenant)
+            {
+                Write(conn2 => Exec(conn2,
+                    "-- add scope_tenant_id\nALTER TABLE stickers ADD COLUMN scope_tenant_id TEXT NOT NULL DEFAULT 'global_approved';"));
+            }
+
+            Write(conn2 => Exec(conn2, """
+                -- v7 tenant quotas
+                CREATE TABLE IF NOT EXISTS tenant_quotas(
+                    tenant_id              TEXT PRIMARY KEY,
+                    daily_token_limit      INTEGER NOT NULL DEFAULT 50000,
+                    used_prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                    used_completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    reset_date             TEXT NOT NULL DEFAULT '',
+                    energy_saving          INTEGER NOT NULL DEFAULT 0,
+                    updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                PRAGMA user_version = 7;
+                """));
+        }
+
+        // v8：飞书 Webhook event_id / nonce 去重持久化。
+
+        // v9：画像双层模型（补齐 override_text 与 evidence_json）
+        if (version < 9)
+        {
+            var hasOverride = Scalar<long>(
+                "SELECT COUNT(1) FROM pragma_table_info('member_summaries') WHERE name = 'override_text'") > 0;
+            if (!hasOverride)
+            {
+                Write(conn2 => Exec(conn2,
+                    "-- add override_text and evidence_json\n" +
+                    "ALTER TABLE member_summaries ADD COLUMN override_text TEXT NOT NULL DEFAULT '';\n" +
+                    "ALTER TABLE member_summaries ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '';"));
+            }
+
+            Write(conn2 => Exec(conn2, "PRAGMA user_version = 9;"));
+        }
+    }
+
+    /// <summary>
+    /// 在线备份 SQLite 数据库（VACUUM INTO），默认保留最近 3 份。
+    /// </summary>
+    public static string VacuumIntoBackup(string? backupDir = null, int maxRetained = 3)
+    {
+        var targetDir = backupDir ?? Path.Combine(AppPaths.DataDir, "backups");
+        var dirInfo = new DirectoryInfo(targetDir);
+        if (!dirInfo.Exists)
+        {
+            dirInfo.Create();
+        }
+
+        var timestamp = Clock.UtcNow.ToString("yyyyMMdd_HHmmss_fff", System.Globalization.CultureInfo.InvariantCulture)
+            + "_" + Guid.NewGuid().ToString("N")[..6];
+        var backupPath = Path.Combine(targetDir, $"qqchat_daily_{timestamp}.db");
+        var escapedPath = backupPath.Replace("'", "''");
+
+        using (var conn = Open())
+        {
+            Exec(conn, $"VACUUM INTO '{escapedPath}';");
+        }
+
+        try
+        {
+            var files = dirInfo.GetFiles("qqchat_daily_*.db")
+                .OrderByDescending(f => f.CreationTimeUtc)
+                .ToList();
+            if (files.Count > maxRetained)
+            {
+                foreach (var old in files.Skip(maxRetained))
+                {
+                    try { old.Delete(); } catch { }
+                }
+            }
+        }
+        catch
+        {
+            // 清理旧备份失败不阻碍本次备份成果
+        }
+
+        return backupPath;
     }
 }

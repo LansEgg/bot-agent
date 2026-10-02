@@ -146,10 +146,15 @@ internal static class Baseline
     public const string SqlAllowedPrefix = "Adapters/Persistence/";
 
     /// <summary>
-    /// SQL 字面量总数（棘轮：只许往下调；新加 SQL 请加在 Adapters/Persistence 里，并在这里如实登记）。
+    /// SQL 字面量总数（默认只许往下调；新增版本化 schema 必须在 Adapters/Persistence 里并在这里如实登记）。
     /// 批次 3：89 → 95（+5 = 新的 own_messages 台账三条语句；+1 = 库里新建 own_messages 表）。
+    /// v5/v6 Provider 注册表：98 → 106（Provider DDL、迁移和元数据/状态读写）。
+    /// Jargon 圈子黑话/俚语表（MaiBot 启发）：106 → 114（Jargons DDL 与 CRUD 读写）。
+    /// Episodes 记忆切片表（MaiBot A-Memorix 启发）：114 → 120（Episodes DDL 与时序检索）。
+    /// MemberProfile 双层覆盖与证据链（MaiBot 启发）：120 → 127（Override 与 Evidence 读写 + 迁移补列）。
+    /// PromptTemplate 版本快照与出厂回滚（MaiBot 启发）：127 → 137（Prompt DDL 与版本切换激活）。
     /// </summary>
-    public const int SqlLiteralTotal = 98;
+    public const int SqlLiteralTotal = 137;
 
     // ── R3：直接文件 IO 只允许出现在 Adapters/** 与下列具名例外 ──
     public const string FileIoAllowedPrefix = "Adapters/";

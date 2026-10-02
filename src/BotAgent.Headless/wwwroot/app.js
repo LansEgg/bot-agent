@@ -26,7 +26,8 @@
     logs: [],
     modelStudio: { context: "chat" },
     settingsLoaded: false,    // 设置表单是否已从服务端回填过
-    agentPromptDefault: "",  // 服务端那份默认「Agent 附加提示词」（面板「恢复默认」按钮用，不在前端抄一份）
+    quota: { tenant: "", snapshot: null, loading: false, channel: "all" },
+     agentPromptDefault: "",  // 服务端那份默认「Agent 附加提示词」（面板「恢复默认」按钮用，不在前端抄一份）
     chatOpen: false,          // 手机端：是否已点进某个会话（列表 ↔ 聊天 的主从切换）
     login: {                  // 扫码登录卡片
       qr: null,               // /api/qqlogin 的响应
@@ -418,7 +419,7 @@
 
   function normalizeChannelFilter(value) {
     const filter = String(value || "all").trim().toLowerCase();
-    return filter === "private" || filter === "official" ? filter : "all";
+    return filter === "private" || filter === "official" || filter === "feishu" || filter === "local" ? filter : "all";
   }
 
   function syncChannelTabs() {
@@ -441,15 +442,22 @@
     // /api/state 与 /api/events 的会话 DTO 都由服务端写入 channel；优先使用该契约。
     const raw = String(conversation?.channel || "").trim().toLowerCase();
     if (raw === "official") return "official";
-    if (raw === "private" || raw === "local") return "private";
+    if (raw === "feishu") return "feishu";
+    if (raw === "local") return "local";
+    if (raw === "private") return "private";
 
     // 兼容旧缓存或反向代理，最后才使用显示标签与 key 前缀兜底。
     const tag = String(conversation?.channelTag || "").trim().toLowerCase();
     if (tag === "官方" || tag === "official") return "official";
-    if (tag === "私域" || tag === "本地" || tag === "private" || tag === "local") return "private";
+    if (tag === "飞书" || tag === "feishu") return "feishu";
+    if (tag === "本地" || tag === "local") return "local";
+    if (tag === "私域" || tag === "private") return "private";
 
     const key = String(conversation?.key || conversation?.sourceKey || "").trim().toLowerCase();
-    return key.startsWith("official:") ? "official" : "private";
+    if (key.startsWith("official:")) return "official";
+    if (key.startsWith("feishu:")) return "feishu";
+    if (key.startsWith("local:")) return "local";
+    return "private";
   }
 
   function createConvNode(c) {
@@ -557,24 +565,49 @@
     }
   }
 
-  // 两条通道的状态一行字。**只在官方通道启用时才显示**：
-// 没启用时这行只会重复“私域在线”（顶栏已经有连接状态了），反而显得吵。
+// 通道的状态一行字。**在非私域通道启用时显示**：
 function renderChannelStatus(channels) {
   state.channels = channels || [];
   const box = $("chanStatus");
-  const official = state.channels.find((c) => c.channel === "official");
+  const official = state.channels.find((c) => c.channel === "official" || c.channel === "qq.official");
+  const feishu = state.channels.find((c) => c.channel === "feishu");
+  const local = state.channels.find((c) => c.channel === "local");
+  const hasExtra = (official && official.enabled) || (feishu && feishu.enabled) || (local && local.enabled);
   const parts = state.channels.map((c) => {
     const st = !c.enabled ? "未启用" : (c.connected ? "在线" : "离线");
     return `${c.name} ${st}`;
   });
-  box.textContent = parts.join(" · ");
-  box.hidden = !official || !official.enabled;
-  const tab = $("chanTabOfficial");
-  tab.title = !official || !official.enabled
-    ? "官方通道未启用（面板设置里开一下，并配好 appid/secret）"
-    : (official.connected ? "官方通道在线" : "官方通道已启用，但还没连上");
-  // 没启用时把 Tab 淡一点，但仍旧可点（点进去是空列表 + 一行说明，比直接藏起来好理解）
-  tab.classList.toggle("chan-off", !official || !official.enabled);
+  if (box) {
+    box.textContent = parts.join(" · ");
+    box.hidden = !hasExtra;
+  }
+  const tabOfficial = $("chanTabOfficial");
+  if (tabOfficial) {
+    tabOfficial.title = !official || !official.enabled
+      ? "官方通道未启用（面板设置里开一下，并配好 appid/secret）"
+      : (official.connected ? "官方通道在线" : "官方通道已启用，但还没连上");
+    tabOfficial.classList.toggle("chan-off", !official || !official.enabled);
+  }
+  const tabFeishu = $("chanTabFeishu");
+  if (tabFeishu) {
+    tabFeishu.title = !feishu || !feishu.enabled
+      ? "飞书通道未启用（面板设置里开一下，并配置 App ID/Secret）"
+      : (feishu.connected ? "飞书通道在线" : "飞书通道已启用，但尚未完成首次配置");
+    tabFeishu.classList.toggle("chan-off", !feishu || !feishu.enabled);
+  }
+  const tabLocal = $("chanTabLocal");
+  if (tabLocal) {
+    tabLocal.title = !local || !local.enabled
+      ? "本地通道未启用（在「平台实例策略」配置本地白名单短 ID 开启）"
+      : (local.connected ? "本地通道在线" : "本地通道已启用");
+    tabLocal.classList.toggle("chan-off", !local || !local.enabled);
+  }
+  const localHint = $("localStateHint");
+  if (localHint) {
+    localHint.textContent = !local || !local.enabled
+      ? "未启用（在下方「平台实例策略」配置本地短 ID 如 1, 2 保存并重启生效）"
+      : (local.connected ? "已启用（在线，已装配本地消息注入器）" : "已启用（待重启装配）");
+  }
 }
 
   function renderConversations(force) {
@@ -1176,54 +1209,200 @@ function renderChannelStatus(channels) {
     const links = [];
     let current = 0;
 
-    /* 切到某一节：-1 = “全部显示”（单列堆到尾）。
-       切换只动 hidden，不碰表单字段 —— 保存契约（每个待保存字段都在 DOM 里）不受影响。 */
-    function showSection(index, keepScroll) {
-      const all = index < 0;
-      current = all ? -1 : Math.max(0, Math.min(cards.length - 1, index));
-      cards.forEach((c, k) => { c.hidden = !all && k !== current; });
-      links.forEach((b, k) => {
-        const on = all ? k === links.length - 1 : k === current;
-        b.classList.toggle("active", on);
-        // 窄屏那排胶囊是横向滑动的：把当前项带进可视区，只滚动导航栏自身，绝不造成页面或视口抖动
-        if (on && nav && typeof nav.scrollTo === "function") {
-          const navRect = nav.getBoundingClientRect();
-          const btnRect = b.getBoundingClientRect();
-          if (btnRect.left < navRect.left || btnRect.right > navRect.right) {
-            nav.scrollTo({
-              left: b.offsetLeft - nav.offsetWidth / 2 + b.offsetWidth / 2,
-              behavior: "smooth"
-            });
-          }
-        }
-      });
-      if (!keepScroll) scroller.scrollTop = 0;
-      foldCardNotes();   // 卡片刚显示出来，现在才量得出“说明有没有被截断”
-      try {
-        history.replaceState(null, "", all ? "#sec-all" : "#sec-" + current);
-      } catch (err) { /* 隐私模式下 replaceState 可能被禁：无所谓 */ }
-    }
-
+    // 5 大类分类元数据（图标、名称、id）
+    const CATEGORIES = [
+      { id: "channel", label: "通道接入", icon: "🌐" },
+      { id: "model", label: "模型与 Agent", icon: "🧠" },
+      { id: "chat", label: "聊天与互动", icon: "💬" },
+      { id: "multimedia", label: "语音与检索", icon: "🎙️" },
+      { id: "other", label: "其他", icon: "⚙️" },
+    ];
+    const catMap = new Map();
+    CATEGORIES.forEach((c) => catMap.set(c.id, { ...c, indices: [] }));
     cards.forEach((card, i) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "section-link";
-      btn.textContent = labels[i];
-      btn.title = labels[i];
-      btn.addEventListener("click", () => showSection(i));
-      nav.appendChild(btn);
-      links.push(btn);
+      const cat = card.dataset.category || "other";
+      if (!catMap.has(cat)) catMap.get("other").indices.push(i);
+      else catMap.get(cat).indices.push(i);
     });
 
-    // 最后一枚：全部显示（单列从头列到尾，方便通读或 Ctrl+F 找某个字段）
+    // 清空现有 nav 内容
+    nav.innerHTML = "";
+
+    // ── 移动端顶层胶囊栏（第一层：大类胶囊 + 全部显示）──
+    const mobileCatBar = document.createElement("div");
+    mobileCatBar.className = "section-cat-bar";
+    const mobileCatButtons = new Map();
+
+    CATEGORIES.forEach((catMeta) => {
+      const entry = catMap.get(catMeta.id);
+      if (!entry || entry.indices.length === 0) return;
+      const catBtn = document.createElement("button");
+      catBtn.type = "button";
+      catBtn.className = "section-cat-tab";
+      catBtn.dataset.cat = catMeta.id;
+      catBtn.innerHTML = `<span>${catMeta.icon} ${escapeHtml(catMeta.label)}</span><span class="badge-count">${entry.indices.length}</span>`;
+      catBtn.addEventListener("click", () => {
+        // 点击大类：展开并切换到该大类下第一个设置卡片
+        if (entry.indices.length > 0) showSection(entry.indices[0]);
+      });
+      mobileCatBar.appendChild(catBtn);
+      mobileCatButtons.set(catMeta.id, catBtn);
+    });
+
+    const mobileAllBtn = document.createElement("button");
+    mobileAllBtn.type = "button";
+    mobileAllBtn.className = "section-cat-tab section-cat-tab-all";
+    mobileAllBtn.textContent = "全部显示";
+    mobileAllBtn.addEventListener("click", () => showSection(-1));
+    mobileCatBar.appendChild(mobileAllBtn);
+    mobileCatButtons.set("all", mobileAllBtn);
+    nav.appendChild(mobileCatBar);
+
+    // ── 导航树（桌面端折叠树 / 移动端第二层子胶囊）──
+    const treeContainer = document.createElement("div");
+    treeContainer.className = "section-tree";
+
+    const catGroupElements = new Map();
+
+    CATEGORIES.forEach((catMeta) => {
+      const entry = catMap.get(catMeta.id);
+      if (!entry || entry.indices.length === 0) return;
+
+      const groupDiv = document.createElement("div");
+      groupDiv.className = "section-cat-group";
+      groupDiv.dataset.cat = catMeta.id;
+
+      // 桌面端可折叠大类标题行
+      const headerBtn = document.createElement("button");
+      headerBtn.type = "button";
+      headerBtn.className = "section-cat-header";
+      headerBtn.setAttribute("aria-expanded", "false");
+      headerBtn.innerHTML = `
+        <span class="section-cat-arrow" aria-hidden="true">▶</span>
+        <span class="section-cat-title"><span class="section-cat-icon">${catMeta.icon}</span> ${escapeHtml(catMeta.label)}</span>
+        <span class="badge-count">${entry.indices.length}</span>
+      `;
+      headerBtn.addEventListener("click", () => {
+        const isOpen = groupDiv.classList.contains("open");
+        if (isOpen) {
+          groupDiv.classList.remove("open");
+          headerBtn.setAttribute("aria-expanded", "false");
+        } else {
+          // 折叠其它大类，展开自己并切换到该类第一个卡片
+          treeContainer.querySelectorAll(".section-cat-group").forEach((g) => {
+            g.classList.remove("open");
+            const h = g.querySelector(".section-cat-header");
+            if (h) h.setAttribute("aria-expanded", "false");
+          });
+          groupDiv.classList.add("open");
+          headerBtn.setAttribute("aria-expanded", "true");
+          if (entry.indices.length > 0) showSection(entry.indices[0]);
+        }
+      });
+      groupDiv.appendChild(headerBtn);
+
+      // 子项容器
+      const itemsDiv = document.createElement("div");
+      itemsDiv.className = "section-cat-items";
+
+      entry.indices.forEach((cardIdx) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "section-link";
+        btn.dataset.index = String(cardIdx);
+        btn.dataset.cat = catMeta.id;
+        btn.textContent = labels[cardIdx];
+        btn.title = labels[cardIdx];
+        btn.addEventListener("click", () => showSection(cardIdx));
+        itemsDiv.appendChild(btn);
+        links[cardIdx] = btn;
+      });
+
+      groupDiv.appendChild(itemsDiv);
+      treeContainer.appendChild(groupDiv);
+      catGroupElements.set(catMeta.id, { groupDiv, headerBtn, itemsDiv });
+    });
+
+    // 桌面端底部：全部显示
     const allBtn = document.createElement("button");
     allBtn.type = "button";
     allBtn.className = "section-link section-link-all";
     allBtn.textContent = "全部显示";
     allBtn.title = "把这十几节按单列从头列到尾";
     allBtn.addEventListener("click", () => showSection(-1));
-    nav.appendChild(allBtn);
-    links.push(allBtn);
+    treeContainer.appendChild(allBtn);
+    links[cards.length] = allBtn; // 索引 cards.length 对应 allBtn
+
+    nav.appendChild(treeContainer);
+
+    /* 切到某一节：-1 = “全部显示”（单列堆到尾）。
+       切换只动 hidden，不碰表单字段 —— 保存契约（每个待保存字段都在 DOM 里）不受影响。 */
+    function showSection(index, keepScroll) {
+      const all = index < 0;
+      current = all ? -1 : Math.max(0, Math.min(cards.length - 1, index));
+      cards.forEach((c, k) => { c.hidden = !all && k !== current; });
+
+      // 计算当前活跃大类
+      let activeCat = "other";
+      if (!all) {
+        const activeCard = cards[current];
+        activeCat = (activeCard && activeCard.dataset.category) || "other";
+      }
+
+      // 更新移动端大类胶囊高亮
+      mobileCatButtons.forEach((btn, catId) => {
+        const on = all ? catId === "all" : catId === activeCat;
+        btn.classList.toggle("active", on);
+        if (on && mobileCatBar && typeof mobileCatBar.scrollTo === "function") {
+          const barRect = mobileCatBar.getBoundingClientRect();
+          const btnRect = btn.getBoundingClientRect();
+          if (btnRect.left < barRect.left || btnRect.right > barRect.right) {
+            mobileCatBar.scrollTo({
+              left: btn.offsetLeft - mobileCatBar.offsetWidth / 2 + btn.offsetWidth / 2,
+              behavior: "smooth"
+            });
+          }
+        }
+      });
+
+      // 更新手风琴分组展开与激活态
+      catGroupElements.forEach(({ groupDiv, headerBtn }, catId) => {
+        if (all) {
+          groupDiv.classList.add("open");
+          groupDiv.classList.remove("active");
+          if (headerBtn) headerBtn.setAttribute("aria-expanded", "true");
+        } else {
+          const match = catId === activeCat;
+          groupDiv.classList.toggle("open", match);
+          groupDiv.classList.toggle("active", match);
+          if (headerBtn) headerBtn.setAttribute("aria-expanded", match ? "true" : "false");
+        }
+      });
+
+      // 更新所有子链接的高亮
+      links.forEach((b, k) => {
+        if (!b) return;
+        const on = all ? k === cards.length : k === current;
+        b.classList.toggle("active", on);
+        const parent = b.parentElement;
+        if (on && parent && typeof parent.scrollTo === "function" && parent.scrollWidth > parent.clientWidth) {
+          const pRect = parent.getBoundingClientRect();
+          const bRect = b.getBoundingClientRect();
+          if (bRect.left < pRect.left || bRect.right > pRect.right) {
+            parent.scrollTo({
+              left: b.offsetLeft - parent.offsetWidth / 2 + b.offsetWidth / 2,
+              behavior: "smooth"
+            });
+          }
+        }
+      });
+
+      if (!keepScroll) scroller.scrollTop = 0;
+      foldCardNotes();   // 卡片刚显示出来，现在才量得出“说明有没有被截断”
+      try {
+        history.replaceState(null, "", all ? "#sec-all" : "#sec-" + current);
+      } catch (err) { /* 隐私模式下 replaceState 可能被禁：无所谓 */ }
+    }
 
     // 重新进入设置页（或从 hash 进来）时，把当前节重新亮一次
     refreshSettingsNav = () => showSection(current, true);
@@ -1239,7 +1418,15 @@ function renderChannelStatus(channels) {
         const dist = Math.abs(r.top - (box.top + 8));
         if (dist < bestDist) { bestDist = dist; best = i; }
       });
-      links.forEach((b, k) => b.classList.toggle("active", k === best));
+      links.forEach((b, k) => {
+        if (b) b.classList.toggle("active", k === best);
+      });
+      // 更新大类指示
+      const bestCard = cards[best];
+      const activeCat = (bestCard && bestCard.dataset.category) || "other";
+      mobileCatButtons.forEach((btn, catId) => {
+        btn.classList.toggle("active", catId === activeCat);
+      });
     }
 
     const raf = window.requestAnimationFrame || ((fn) => setTimeout(fn, 16));
@@ -1253,9 +1440,10 @@ function renderChannelStatus(channels) {
       });
     }, { passive: true });
 
-    // 刷新后回到同一节（hash），否则默认第一节
+    // 刷新后回到同一节（hash），否则默认展开第一个大类（通道接入）的首节
+    const defaultStartIdx = (catMap.get("channel")?.indices[0]) ?? 0;
     const m = /^#sec-(\d+|all)$/.exec(location.hash || "");
-    showSection(m ? (m[1] === "all" ? -1 : parseInt(m[1], 10)) : 0);
+    showSection(m ? (m[1] === "all" ? -1 : parseInt(m[1], 10)) : defaultStartIdx);
   }
 
     function fillSelect(sel, models, current, placeholder) {
@@ -1420,6 +1608,376 @@ function renderChannelStatus(channels) {
 
   /* 拉服务器 agent 接口的模型列表（GET <AgentServerBaseUrl>/models） */
 
+  function quotaNumber(value) {
+    return Number.isFinite(Number(value)) ? new Intl.NumberFormat("zh-CN").format(Number(value)) : "—";
+  }
+
+  function quotaUtcText(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toISOString();
+  }
+
+  function getQuotaChannelName(ch) {
+    if (ch === "official") return "QQ 官方";
+    if (ch === "feishu") return "飞书";
+    if (ch === "local") return "本地通道";
+    return "QQ 私域";
+  }
+
+  function getQuotaChannelPrefix(ch) {
+    if (ch === "official") return "官方";
+    if (ch === "feishu") return "飞书";
+    if (ch === "local") return "本地";
+    return "私域";
+  }
+
+  function updateQuotaChannelCounts() {
+    const counts = { all: 0, private: 0, official: 0, feishu: 0, local: 0 };
+    for (const c of state.conversations) {
+      if (!c || !c.key) continue;
+      counts.all++;
+      const ch = conversationChannel(c);
+      if (counts[ch] !== undefined) counts[ch]++;
+      else counts.private++;
+    }
+    if ($("quotaCountAll")) $("quotaCountAll").textContent = String(counts.all);
+    if ($("quotaCountPrivate")) $("quotaCountPrivate").textContent = String(counts.private);
+    if ($("quotaCountOfficial")) $("quotaCountOfficial").textContent = String(counts.official);
+    if ($("quotaCountFeishu")) $("quotaCountFeishu").textContent = String(counts.feishu);
+    if ($("quotaCountLocal")) $("quotaCountLocal").textContent = String(counts.local);
+  }
+
+  function renderQuotaSnapshot(snapshot) {
+    const fields = ["quotaUsedTokens", "quotaRemainingTokens", "quotaTokenSplit", "quotaResetDate", "quotaNextResetAt", "quotaEnergySaving", "quotaSilentReason", "quotaPlatform"];
+    if (!snapshot) {
+      for (const id of fields) {
+        const el = $(id);
+        if (el) el.textContent = "—";
+      }
+      $("quotaDailyLimit").value = "";
+      return;
+    }
+
+    $("quotaDailyLimit").value = snapshot.dailyTokenLimit;
+    $("quotaUsedTokens").textContent = `${quotaNumber(snapshot.usedTokens)} / ${quotaNumber(snapshot.dailyTokenLimit)}`;
+    $("quotaRemainingTokens").textContent = quotaNumber(snapshot.remainingTokens);
+    $("quotaTokenSplit").textContent = `${quotaNumber(snapshot.usedPromptTokens)} / ${quotaNumber(snapshot.usedCompletionTokens)}`;
+    $("quotaResetDate").textContent = snapshot.resetDate || "—";
+    $("quotaNextResetAt").textContent = quotaUtcText(snapshot.nextResetAt);
+    const energy = $("quotaEnergySaving");
+    energy.textContent = snapshot.energySaving ? "节能静默" : "正常回复";
+    energy.classList.toggle("warn", !!snapshot.energySaving);
+    energy.classList.toggle("ok", !snapshot.energySaving);
+    $("quotaSilentReason").textContent = snapshot.energySavingReason || "—";
+
+    const platformEl = $("quotaPlatform");
+    if (platformEl) {
+      platformEl.replaceChildren();
+      const tenantKey = String(snapshot.tenant || "");
+      const tenantConv = state.conversations.find((c) => c && c.key === tenantKey);
+      const ch = tenantConv ? conversationChannel(tenantConv) : (
+        tenantKey.startsWith("feishu:") ? "feishu" :
+        tenantKey.startsWith("official:") ? "official" :
+        tenantKey.startsWith("local:") ? "local" : "private"
+      );
+      const badge = document.createElement("span");
+      badge.className = "chan-badge chan-" + ch;
+      badge.textContent = getQuotaChannelName(ch);
+      platformEl.appendChild(badge);
+    }
+  }
+
+  function renderQuotaTenants() {
+    const select = $("quotaTenant");
+    if (!select) return "";
+
+    updateQuotaChannelCounts();
+    const filter = state.quota.channel || "all";
+
+    const tabs = document.querySelectorAll("#quotaChanTabs .chan-tab");
+    for (const tab of tabs) {
+      tab.classList.toggle("active", (tab.dataset.quotaChan || "all") === filter);
+    }
+
+    const allRows = state.conversations.filter((c) => c && c.key);
+    const filteredRows = allRows.filter((c) => filter === "all" || conversationChannel(c) === filter);
+
+    const selectedStillExists = filteredRows.some((c) => c.key === state.quota.tenant);
+    const selected = selectedStillExists ? state.quota.tenant : (filteredRows[0]?.key || "");
+
+    select.replaceChildren();
+    if (filteredRows.length === 0) {
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = filter === "all" ? "暂无已登记会话" : `【${getQuotaChannelName(filter)}】暂无已登记会话`;
+      select.appendChild(empty);
+    } else if (filter === "all") {
+      const groupMap = {
+        private: { label: "QQ 私域 (qq.private)", items: [] },
+        official: { label: "QQ 官方 (qq.official)", items: [] },
+        feishu: { label: "飞书 (feishu)", items: [] },
+        local: { label: "本地通道 (local)", items: [] }
+      };
+      for (const c of filteredRows) {
+        const ch = conversationChannel(c);
+        if (groupMap[ch]) groupMap[ch].items.push(c);
+        else groupMap.private.items.push(c);
+      }
+      for (const ch of ["private", "official", "feishu", "local"]) {
+        const g = groupMap[ch];
+        if (g.items.length === 0) continue;
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = g.label;
+        for (const conversation of g.items) {
+          const option = document.createElement("option");
+          option.value = conversation.key;
+          option.textContent = `[${getQuotaChannelPrefix(ch)}] ${conversation.name || "未命名会话"} (${conversation.key})`;
+          optgroup.appendChild(option);
+        }
+        select.appendChild(optgroup);
+      }
+    } else {
+      const ch = filter;
+      for (const conversation of filteredRows) {
+        const option = document.createElement("option");
+        option.value = conversation.key;
+        option.textContent = `[${getQuotaChannelPrefix(ch)}] ${conversation.name || "未命名会话"} (${conversation.key})`;
+        select.appendChild(option);
+      }
+    }
+
+    select.value = selected;
+    select.disabled = !selected || state.quota.loading;
+    $("quotaDailyLimit").disabled = !selected || state.quota.loading;
+    $("quotaSaveBtn").disabled = !selected || !state.quota.snapshot || state.quota.loading;
+    state.quota.tenant = selected;
+    return selected;
+  }
+
+  async function loadQuotaPanel() {
+    const selected = renderQuotaTenants();
+    if (!selected) {
+      state.quota.snapshot = null;
+      renderQuotaSnapshot(null);
+      const ch = state.quota.channel || "all";
+      if (ch === "feishu") {
+        $("quotaHint").textContent = "飞书通道暂无已登记会话（飞书应用收到消息或在群内 @机器人 后将自动建立）";
+      } else if (ch === "local") {
+        $("quotaHint").textContent = "本地通道暂无已登记会话（可在下方「本地通道」卡片打开交互演练场注入一条测试消息）";
+      } else if (ch === "official") {
+        $("quotaHint").textContent = "QQ 官方通道暂无已登记会话（在开放平台沙箱或已绑定的群/私聊发一条消息即可建立）";
+      } else if (ch === "private") {
+        $("quotaHint").textContent = "QQ 私域通道暂无已登记会话（登录 QQ 后在群聊或私聊中发一条消息即可建立）";
+      } else {
+        $("quotaHint").textContent = "暂无已登记会话，请先在任一平台与机器人对话建立会话";
+      }
+      return;
+    }
+
+    state.quota.loading = true;
+    renderQuotaTenants();
+    $("quotaHint").textContent = "正在读取配额状态…";
+    try {
+      const snapshot = await api(`/api/quotas?tenant=${encodeURIComponent(selected)}`);
+      state.quota.snapshot = snapshot;
+      renderQuotaSnapshot(snapshot);
+      $("quotaHint").textContent = "来源已选择 · 保存配额不会清除今日用量";
+    } catch (error) {
+      state.quota.snapshot = null;
+      renderQuotaSnapshot(null);
+      $("quotaHint").textContent = `读取失败：${error.data?.error || error.message}`;
+    } finally {
+      state.quota.loading = false;
+      renderQuotaTenants();
+    }
+  }
+
+  async function saveQuota() {
+    const tenant = state.quota.tenant;
+    const dailyTokenLimit = Number($("quotaDailyLimit").value);
+    if (!tenant || !Number.isSafeInteger(dailyTokenLimit) || dailyTokenLimit < 1 || dailyTokenLimit > 1000000000) {
+      toast("每日配额必须是 1 到 1,000,000,000 的整数");
+      return;
+    }
+
+    const button = $("quotaSaveBtn");
+    button.disabled = true;
+    try {
+      const snapshot = await api("/api/quotas", {
+        method: "POST",
+        body: JSON.stringify({ tenant, dailyTokenLimit })
+      });
+      state.quota.snapshot = snapshot;
+      renderQuotaSnapshot(snapshot);
+      $("quotaHint").textContent = `已保存 · 今日已用 ${quotaNumber(snapshot.usedTokens)} Token，未清零`;
+      toast("每日 Token 配额已保存");
+    } catch (error) {
+      $("quotaHint").textContent = `保存失败：${error.data?.error || error.message}`;
+      toast("每日 Token 配额保存失败");
+    } finally {
+      state.quota.loading = false;
+      renderQuotaTenants();
+    }
+  }
+
+  async function loadPlatformPolicies(policies, runtime) {
+    const host = $("platformPolicyRows");
+    const empty = $("platformPolicyEmpty");
+    host.replaceChildren();
+    let snapshots = [];
+    try {
+      const status = await api("/api/platforms");
+      snapshots = Array.isArray(status.platforms) ? status.platforms : [];
+    } catch (err) {
+      empty.textContent = "平台状态暂不可用，现有策略不会被清空。";
+      console.warn("加载平台策略状态失败：", err);
+      return;
+    }
+
+    const read = (obj, lower, upper) => obj?.[lower] ?? obj?.[upper];
+    const policyByKey = new Map((Array.isArray(policies) ? policies : []).map((p) => [
+      `${read(p, "platformId", "PlatformId")}|${read(p, "accountScope", "AccountScope") || "default"}`,
+      p
+    ]));
+    const standardPlatformDefaults = {
+      "qq.private|legacy": { displayName: "QQ私域", capabilities: { supportsText: true, supportsImage: true, supportsVoice: true, supportsQuote: true, supportsRecall: true, supportsGroup: true, supportsDirect: true, supportsStickers: true, supportsMusic: true, supportsPoke: true } },
+      "qq.official|legacy": { displayName: "QQ官方", capabilities: { supportsText: true, supportsImage: true, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } },
+      "feishu|default": { displayName: "飞书", capabilities: { supportsText: true, supportsImage: false, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsThread: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } },
+      "local|legacy": { displayName: "本地通道", capabilities: { supportsText: true, supportsImage: false, supportsVoice: false, supportsQuote: true, supportsRecall: false, supportsGroup: true, supportsDirect: true, supportsStickers: false, supportsMusic: false, supportsPoke: false } }
+    };
+    for (const key of Object.keys(standardPlatformDefaults)) {
+      if (!policyByKey.has(key)) policyByKey.set(key, null);
+    }
+    const snapshotByKey = new Map(snapshots.map((s) => [`${s.platformId}|${s.accountScope}`, s]));
+    for (const s of snapshots) {
+      const key = `${s.platformId}|${s.accountScope}`;
+      if (!policyByKey.has(key)) policyByKey.set(key, null);
+    }
+    for (const [key, p] of policyByKey) {
+      const snapshot = snapshotByKey.get(key) || standardPlatformDefaults[key];
+      const [platformId, accountScope] = key.split("|");
+      const existing = p || {};
+      const featureOverrides = read(existing, "featureOverrides", "FeatureOverrides") || {};
+      const allowedActions = read(existing, "allowedActions", "AllowedActions") || [];
+      const row = document.createElement("section");
+      row.className = "platform-policy-row";
+      row.dataset.platformId = platformId;
+      row.dataset.accountScope = accountScope;
+      row.dataset.allowedActions = JSON.stringify(allowedActions);
+
+      const title = document.createElement("div");
+      title.className = "platform-policy-title";
+      const name = document.createElement("span");
+      name.textContent = `${snapshot?.displayName || platformId} · ${accountScope}`;
+      const stateText = document.createElement("span");
+      stateText.className = "platform-policy-state";
+      stateText.textContent = snapshot
+        ? `${snapshot.connected ? "已连接" : "未连接"} · ${snapshot.capabilities?.supportsText ? "支持文本" : "不支持文本"}`
+        : "未注册实例";
+      title.append(name, stateText);
+      row.append(title);
+
+      const switches = document.createElement("div");
+      switches.className = "platform-policy-switches";
+      for (const [keyName, labelText] of [
+        ["enabled", "启用平台"],
+        ["chatEnabled", "启用聊天"]
+      ]) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.policy = keyName;
+        const configured = read(existing, keyName, keyName === "enabled" ? "Enabled" : "ChatEnabled");
+        input.checked = configured == null ? true : configured === true;
+        label.append(input, document.createTextNode(labelText));
+        switches.append(label);
+      }
+      row.append(switches);
+
+      const lists = document.createElement("div");
+      lists.className = "platform-policy-whitelists";
+      for (const [keyName, labelText, placeholder] of [
+        ["groupWhitelist", "群/频道白名单", "留空时按平台默认规则处理"],
+        ["privateWhitelist", "私聊白名单", "留空时按平台默认规则处理"]
+      ]) {
+        const label = document.createElement("label");
+        label.textContent = labelText;
+        const input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 4096;
+        input.placeholder = placeholder;
+        input.dataset.policy = keyName;
+        let existingVal = read(existing, keyName, keyName === "groupWhitelist" ? "GroupWhitelist" : "PrivateWhitelist");
+        if ((existingVal == null || existingVal === "") && runtime) {
+          if (platformId === "qq.private") {
+            existingVal = keyName === "groupWhitelist" ? (runtime.whitelistGroups || runtime.messageWhitelist || "") : (runtime.whitelistPrivates || runtime.messageWhitelist || "");
+          } else if (platformId === "qq.official") {
+            existingVal = keyName === "groupWhitelist" ? (runtime.officialWhitelistGroups || "") : (runtime.officialWhitelistPrivates || "");
+          } else if (platformId === "feishu") {
+            existingVal = runtime.feishuWhitelist || "";
+          } else if (platformId === "local") {
+            existingVal = keyName === "groupWhitelist" ? (runtime.localChannelIds || "") : "";
+          }
+        }
+        input.value = existingVal || "";
+        input.addEventListener("input", () => {
+          if (platformId === "qq.private") {
+            if (keyName === "groupWhitelist" && $("setWhitelistGroups")) $("setWhitelistGroups").value = input.value;
+            if (keyName === "privateWhitelist" && $("setWhitelistPrivates")) $("setWhitelistPrivates").value = input.value;
+          } else if (platformId === "qq.official") {
+            if (keyName === "groupWhitelist" && $("setOfficialWhitelistGroups")) $("setOfficialWhitelistGroups").value = input.value;
+            if (keyName === "privateWhitelist" && $("setOfficialWhitelistPrivates")) $("setOfficialWhitelistPrivates").value = input.value;
+          } else if (platformId === "feishu") {
+            if ($("setFeishuWhitelist")) $("setFeishuWhitelist").value = input.value;
+          }
+        });
+        label.append(input);
+        lists.append(label);
+      }
+      row.append(lists);
+
+      const features = document.createElement("div");
+      features.className = "platform-policy-features";
+      for (const [feature, labelText] of Object.entries({ voice: "语音", music: "音乐", stickers: "表情包", poke: "戳一戳", linkpreview: "链接预览", websearch: "联网搜索" })) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.feature = feature;
+        const capName = ["linkpreview", "websearch"].includes(feature) ? "supportsText" : `supports${feature[0].toUpperCase()}${feature.slice(1)}`;
+        const capSupported = snapshot?.capabilities ? snapshot.capabilities[capName] === true : true;
+        const configured = featureOverrides[feature] ?? featureOverrides[feature.toLowerCase()];
+        input.checked = configured == null ? capSupported : configured === true;
+        if (snapshot?.capabilities && ["voice", "music", "stickers", "poke"].includes(feature)) {
+          input.disabled = snapshot.capabilities[capName] !== true;
+        }
+        label.append(input, document.createTextNode(labelText));
+        features.append(label);
+      }
+      row.append(features);
+      host.append(row);
+    }
+    empty.hidden = policyByKey.size > 0;
+    empty.textContent = policyByKey.size > 0 ? "" : "尚无平台实例。新平台完成注册后会自动出现在这里。";
+  }
+
+  function collectPlatformPolicies() {
+    return [...$("platformPolicyRows").querySelectorAll(".platform-policy-row")].map((row) => {
+      const featureOverrides = {};
+      for (const input of row.querySelectorAll("[data-feature]")) featureOverrides[input.dataset.feature] = input.checked;
+      const values = Object.fromEntries([...row.querySelectorAll("[data-policy]")].map((input) => [input.dataset.policy, input.type === "checkbox" ? input.checked : input.value.trim()]));
+      return {
+        PlatformId: row.dataset.platformId,
+        AccountScope: row.dataset.accountScope,
+        Enabled: values.enabled,
+        ChatEnabled: values.chatEnabled,
+        GroupWhitelist: values.groupWhitelist,
+        PrivateWhitelist: values.privateWhitelist,
+        FeatureOverrides: featureOverrides,
+        AllowedActions: JSON.parse(row.dataset.allowedActions || "[]")
+      };
+    });
+  }
+
   async function loadSettings() {
     state.settingsLoaded = false; // 重新加载期间先封住保存
     const data = await api("/api/settings");
@@ -1463,6 +2021,15 @@ function renderChannelStatus(channels) {
     $("threshVal").textContent = r.suitabilityThreshold;
     $("setMaxAgentSteps").value = r.maxAgentSteps;
     $("agentStepsVal").textContent = r.maxAgentSteps;
+    $("setAdaptiveSampling").checked = r.adaptiveSamplingEnabled !== false;
+    $("setRationalTemp").value = r.rationalTemperature ?? 0.3;
+    $("rationalTempVal").textContent = r.rationalTemperature ?? 0.3;
+    $("setRationalTopP").value = r.rationalTopP ?? 0.3;
+    $("rationalTopPVal").textContent = r.rationalTopP ?? 0.3;
+    $("setEmotionalTemp").value = r.emotionalTemperature ?? 0.85;
+    $("emotionalTempVal").textContent = r.emotionalTemperature ?? 0.85;
+    $("setEmotionalTopP").value = r.emotionalTopP ?? 0.9;
+    $("emotionalTopPVal").textContent = r.emotionalTopP ?? 0.9;
     $("setAiMode").checked = r.aiModeEnabled;
     $("setGroupCooldown").value = r.groupCooldownSeconds;
     $("setPrivateCooldown").value = r.privateCooldownSeconds;
@@ -1483,6 +2050,8 @@ function renderChannelStatus(channels) {
     $("setProactiveCooldown").value = r.proactiveCooldownSeconds;
     $("setProactiveQuiet").value = r.proactiveQuietSeconds;
     $("setIgnoreBrackets").checked = r.ignoreBracketMessages === true;
+    $("setFilterActionNarration").checked = r.filterActionNarration === true;
+    $("setEnableAtmosphereDamping").checked = r.enableAtmosphereDamping !== false;
     $("setEnableStickers").checked = r.enableStickers;
     $("setStickerMax").value = r.stickerLibraryMax;
     $("setStickerCandidates").value = r.stickerCandidates;
@@ -1624,6 +2193,21 @@ function renderChannelStatus(channels) {
     $("setTtsProvider").value = (r.ttsProvider || "minimax").toLowerCase() === "openai" ? "openai" : "minimax";
     $("setTtsApiBase").value = r.ttsApiBase || "";
     $("setTtsModel").value = r.ttsModel || "";
+    // 飞书通道（企业协作平台）
+    $("setFeishuEnabled").checked = r.feishuEnabled === true;
+    $("setFeishuAppId").value = r.feishuAppId || "";
+    $("setFeishuAppSecret").value = "";
+    $("setFeishuAppSecret").placeholder = r.feishuSecretConfigured
+      ? `${r.feishuSecretMasked}（已设置${r.feishuSecretSource === "env" ? "，来自环境变量" : ""}，留空即不修改）`
+      : "还没配 App Secret，在这里填一个";
+    $("setFeishuVerificationToken").value = r.feishuVerificationToken || "";
+    $("setFeishuEncryptKey").value = "";
+    $("setFeishuEncryptKey").placeholder = r.feishuEncryptKeyConfigured
+      ? `${r.feishuEncryptKeyMasked}（已设置${r.feishuEncryptKeySource === "env" ? "，来自环境变量" : ""}，留空即不修改）`
+      : "未开启加密可留空（留空即不修改）";
+    $("setFeishuWhitelist").value = r.feishuWhitelist || "";
+    $("setFeishuApiBase").value = r.feishuApiBase || "";
+
     // 官方通道（与私域并存）；secret 不回填（它只从环境变量读，面板不接也不存）
     $("setOfficialEnabled").checked = r.officialEnabled === true;
     $("setOfficialAppId").value = r.officialAppId || "";
@@ -1639,6 +2223,7 @@ function renderChannelStatus(channels) {
     $("setPrivateChatEnabled").checked = r.privateChatEnabled !== false;
     renderOfficialConversations(r.officialConversations);
     renderChannelStatus(r.channels);
+    await loadPlatformPolicies(r.platformPolicies, r);
     $("setLinkPreviewTimeout").value = r.linkPreviewTimeoutSeconds;
     $("setLinkPreviewMax").value = r.linkPreviewMax;
 
@@ -1665,6 +2250,7 @@ function renderChannelStatus(channels) {
       resetAgentDeviceDraft(); // 回到上一份已保存快照，不保留已经放弃的改动
     }
 
+    await loadQuotaPanel();
     renderModelStudio();
 
     // 放在最后：全部回填成功才认为可保存
@@ -1693,6 +2279,11 @@ function renderChannelStatus(channels) {
       aiDesire: Number($("setDesire").value),
       suitabilityThreshold: Number($("setThreshold").value),
       maxAgentSteps: Number($("setMaxAgentSteps").value),
+      adaptiveSamplingEnabled: $("setAdaptiveSampling").checked,
+      rationalTemperature: Number($("setRationalTemp").value),
+      rationalTopP: Number($("setRationalTopP").value),
+      emotionalTemperature: Number($("setEmotionalTemp").value),
+      emotionalTopP: Number($("setEmotionalTopP").value),
       aiModeEnabled: $("setAiMode").checked,
       maxTokens: Number($("setMaxTokens").value),
       groupCooldownSeconds: Number($("setGroupCooldown").value),
@@ -1703,6 +2294,8 @@ function renderChannelStatus(channels) {
       proactiveCooldownSeconds: Number($("setProactiveCooldown").value),
       proactiveQuietSeconds: Number($("setProactiveQuiet").value),
       ignoreBracketMessages: $("setIgnoreBrackets").checked,
+      filterActionNarration: $("setFilterActionNarration").checked,
+      enableAtmosphereDamping: $("setEnableAtmosphereDamping").checked,
       segmentDelayMs: Number($("setSegmentDelay").value),
       maxContextMessages: Number($("setMaxContext").value),
       maxMessagesPerConversation: Number($("setMaxMessages").value),
@@ -1800,6 +2393,14 @@ function renderChannelStatus(channels) {
       ttsProvider: $("setTtsProvider").value,
       ttsApiBase: $("setTtsApiBase").value.trim(),
       ttsModel: $("setTtsModel").value.trim(),
+      // 飞书通道（Feishu Bot）
+      feishuEnabled: $("setFeishuEnabled").checked,
+      feishuAppId: $("setFeishuAppId").value.trim(),
+      feishuAppSecret: $("setFeishuAppSecret").value.trim(),
+      feishuVerificationToken: $("setFeishuVerificationToken").value.trim(),
+      feishuEncryptKey: $("setFeishuEncryptKey").value.trim(),
+      feishuWhitelist: $("setFeishuWhitelist").value.trim(),
+      feishuApiBase: $("setFeishuApiBase").value.trim(),
       // 官方通道（QQ 开放平台）
       officialEnabled: $("setOfficialEnabled").checked,
       officialAppId: $("setOfficialAppId").value.trim(),
@@ -1810,6 +2411,7 @@ function renderChannelStatus(channels) {
       officialWhitelistPrivates: $("setOfficialWhitelistPrivates").value.trim(),
       officialChatEnabled: $("setOfficialChatEnabled").checked,
       privateChatEnabled: $("setPrivateChatEnabled").checked,
+      platformPolicies: collectPlatformPolicies(),
       linkPreviewTimeoutSeconds: Number($("setLinkPreviewTimeout").value),
       linkPreviewMax: Number($("setLinkPreviewMax").value)
     };
@@ -2083,6 +2685,7 @@ function renderChannelStatus(channels) {
     renderConn();
     renderAiMode();
     renderThinking();
+    updateQuotaChannelCounts();
   }
 
   function connectEvents() {
@@ -2096,6 +2699,7 @@ function renderChannelStatus(channels) {
       state.byKey = new Map(state.conversations.map((c) => [c.key, c]));
       renderConversations();
       renderThinking();
+      updateQuotaChannelCounts();
     });
 
     es.addEventListener("message", (e) => {
@@ -3341,9 +3945,29 @@ function renderChannelStatus(channels) {
     $("setDesire").addEventListener("input", (e) => { $("desireVal").textContent = e.target.value; });
     $("setVoiceEagerness").addEventListener("input", (e) => { $("voiceEagernessVal").textContent = e.target.value; });
     $("setThreshold").addEventListener("input", (e) => { $("threshVal").textContent = e.target.value; });
+    $("setMaxAgentSteps").addEventListener("input", (e) => { $("agentStepsVal").textContent = e.target.value; });
+    $("setRationalTemp").addEventListener("input", (e) => { $("rationalTempVal").textContent = e.target.value; });
+    $("setRationalTopP").addEventListener("input", (e) => { $("rationalTopPVal").textContent = e.target.value; });
+    $("setEmotionalTemp").addEventListener("input", (e) => { $("emotionalTempVal").textContent = e.target.value; });
+    $("setEmotionalTopP").addEventListener("input", (e) => { $("emotionalTopPVal").textContent = e.target.value; });
     $("saveBtn").addEventListener("click", saveSettings);
     const hb = $("headerSaveBtn");
     if (hb) hb.addEventListener("click", saveSettings);
+    $("quotaTenant").addEventListener("change", (event) => {
+      state.quota.tenant = event.target.value;
+      loadQuotaPanel();
+    });
+    $("quotaSaveBtn").addEventListener("click", saveQuota);
+    const quotaTabsWrap = $("quotaChanTabs");
+    if (quotaTabsWrap) {
+      const quotaTabs = quotaTabsWrap.querySelectorAll(".chan-tab");
+      for (const tab of quotaTabs) {
+        tab.addEventListener("click", () => {
+          state.quota.channel = tab.dataset.quotaChan || "all";
+          loadQuotaPanel();
+        });
+      }
+    }
 
     // 清除密钥：必须先确认（密钥没了机器人就发不出话，不是小事）
     $("clearApiKey").addEventListener("click", () => {
@@ -3369,7 +3993,8 @@ function renderChannelStatus(channels) {
     const dirtyOnEdit = (ev) => {
       const target = ev.target;
       const insidePasswordCard = typeof target?.closest === "function" && target.closest("#panelPasswordSettings");
-      if (!target || (target.id !== "setTheme" && !insidePasswordCard)) markSettingsDirty();
+      const insideQuotaCard = typeof target?.closest === "function" && target.closest("#quotaCard");
+       if (!target || (target.id !== "setTheme" && !insidePasswordCard && !insideQuotaCard)) markSettingsDirty();
     };
     $("pageSettings").addEventListener("input", dirtyOnEdit);
     $("pageSettings").addEventListener("change", dirtyOnEdit);
@@ -3469,6 +4094,145 @@ function renderChannelStatus(channels) {
     $("audioModel").value = $("setMusicUnderstandModel").value;
     $("audioTestOut").textContent = "";
     $("audioModal").hidden = false;
+  }
+
+  async function loadJargons() {
+    const container = $("jargonListContainer");
+    const statsHint = $("jargonStatsHint");
+    if (!container || !statsHint) return;
+
+    const scope = ($("jargonScopeInput")?.value || "global").trim();
+    try {
+      const res = await api(`/api/jargons?scope=${encodeURIComponent(scope)}`);
+      const items = res?.items || [];
+      statsHint.textContent = `共 ${items.length} 条黑话`;
+
+      container.replaceChildren();
+      if (items.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.color = "var(--text-dim)";
+        empty.style.fontSize = "13px";
+        empty.style.textAlign = "center";
+        empty.style.padding = "12px";
+        empty.textContent = "当前作用域暂无黑话记录";
+        container.appendChild(empty);
+        return;
+      }
+
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.padding = "6px 8px";
+        row.style.borderBottom = "1px solid var(--border)";
+        row.style.gap = "8px";
+
+        const left = document.createElement("div");
+        left.style.display = "flex";
+        left.style.flexDirection = "column";
+        left.style.gap = "2px";
+        left.style.overflow = "hidden";
+
+        const titleRow = document.createElement("div");
+        titleRow.style.display = "flex";
+        titleRow.style.alignItems = "center";
+        titleRow.style.gap = "6px";
+
+        const phrase = document.createElement("strong");
+        phrase.style.fontSize = "13.5px";
+        phrase.textContent = item.phrase;
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.style.fontSize = "11px";
+        badge.style.padding = "1px 5px";
+        badge.textContent = `${item.status} · 命中 ${item.hitCount}`;
+
+        titleRow.appendChild(phrase);
+        titleRow.appendChild(badge);
+
+        const meaning = document.createElement("div");
+        meaning.style.fontSize = "12px";
+        meaning.style.color = "var(--text-dim)";
+        meaning.style.overflowWrap = "anywhere";
+        meaning.textContent = item.meaning;
+
+        left.appendChild(titleRow);
+        left.appendChild(meaning);
+
+        const actions = document.createElement("div");
+        actions.style.display = "flex";
+        actions.style.gap = "4px";
+        actions.style.flexShrink = "0";
+
+        if (item.status === "pending") {
+          const btnApprove = document.createElement("button");
+          btnApprove.type = "button";
+          btnApprove.className = "btn ghost-btn";
+          btnApprove.style.fontSize = "12px";
+          btnApprove.style.padding = "2px 8px";
+          btnApprove.textContent = "放行";
+          btnApprove.onclick = async () => {
+            try {
+              await api(`/api/jargons/${item.id}/status`, { method: "POST", body: { status: "confirmed" } });
+              toast(`黑话 "${item.phrase}" 已放行`);
+              loadJargons();
+            } catch (e) {
+              toast("操作失败：" + e.message);
+            }
+          };
+          actions.appendChild(btnApprove);
+        }
+
+        const btnDel = document.createElement("button");
+        btnDel.type = "button";
+        btnDel.className = "btn ghost-btn";
+        btnDel.style.fontSize = "12px";
+        btnDel.style.padding = "2px 8px";
+        btnDel.style.color = "var(--danger)";
+        btnDel.textContent = "删除";
+        btnDel.onclick = async () => {
+          if (!confirm(`确定删除黑话 "${item.phrase}" 吗？`)) return;
+          try {
+            await api(`/api/jargons/${item.id}`, { method: "DELETE" });
+            toast(`已删除黑话 "${item.phrase}"`);
+            loadJargons();
+          } catch (e) {
+            toast("删除失败：" + e.message);
+          }
+        };
+        actions.appendChild(btnDel);
+
+        row.appendChild(left);
+        row.appendChild(actions);
+        container.appendChild(row);
+      }
+    } catch (e) {
+      statsHint.textContent = "加载失败：" + e.message;
+    }
+  }
+
+  function initJargonUi() {
+    $("btnRefreshJargons")?.addEventListener("click", () => loadJargons());
+    $("btnAddJargon")?.addEventListener("click", async () => {
+      const phrase = $("newJargonPhrase")?.value?.trim();
+      const meaning = $("newJargonMeaning")?.value?.trim();
+      const scope = ($("jargonScopeInput")?.value || "global").trim();
+      if (!phrase || !meaning) {
+        toast("请完整填写黑话词汇与含义");
+        return;
+      }
+      try {
+        await api("/api/jargons", { method: "POST", body: { scope, phrase, meaning } });
+        toast(`已录入黑话 "${phrase}"`);
+        if ($("newJargonPhrase")) $("newJargonPhrase").value = "";
+        if ($("newJargonMeaning")) $("newJargonMeaning").value = "";
+        loadJargons();
+      } catch (e) {
+        toast("录入失败：" + e.message);
+      }
+    });
   }
 
   function writeBackAudioSources() {
@@ -3832,11 +4596,11 @@ function renderChannelStatus(channels) {
 
         // 聊天下拉：第一项是“全部聊天”总览（管理员要“查现在有多少个会话及其标题”）
         const keep = sel.value || "__all__";
-        sel.innerHTML = `<option value="__all__">全部聊天（共 ${all.total || 0} 个会话）</option>` +
+        sel.innerHTML = `<option value="__all__">全部聊天（共 ${escapeHtml(all.total || 0)} 个会话）</option>` +
           chats.map((k, i) => {
             const c = all.chats[k];
             // 聊天也带序号：与群里 //sessions all 的顺序一致（同一个 AllChats 顺序）
-            return `<option value="${k}">${i + 1}. ${c.name || k}（${(c.sessions || []).length}）</option>`;
+            return `<option value="${escapeHtml(k)}">${i + 1}. ${escapeHtml(c.name || k)}（${escapeHtml((c.sessions || []).length)}）</option>`;
           }).join("");
         sel.value = (keep === "__all__" || chats.includes(keep)) ? keep : "__all__";
 
@@ -3846,13 +4610,13 @@ function renderChannelStatus(channels) {
             const c = all.chats[k];
             // 每个会话前面带序号：和群里 //sessions 的顺序一样，面板看第几号、群里 //use 第几号能对上
             const titles = (c.sessions || []).map((x, i) =>
-              `${i + 1}) ${x.current ? "← " : ""}${x.name}（${x.backend === "server" ? "服务器" : (x.device || "外部")}·${x.turns}轮）`);
+              `${i + 1}) ${x.current ? "← " : ""}${escapeHtml(x.name)}（${escapeHtml(x.backend === "server" ? "服务器" : (x.device || "外部"))}·${escapeHtml(x.turns)}轮）`);
             return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0">
-              <b>${c.name || k}</b> <span class="hint">${(c.sessions || []).length} 个</span>
+              <b>${escapeHtml(c.name || k)}</b> <span class="hint">${escapeHtml((c.sessions || []).length)} 个</span>
               <div class="hint" style="margin-top:4px">${titles.join("　")}</div>
             </div>`;
           });
-          box.innerHTML = (all.total ? `<div style="padding:4px 0">会话总数：<b>${all.total}</b> 个，分布在 ${all.chatCount} 个聊天里。</div>` : "") +
+          box.innerHTML = (all.total ? `<div style="padding:4px 0">会话总数：<b>${escapeHtml(all.total)}</b> 个，分布在 ${escapeHtml(all.chatCount)} 个聊天里。</div>` : "") +
             (lines.length ? lines.join("") : '<div style="padding:6px 0">还没有 agent 会话。群里发一条 <code>//指令</code> 就有了。</div>');
           agentSessionsCache = [];
           return;
@@ -3861,7 +4625,7 @@ function renderChannelStatus(channels) {
         const list = (all.chats[key] || {}).sessions || [];
         agentSessionsCache = list;
         box.innerHTML = list.map((x, i) => {
-          const where = x.backend === "server" ? "服务器内置" : `外部 ${x.device || "设备"}`;
+          const where = x.backend === "server" ? "服务器内置" : `外部 ${escapeHtml(x.device || "设备")}`;
           const when = x.updatedAt ? new Date(x.updatedAt).toLocaleString() : "";
           const runs = x.runs || [];
           const runsHtml = runs.length === 0
@@ -3870,20 +4634,20 @@ function renderChannelStatus(channels) {
                 const st = r.ok === null || r.ok === undefined ? "⏳ 在跑" : (r.ok ? "✅" : "❌");
                 const t = r.at ? new Date(r.at).toLocaleString() : "";
                 const extra = r.ok === null || r.ok === undefined ? "" : ` · ${(r.durationMs / 1000).toFixed(1)}s${r.toolCalls ? ` · ${r.toolCalls} 次工具` : ""}`;
-                return `<div class="hint" style="margin:3px 0">${st} ${t}${extra}｜${r.prompt || ""}${r.result ? ` → ${r.result}` : ""}</div>`;
+                return `<div class="hint" style="margin:3px 0">${escapeHtml(st)} ${escapeHtml(t)}${escapeHtml(extra)}｜${escapeHtml(r.prompt || "")}${r.result ? ` → ${escapeHtml(r.result)}` : ""}</div>`;
               }).join("");
           return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0">
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <b>#${i + 1} ${x.current ? "← " : ""}${x.name}</b>
-              <span class="hint">[${where}] ${x.turns} 轮 · ${when}${x.historyChars ? ` · 上下文 ${x.historyChars} 字` : ""}${x.autoNamed ? " · 自动标题" : ""}${x.piOwned === false ? " · pi 导入" : ""} · 跑过 ${runs.length} 次</span>
-              <button class="ghost-btn" data-sess-use="${x.id}"${x.current ? " disabled" : ""}>切到这个</button>
-              <button class="ghost-btn" data-sess-rename="${x.id}">改名</button>
-              <button class="ghost-btn" data-sess-reset="${x.id}">清空</button>
-              <button class="ghost-btn" data-sess-del="${x.id}">删除</button>
-              <button class="ghost-btn" data-sess-runs="${x.id}">执行记录</button>
+              <b>#${i + 1} ${x.current ? "← " : ""}${escapeHtml(x.name)}</b>
+              <span class="hint">[${where}] ${escapeHtml(x.turns)} 轮 · ${escapeHtml(when)}${x.historyChars ? ` · 上下文 ${escapeHtml(x.historyChars)} 字` : ""}${x.autoNamed ? " · 自动标题" : ""}${x.piOwned === false ? " · pi 导入" : ""} · 跑过 ${escapeHtml(runs.length)} 次</span>
+              <button class="ghost-btn" data-sess-use="${escapeHtml(x.id)}"${x.current ? " disabled" : ""}>切到这个</button>
+              <button class="ghost-btn" data-sess-rename="${escapeHtml(x.id)}">改名</button>
+              <button class="ghost-btn" data-sess-reset="${escapeHtml(x.id)}">清空</button>
+              <button class="ghost-btn" data-sess-del="${escapeHtml(x.id)}">删除</button>
+              <button class="ghost-btn" data-sess-runs="${escapeHtml(x.id)}">执行记录</button>
             </div>
-            <div class="hint" style="margin-top:4px">${x.piSession ? `pi 会话：${x.piSession}` : ""}</div>
-            <div data-sess-runs-box="${x.id}" style="display:none;margin-top:6px;border-top:1px dashed var(--line);padding-top:6px">${runsHtml}</div>
+            <div class="hint" style="margin-top:4px">${x.piSession ? `pi 会话：${escapeHtml(x.piSession)}` : ""}</div>
+            <div data-sess-runs-box="${escapeHtml(x.id)}" style="display:none;margin-top:6px;border-top:1px dashed var(--line);padding-top:6px">${runsHtml}</div>
           </div>`;
         }).join("");
 
@@ -3892,7 +4656,9 @@ function renderChannelStatus(channels) {
           await refreshAgentSessions();
         }));
         box.querySelectorAll("[data-sess-runs]").forEach((el) => el.addEventListener("click", () => {
-          const box2 = box.querySelector(`[data-sess-runs-box="${el.dataset.sessRuns}"]`);
+          // dataset 已解码：ID 是原始数据，不可再插进 CSS selector（引号/反斜杠会改变语义）。
+          const box2 = Array.from(box.querySelectorAll("[data-sess-runs-box]"))
+            .find((node) => node.dataset.sessRunsBox === el.dataset.sessRuns);
           if (box2) box2.style.display = box2.style.display === "none" ? "" : "none";
         }));
         box.querySelectorAll("[data-sess-rename]").forEach((el) => el.addEventListener("click", async () => {
@@ -3941,13 +4707,13 @@ function renderChannelStatus(channels) {
         if (!r.connected) { out.innerHTML = '<div class="hint">外部设备不在线，列不出 pi 会话。</div>'; return; }
         if (list.length === 0) { out.innerHTML = '<div class="hint">设备上没找到 pi 会话（~/.pi/agent/sessions/… 为空？）。</div>'; return; }
 
-        out.innerHTML = `<div class="hint" style="padding:4px 0">设备上的 pi 会话（${list.length} 个，最新的在前）——点「接用」把它变成这个聊天的一个会话：</div>` +
+        out.innerHTML = `<div class="hint" style="padding:4px 0">设备上的 pi 会话（${escapeHtml(list.length)} 个，最新的在前）——点「接用」把它变成这个聊天的一个会话：</div>` +
           list.slice(0, 20).map((it) => {
             const when = it.mtime ? new Date(it.mtime * 1000).toLocaleString() : "";
             return `<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:6px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <b>${(it.title || "(无标题)").slice(0, 40)}</b>
-              <span class="hint">${when} · ${it.cwd || ""} · ${it.id.slice(0, 12)}…</span>
-              <button class="ghost-btn" data-pi-import="${it.id}">接用</button>
+              <b>${escapeHtml((it.title || "(无标题)").slice(0, 40))}</b>
+              <span class="hint">${escapeHtml(when)} · ${escapeHtml(it.cwd || "")} · ${escapeHtml((it.id || "").slice(0, 12))}…</span>
+              <button class="ghost-btn" data-pi-import="${escapeHtml(it.id || "")}">接用</button>
             </div>`;
           }).join("");
 
@@ -3960,7 +4726,7 @@ function renderChannelStatus(channels) {
           await refreshAgentSessions();
         }));
       } catch (e) {
-        out.innerHTML = '<div class="hint">拉取失败：' + e.message + '</div>';
+        out.innerHTML = '<div class="hint">拉取失败：' + escapeHtml(e.message) + '</div>';
       }
     });
 
@@ -4488,6 +5254,7 @@ function renderChannelStatus(channels) {
     }
     bindUi();
     bindAudioSources();
+    initJargonUi();
     initSettingsNav();
     foldCardNotes();
     renderAiMode();

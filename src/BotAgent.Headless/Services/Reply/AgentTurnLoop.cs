@@ -70,11 +70,23 @@ public sealed class AgentTurnLoop
         var feed = turn.SearchText;
         var inline = 0;
         var used = 0;
+        var totalPromptTokens = 0;
+        var totalCompletionTokens = 0;
+        var maxFallbackHops = 0;
+        string? declaredIntent = null;
         CompletionResult result;
 
         while (true)
         {
             used++;
+            var lastTriggerText = turn.Context.LastOrDefault(m => m.Role == MessageRole.Peer)?.Text;
+            var sampling = SamplingPolicy.Resolve(
+                lastTriggerText,
+                !string.IsNullOrWhiteSpace(feed),
+                turn.VibeHint,
+                declaredIntent,
+                turn.Snapshot.ToSamplingConfig());
+
             result = await _brain.CompleteAsync(
                 turn.Context,
                 turn.Profiles.Count > 0 ? string.Join("\n\n", turn.Profiles) : null,
@@ -93,9 +105,20 @@ public sealed class AgentTurnLoop
                 enableVoice: turn.Snapshot.EnableVoice,
                 enableAsk: turn.Snapshot.EnableQuestions,
                 enableToolRequest: turn.Snapshot.EnableApprovals,
-                toolList: ToolPromptText.Render(caps));
+                toolList: ToolPromptText.Render(caps),
+                sampling: sampling);
 
-            _traces?.Node(conversationKey, TurnNodeKind.Model, "ok", count: used);
+            totalPromptTokens += result.PromptTokens;
+            totalCompletionTokens += result.CompletionTokens;
+            maxFallbackHops = Math.Max(maxFallbackHops, result.FallbackHops);
+            _traces?.RecordTokens(conversationKey, result.PromptTokens, result.CompletionTokens, result.FallbackHops);
+
+            _traces?.Node(conversationKey, TurnNodeKind.Model, "ok", reasonCode: sampling.Intent.ToString().ToLowerInvariant(), count: used);
+
+            if (!string.IsNullOrWhiteSpace(result.Intent))
+            {
+                declaredIntent = result.Intent;
+            }
 
             if (used >= steps)
             {
@@ -114,6 +137,12 @@ public sealed class AgentTurnLoop
             feed = string.IsNullOrWhiteSpace(feed) ? note : feed + "\n\n" + note;
         }
 
-        return new LoopOutcome(result, used, inline);
+        var aggregatedResult = result with
+        {
+            PromptTokens = totalPromptTokens,
+            CompletionTokens = totalCompletionTokens,
+            FallbackHops = maxFallbackHops
+        };
+        return new LoopOutcome(aggregatedResult, used, inline);
     }
 }

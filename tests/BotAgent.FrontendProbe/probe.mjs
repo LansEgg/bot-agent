@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { extractSessionSource } from "./browser-fixture.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../src/BotAgent.Headless/wwwroot");
@@ -136,7 +137,7 @@ check(
 check("JS：boot() 里真的调用了", /initSettingsNav\(\);/.test(js));
 check(
   "★ 宽屏改成左侧分节栏 + 单列内容（不再把卡片铺成“一块一块”）",
-  /#pageSettings\s*\{[^}]*grid-template-columns:\s*208px/.test(css) &&
+  /#pageSettings\s*\{[^}]*grid-template-columns:\s*236px/.test(css) &&
     /\.settings-inner\s*\{[^}]*max-width:\s*980px/.test(css) &&
     /\.section-nav\s*\{[^}]*flex-direction:\s*column/.test(css) &&
     !/[\s{;]columns:\s*\d+px/.test(css),
@@ -158,6 +159,81 @@ check("刷新/带 hash 进来能回到同一节", /#sec-\(\\d\+\|all\)/.test(js)
 check(
   "隐藏卡片里的说明不打“已处理”标记（否则切过去就再也不折了）",
   /card\.hidden\)\s*continue/.test(js)
+);
+
+/* ─────────── 1b2-2) 两级分类导航（5 大类 + 折叠联动） ─────────── */
+
+console.log("\n▶ 静态：设置页两级分类导航架构");
+
+const cardCategoryMatches = Array.from(html.matchAll(/<div class="card[^"]*"[^>]*data-category="([^"]+)"/g));
+check("所有 21 张卡片均声明了 data-category 属性", cardCategoryMatches.length >= 21);
+const declaredCats = new Set(cardCategoryMatches.map((m) => m[1]));
+const expectedCats = ["channel", "model", "chat", "multimedia", "other"];
+check("大类分类命名完整覆盖 5 大类", expectedCats.every((c) => declaredCats.has(c)));
+
+check(
+  "【通道接入】包含精炼对齐的四大通道并在后由平台实例策略统筹",
+  html.includes("QQ 私域通道 (NapCat)") &&
+    html.includes("QQ 官方通道 (开放平台)") &&
+    html.includes("<h3>飞书通道</h3>") &&
+    html.includes("<h3>本地通道</h3>") &&
+    html.indexOf('id="napcatCard"') < html.indexOf('id="officialCard"') &&
+    html.indexOf('id="officialCard"') < html.indexOf('id="feishuCard"') &&
+    html.indexOf('id="feishuCard"') < html.indexOf('id="localCard"') &&
+    html.indexOf('id="localCard"') < html.indexOf('id="platformPoliciesCard"')
+);
+
+check(
+  "JS：支持大类字典定义与分组聚合",
+  js.includes("CATEGORIES =") && js.includes('"channel"') && js.includes('"multimedia"') && js.includes('"other"')
+);
+check(
+  "JS：包含移动端大类胶囊栏生成与手风琴树生成",
+  js.includes("section-cat-bar") && js.includes("section-cat-header") && js.includes("section-tree")
+);
+check(
+  "CSS：两级分类导航关键样式定义完整",
+  /\.section-cat-bar\s*\{/.test(css) &&
+    /\.section-cat-tab\s*\{/.test(css) &&
+    /\.section-tree\s*\{/.test(css) &&
+    /\.section-cat-header\s*\{/.test(css) &&
+    /\.section-cat-arrow\s*\{/.test(css)
+);
+
+/* ─────────── 1b2-3) 回复节奏卡片迁移与动作过滤 ─────────── */
+
+console.log("\n▶ 静态：人设与发言控制归并【回复节奏】+ 动作过滤开关");
+
+check(
+  "回复节奏卡片包含机器人人设档案与发言控制",
+  html.includes('id="replyRhythmCard"') &&
+    html.indexOf('id="replyRhythmCard"') < html.indexOf('id="setPersona"') &&
+    html.indexOf('id="setPersona"') < html.indexOf('id="stickerSettingsCard"')
+);
+check(
+  "回复节奏卡片包含禁止动作描写开关 #setFilterActionNarration",
+  html.includes('id="setFilterActionNarration"') &&
+    html.indexOf('id="replyRhythmCard"') < html.indexOf('id="setFilterActionNarration"') &&
+    html.indexOf('id="setFilterActionNarration"') < html.indexOf('id="stickerSettingsCard"')
+);
+check(
+  "回复节奏卡片包含氛围感知与疲劳阻尼开关 #setEnableAtmosphereDamping",
+  html.includes('id="setEnableAtmosphereDamping"') &&
+    html.indexOf('id="replyRhythmCard"') < html.indexOf('id="setEnableAtmosphereDamping"') &&
+    html.indexOf('id="setEnableAtmosphereDamping"') < html.indexOf('id="stickerSettingsCard"')
+);
+check(
+  "模型卡片已移除人设、欲望与步进控件，职责纯粹",
+  html.indexOf('id="modelSettingsCard"') < html.indexOf('id="setFastReply"') &&
+    !(html.indexOf('id="modelSettingsCard"') < html.indexOf('id="setPersona"') &&
+      html.indexOf('id="setPersona"') < html.indexOf('id="napcatCard"'))
+);
+check(
+  "设置页包含群聊黑话与俚语卡片 #jargonCard 且挂载在 chat 分类",
+  html.includes('id="jargonCard"') &&
+    html.includes('data-category="chat"') &&
+    html.includes('id="btnRefreshJargons"') &&
+    html.includes('id="btnAddJargon"')
 );
 
 /* ─────────── 1b3) 可读性：不把字堆成一团 ─────────── */
@@ -389,10 +465,23 @@ function makeEl(id, tag = "div") {
     },
     removeEventListener() {},
     appendChild(c) { this.children.push(c); return c; },
+    append(...nodes) { this.children.push(...nodes); },
     insertBefore(c) { this.children.unshift(c); return c; },
-    replaceChildren() { this.children = []; },
+    replaceChildren(...nodes) { this.children = [...nodes]; },
     querySelector: () => makeEl(id + ":child"),
-    querySelectorAll: () => [],
+    querySelectorAll(selector) {
+      const matches = [];
+      const match = (node) => selector === ".platform-policy-row"
+        ? node.className === "platform-policy-row"
+        : selector === "[data-feature]"
+          ? node.dataset?.feature !== undefined
+          : selector === "[data-policy]"
+            ? node.dataset?.policy !== undefined
+            : false;
+      const walk = (nodes) => { for (const node of nodes) { if (match(node)) matches.push(node); walk(node.children || []); } };
+      walk(this.children);
+      return matches;
+    },
     focus() {},
     remove() {},
     closest: () => null,
@@ -429,6 +518,7 @@ const document = {
     return sel === ".navitem" ? navItems : navItems.concat(mtabItems);
   },
   createElement: (t) => makeEl("created", t),
+  createTextNode: (text) => Object.assign(makeEl("text", "span"), { textContent: text }),
   createDocumentFragment: () => makeEl("frag"),
   hidden: false,
   addEventListener(type, fn) { if (type === "DOMContentLoaded") domReady.push(fn); },
@@ -480,7 +570,9 @@ const RUNTIME = {
   agentServerDocker: false,
   // 白名单拆成两份（群聊/私聊），旧字段还留着做兼容：这里故意只填群聊那份，看回落提示
   messageWhitelist: "10001", whitelistGroups: "10001,20002", whitelistPrivates: "",
-  whitelistGroupsFromLegacy: false, whitelistPrivatesFromLegacy: true
+  whitelistGroupsFromLegacy: false, whitelistPrivatesFromLegacy: true,
+  platformPolicies: [{ PlatformId: "feishu", AccountScope: "default", Enabled: true, ChatEnabled: true,
+    GroupWhitelist: "synthetic-group", PrivateWhitelist: "synthetic-user", FeatureOverrides: { music: false }, AllowedActions: [] }]
 };
 const ENV = {
   modelBaseUrl: "http://x/v1", modelBaseUrlSource: "env",
@@ -560,6 +652,13 @@ const fetchStub = async (url, opts) => {
   } else if (target.includes("/api/agent/test")) {
     if (agentRunDelayMs) await new Promise((r) => setTimeout(r, agentRunDelayMs));
     payload = { ok: true, id: "run-synthetic", text: "<synthetic-result>", durationMs: 42, toolCalls: 1, target: "server" };
+  } else if (target.includes("/api/platforms")) {
+    payload = { platforms: [
+      { platformId: "feishu", accountScope: "default", displayName: "Synthetic Feishu", enabled: true, effectiveEnabled: true, chatEnabled: true, connected: true,
+        capabilities: { supportsText: true, supportsVoice: false, supportsMusic: false, supportsStickers: false, supportsPoke: false } },
+      { platformId: "qq.private", accountScope: "legacy", displayName: "Synthetic QQ", enabled: true, effectiveEnabled: true, chatEnabled: true, connected: true,
+        capabilities: { supportsText: true, supportsVoice: true, supportsMusic: true, supportsStickers: true, supportsPoke: true } }
+    ], feishu: { enabled: true, configured: true, loaded: true, effectiveEnabled: true } };
   } else if (target.includes("/api/settings")) {
     if (method === "POST" && settingsDelayMs) await new Promise((r) => setTimeout(r, settingsDelayMs));
     if (method === "POST" && opts && opts.body) {
@@ -757,8 +856,56 @@ check("★ 默认提示词由服务端下发（前端不抄一份，免得两处
 check("★ 改名输入框填真名（nameRaw）：脱敏开启时拿占位符去改名会把「群友A」写回去",
   js.includes("old.nameRaw || old.name"));
 check("★ 会话/聊天都带序号（面板的顺序 = 群里 //sessions 的顺序，//use 序号能对上）",
-  js.includes("${i + 1}) ") && js.includes("#${i + 1}") && js.includes("${i + 1}. ${c.name || k}"),
+  js.includes("${i + 1}) ") && js.includes("#${i + 1}") && js.includes("${i + 1}. ${escapeHtml(c.name || k)}"),
   "没序号的话，面板上看到第几个、群里 //use 第几个就对不上");
+const agentSessionsRenderer = js.slice(js.indexOf("async function refreshAgentSessions"), js.indexOf('$("agentSessionRefresh")'));
+const piSessionRenderer = js.slice(js.indexOf('$("agentSessionImport")'), js.indexOf('$("agentSessionNew")'));
+check("★ Agent 会话渲染统一转义接口/桥返回的文本和属性字段",
+  agentSessionsRenderer.includes("escapeHtml(c.name || k)") &&
+  agentSessionsRenderer.includes("escapeHtml(x.name)") &&
+  agentSessionsRenderer.includes("escapeHtml(r.prompt || \"\")") &&
+  agentSessionsRenderer.includes("escapeHtml(r.result)") &&
+  agentSessionsRenderer.includes('data-sess-use="${escapeHtml(x.id)}"') &&
+  piSessionRenderer.includes("escapeHtml((it.title || \"(无标题)\")") &&
+  piSessionRenderer.includes('data-pi-import="${escapeHtml(it.id || \"\")}"'),
+  "会话标题、prompt/result、pi 标题或动作属性缺少 escapeHtml");
+
+// Behavioural selector regression; real HTML parsing/XSS acceptance lives in the native-browser fixture.
+{
+  const ids = ['quote"\'<>[]:#\\ &', 'slash\\41 [id]#.:>+~*', 'x"], [data-sess-runs-box="other'];
+  const boxes = ids.map((id) => ({ dataset: { sessRunsBox: id }, style: { display: "none" } }));
+  const buttons = ids.map((id) => ({ dataset: { sessRuns: id }, addEventListener: (_event, fn) => { handlers.set(id, fn); } }));
+  const handlers = new Map();
+  const noopNode = { addEventListener() {} };
+  const table = {
+    innerHTML: "",
+    querySelector() { throw new Error("Dataset IDs must not be interpolated into a CSS selector"); },
+    querySelectorAll(selector) {
+      if (selector === "[data-sess-runs]") return buttons;
+      if (selector === "[data-sess-runs-box]") return boxes;
+      return [];
+    }
+  };
+  const select = { ...noopNode, value: "synthetic-chat", innerHTML: "" };
+  const context = {
+    $: (id) => id === "agentSessionTable" ? table : id === "agentSessionChat" ? select : noopNode,
+    withToken: (value) => value, authHeaders: (headers) => headers,
+    fetch: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ chats: { "synthetic-chat": { sessions: ids.map((id) => ({ id, name: "synthetic" })) } } }) })
+  };
+  vm.createContext(context);
+  vm.runInContext(extractSessionSource(js), context, { filename: "extracted-session-source.js" });
+  await vm.runInContext("refreshAgentSessions()", context);
+  for (let i = 0; i < ids.length; i++) {
+    let error = null;
+    try {
+      handlers.get(ids[i])();
+      check(`★ hostile ID ${i} expands only its exact session`, boxes.every((box, j) => box.style.display === (j === i ? "" : "none")));
+      handlers.get(ids[i])();
+      check(`★ hostile ID ${i} collapses its exact session`, boxes.every((box) => box.style.display === "none"));
+    } catch (e) { error = e.message; }
+    check(`★ hostile ID ${i} expansion does not build a dynamic CSS selector`, error === null, error);
+  }
+}
 
 // ─────────── 服务器健康日报（定时私聊推送）───────────
 check("面板有健康日报卡片（开关 / 时刻 / 收件人 / 预览 / 立即发 / 状态提示）",
@@ -848,15 +995,21 @@ check(
 
 if (saveCall) {
   const payload = JSON.parse(saveCall.body);
-  // 设备表 agentDevices 是**额外**字段（不在 DOM-id 那套里），不算进“表单字段数”。
-  const declaredKeys = Object.keys(payload).filter((k) => k !== "agentDevices");
-  check("payload 字段数与表单一致（设备表算额外字段）", declaredKeys.length === saveFields.length,
+  // 设备表与平台策略是各自有契约的附加字段，不在旧的 DOM-id 表单字段集合中。
+  const declaredKeys = Object.keys(payload).filter((k) => k !== "agentDevices" && k !== "platformPolicies");
+  check("payload 字段数与表单一致（设备表与平台策略单独校验）", declaredKeys.length === saveFields.length,
     `${declaredKeys.length} vs ${saveFields.length}`);
+  const feishuPolicy = payload.platformPolicies?.find((p) => p.PlatformId === "feishu" && p.AccountScope === "default");
+  check("平台策略表单保存实例开关、白名单和功能覆盖",
+    !!feishuPolicy && feishuPolicy.Enabled === true && feishuPolicy.ChatEnabled === true
+      && feishuPolicy.GroupWhitelist === "synthetic-group" && feishuPolicy.PrivateWhitelist === "synthetic-user"
+      && feishuPolicy.FeatureOverrides?.music === false,
+    JSON.stringify(feishuPolicy));
 
   // 核心不变式：**什么都不改直接保存，payload 必须与服务端当前值完全一致**。
   // 一旦有字段没被回填，它就会以 0/空/false 发回来 → 服务端把它压到最小值
   // （白名单被清空则直接进入严格模式并删光会话）。
-  const drifted = Object.entries(payload).filter(([k, v]) => RUNTIME[k] !== undefined && v !== RUNTIME[k]);
+  const drifted = Object.entries(payload).filter(([k, v]) => k !== "platformPolicies" && RUNTIME[k] !== undefined && v !== RUNTIME[k]);
   check(
     "★ 不改动直接保存，payload 与服务端值完全一致（没被空值污染）",
     drifted.length === 0,
@@ -1780,6 +1933,10 @@ check("★ app.js 回填它（loadSettings 与 saveSettings 字段集合必须�
   js.includes('$("setMaxAgentSteps").value = r.maxAgentSteps') &&
   js.includes("maxAgentSteps: Number("));
 
+check("★ 拖动步进滑块时同步更新数值徽标",
+  js.includes('$("setMaxAgentSteps").addEventListener("input"') &&
+  js.includes('$("agentStepsVal").textContent = e.target.value'));
+
 const beforeStepSave = calls.length;
 await sandbox.probe.saveSettings();
 check("★ 保存请求带 maxAgentSteps（回填的是 1，发出去的也是 1）",
@@ -1791,6 +1948,72 @@ check("★ 保存请求带 maxAgentSteps（回填的是 1，发出去的也是 1
     const sent = calls.slice(beforeStepSave).filter((c) => String(c.url).includes("/api/settings") && c.method === "POST").pop();
     return sent ? "最后一次保存：" + sent.body : "没有保存请求";
   })());
+/* ─────────── S) 交互演练场（阶段一 §3.1） ─────────── */
+
+console.log("\n▶ 交互演练场（阶段一 §3.1）：playground.html 静态与结构完整性");
+
+const playgroundPath = path.join(root, "playground.html");
+check("playground.html 存在", fs.existsSync(playgroundPath));
+const pgHtml = fs.readFileSync(playgroundPath, "utf8");
+const pgScript = pgHtml.slice(pgHtml.indexOf("<script>") + 8, pgHtml.lastIndexOf("</script>"));
+
+check("★ playground.html 脚本区没有裸中文标识符",
+  !/[^\x00-\x7F]/.test(codeOnly(pgScript)),
+  "去注释与去字符串视图应无中文标识符");
+
+check("包含预设场景选择（技术交流群 / 资料讨论群 / 生活兴趣群）",
+  pgHtml.includes('id="sceneSelect"') &&
+  pgHtml.includes("技术交流群") &&
+  pgHtml.includes("资料讨论群") &&
+  pgHtml.includes("生活兴趣群"));
+
+check("包含三种触发模式模拟（普通文字 / @ 机器人 / 模拟引用回复）",
+  pgHtml.includes('name="triggerMode"') &&
+  pgHtml.includes('value="plain"') &&
+  pgHtml.includes('value="mention"') &&
+  pgHtml.includes('value="quote"'));
+
+check("包含六步治理节点时间轴契约（参与判断 / 上下文 / 模型 / 闸门 / 工具 / 净化）",
+  pgHtml.includes('"Participation"') &&
+  pgHtml.includes('"Context"') &&
+  pgHtml.includes('"Model"') &&
+  pgHtml.includes('"Gate"') &&
+  pgHtml.includes('"ToolExec"') &&
+  pgHtml.includes('"Outbound"'));
+
+check("包含人工审批卡片与批准/拒绝操作入口",
+  pgHtml.includes('id="approvalSection"') &&
+  pgHtml.includes('id="approveBtn"') &&
+  pgHtml.includes('id="rejectBtn"'));
+
+/* ─────────── 每日 Token 配额多平台划分（按平台与显现其它平台） ─────────── */
+
+console.log("\n▶ 每日 Token 配额：多平台划分与显现");
+
+check("quotaCard 包含全平台划分切换栏 #quotaChanTabs",
+  html.includes('id="quotaChanTabs"') &&
+  html.includes('id="quotaTabAll"') &&
+  html.includes('id="quotaTabPrivate"') &&
+  html.includes('id="quotaTabOfficial"') &&
+  html.includes('id="quotaTabFeishu"') &&
+  html.includes('id="quotaTabLocal"'));
+
+check("quotaCard 包含各平台会话计数徽标",
+  html.includes('id="quotaCountAll"') &&
+  html.includes('id="quotaCountPrivate"') &&
+  html.includes('id="quotaCountOfficial"') &&
+  html.includes('id="quotaCountFeishu"') &&
+  html.includes('id="quotaCountLocal"'));
+
+check("quotaCard 包含所属平台指示卡 #quotaPlatform",
+  html.includes('id="quotaPlatform"'));
+
+check("app.js 实现配额按平台分组与筛选逻辑",
+  js.includes("getQuotaChannelName") &&
+  js.includes("updateQuotaChannelCounts") &&
+  js.includes("quotaChanTabs") &&
+  js.includes("optgroup"));
+
 console.log("");
 if (failures.length === 0) {
   console.log(`通过 ${pass}，失败 0`);

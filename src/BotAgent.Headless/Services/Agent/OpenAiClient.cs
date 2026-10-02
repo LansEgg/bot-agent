@@ -7,9 +7,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using BotAgent.Domain.Conversation;
 using BotAgent.Domain.Reply;
+using BotAgent.Domain.Atmosphere;
 using BotAgent.Services.Model;
 using BotAgent.Domain.Model;
 using BotAgent.Domain.Ports;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.Agent;
 
@@ -67,7 +69,10 @@ public sealed class OpenAiClient : IModelClient
     private readonly SettingsBox _box;
 
     public OpenAiClient(
-        SettingsBox box, IHttpFetcher auxHttp, IHttpFetcher chatHttp, IImageDownloader images, IModelTransport transport)
+        SettingsBox box, IHttpFetcher auxHttp, IHttpFetcher chatHttp, IImageDownloader images, IModelTransport transport,
+        ProviderFailoverRunner? providerFailover = null,
+        IReadOnlyDictionary<string, ModelProviderRoute>? providerRoutes = null,
+        Func<string, ModelProviderRoute?>? providerRouteResolver = null)
     {
         _box = box;
         _auxHttp = auxHttp;
@@ -75,13 +80,27 @@ public sealed class OpenAiClient : IModelClient
         _imageDownloader = images;
         ChatTimeout = chatHttp.Timeout;
         _transport = transport;
+        _providerFailover = providerFailover;
+        _providerRoutes = providerRoutes ?? new Dictionary<string, ModelProviderRoute>(StringComparer.Ordinal);
+        _providerRouteResolver = providerRouteResolver;
     }
 
     /// <summary>出网那一层（请求体组装 / 发送 / 三条兜底重试），见 <see cref="ModelTransport" />。</summary>
     private readonly IModelTransport _transport;
+    private readonly ProviderFailoverRunner? _providerFailover;
+    private readonly IReadOnlyDictionary<string, ModelProviderRoute> _providerRoutes;
+    private readonly Func<string, ModelProviderRoute?>? _providerRouteResolver;
 
     /// <summary>聊天那次请求的超时（面板/日志要如实显示；值来自装配点那个出网客户端）。</summary>
     public TimeSpan ChatTimeout { get; }
+
+    /// <summary>当前 Provider L1 熔断器状态快照（只读无敏感凭据）。</summary>
+    public IReadOnlyList<Domain.Ops.CircuitStatusSnapshot> CircuitSnapshots
+        => _providerFailover is null
+            ? Array.Empty<Domain.Ops.CircuitStatusSnapshot>()
+            : _providerFailover.Snapshots()
+                .Select(s => new Domain.Ops.CircuitStatusSnapshot("model", s.ProviderId, s.State.ToString().ToLowerInvariant()))
+                .ToArray();
 
     /// <summary>本机登录的机器人 QQ 号（注入模型上下文，帮助理解 @ 与身份）。</summary>
     public string? BotIdentity { get; set; }
@@ -119,15 +138,15 @@ public sealed class OpenAiClient : IModelClient
 
     public async Task<CompletionResult> CompleteAsync(IReadOnlyList<ChatMessage> context, string? profilesText = null, CancellationToken ct = default,
         IReadOnlyList<StickerChoice>? stickers = null, bool pokeContext = false, string? moodText = null, string? musicText = null, string? linkText = null, bool enableListen = false, bool enableVoice = false, string? recallText = null, bool enableWebSearch = false, string? searchText = null, string? groupRolesText = null, string? vibeHint = null, bool proactive = false,
-        bool enableAsk = false, bool enableToolRequest = false, string? toolList = null)
+        bool enableAsk = false, bool enableToolRequest = false, string? toolList = null, Domain.Reply.SamplingProfile? sampling = null)
     {
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+        if (_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey))
         {
             throw new InvalidOperationException("未配置 API Key");
         }
 
-        if (_settings.ApiKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            _settings.ApiKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        if (_providerFailover is null && (_settings.ApiKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            _settings.ApiKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException("API Key 填成了 URL，请填入密钥 token（设置页「Agent 大脑」）");
         }
@@ -147,13 +166,25 @@ public sealed class OpenAiClient : IModelClient
                   .TakeLast(16)
                   .Select(m => m.QqMessageId!.Value));
 
+        // 结合 MaiBot 启发式氛围感知模型：计算连续发言疲劳阻尼与群聊活跃度动态意愿（可通过设置项关闭）
+        var effectiveDesire = AiDesire;
+        if (_settings.EnableAtmosphereDamping)
+        {
+            var atmosphere = ChatAtmosphere.Analyze(window, Clock.Now);
+            effectiveDesire = ChatAtmosphere.CalculateEffectiveDesire(
+                AiDesire,
+                atmosphere.ConsecutiveBotReplies,
+                atmosphere.SecondsSinceLastBotReply,
+                atmosphere.Activity);
+        }
+
         // 系统提示词整块在 PromptBuilder（纯字符串拼装，顺序即语义）；这里只负责"把素材交出去"。
         // 用具名实参：这条调用有 25 个参数，位置写法一旦排错就会把"开关"喂成"阈值"（编译过的错才会被抓到）。
         var systemContent = PromptBuilder.Build(new PromptBuilder.PromptRequest(
             SystemPrompt: SystemPrompt,
             BotIdentity: BotIdentity,
             Persona: BotPersona,
-            AiDesire: AiDesire,
+            AiDesire: effectiveDesire,
             Window: window,
             QuotableIds: quotableIds,
             ProfilesText: profilesText,
@@ -175,9 +206,10 @@ public sealed class OpenAiClient : IModelClient
             EnableWebSearch: enableWebSearch,
             EnableAsk: enableAsk,
             EnableToolRequest: enableToolRequest,
+            FilterActionNarration: _settings.FilterActionNarration,
             ToolList: toolList));
         // 请求体（含多模态图片）与发送都在 ModelTransport：这里只管"说什么"与"回来的怎么判"
-        var built = await _transport.BuildAsync(window, systemContent, quotableIds, ct);
+        var built = await _transport.BuildAsync(window, systemContent, quotableIds, ct, sampling: sampling);
 
         // 上游偶尔会回 200 但**没有 choices**。实测三种情形：
         //   a) 慢的 `-high` 模型“思考”把预算吃光（17:55-18:01 连报 21 次）
@@ -186,7 +218,14 @@ public sealed class OpenAiClient : IModelClient
         // 以前直接 `choices[0]` → IndexOutOfRangeException，被记成“模型请求失败”：一条消息就这么没了。
         // 之后改成“按沉默处理”，但**一条都不重试**：明明多半是上游吞了，却白丢一轮回复。
         // 现在由 ModelTransport 分两步兜：① 空 choices 重试一次；② 带图两轮都空 → 去掉图片再试一次。
-        var (json, textOnlyRetry) = await _transport.SendAsync(built.Payload, built.AttachedImages, built.AttachedImageIds, ct);
+        var outcome = await SendThroughProvidersAsync(built, ct);
+        if (outcome is null)
+        {
+            return new CompletionResult(null, null, null, ReasonCode: "provider_unavailable", Malformed: true, UpstreamEmpty: true);
+        }
+
+        var (json, textOnlyRetry, fallbackHops) = outcome.Value;
+        var (promptTokens, completionTokens) = ModelJson.ReadUsage(json);
 
         using var doc = JsonDocument.Parse(json);
 
@@ -194,7 +233,8 @@ public sealed class OpenAiClient : IModelClient
         {
             Services.FileLog.Write("Agent",
                 $"上游连续两次都没给 choices（带图 {built.AttachedImages} 张）→ 本轮按沉默处理：{Truncate(json, 200)}");
-            return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true);
+            return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true,
+                PromptTokens: promptTokens, CompletionTokens: completionTokens, FallbackHops: fallbackHops);
         }
 
         if (textOnlyRetry)
@@ -217,12 +257,68 @@ public sealed class OpenAiClient : IModelClient
             // 判定用的开关取**调用方传进来的快照**，不再读实时设置 —— 否则配置热更新会改到在途请求（V3 §5.3）
             var parsed = ModelOutputParser.Parse(rawReply, questionsEnabled: enableAsk);
             LogParseNotices(parsed.Notices);
-            return parsed.Result;
+            return parsed.Result with
+            {
+                PromptTokens = promptTokens,
+                CompletionTokens = completionTokens,
+                FallbackHops = fallbackHops
+            };
         }
 
         // 有 choices 但里面没有 message.content：同样按沉默处理，不招异常
         Services.FileLog.Write("Agent", $"模型返回里没有 message.content → 本轮按沉默处理：{Truncate(json, 200)}");
-        return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true);
+        return new CompletionResult(null, null, null, ReasonCode: "upstream_empty", Malformed: true, UpstreamEmpty: true,
+            PromptTokens: promptTokens, CompletionTokens: completionTokens, FallbackHops: fallbackHops);
+    }
+private async Task<SendOutcome?> SendThroughProvidersAsync(BuiltRequest built, CancellationToken ct)
+    {
+        if (_providerFailover is null)
+        {
+            return await _transport.SendAsync(built.Payload, built.AttachedImages, built.AttachedImageIds, ct)
+                .ConfigureAwait(false);
+        }
+
+        var result = await _providerFailover.RunAsync(async (candidate, token) =>
+        {
+            var route = _providerRouteResolver?.Invoke(candidate.Id);
+            if (route is null && !_providerRoutes.TryGetValue(candidate.Id, out route))
+            {
+                return ProviderCallResult<SendOutcome>.Failure("provider_secret_unavailable", hardFailure: false);
+            }
+
+            // 快速回复模型是请求级开关；未启用时使用注册表中每个 Provider 自己的模型名。
+            var requestedModel = built.Payload["model"]?.GetValue<string>();
+            var model = string.Equals(_settings.ReplyModel, _settings.Model, StringComparison.Ordinal)
+                ? route.ModelName
+                : requestedModel ?? route.ModelName;
+            var effectiveRoute = route with { ModelName = model };
+            var outcome = await _transport.SendAsync(
+                built.Payload, built.AttachedImages, built.AttachedImageIds, effectiveRoute, token)
+                .ConfigureAwait(false);
+
+            // 空 choices 不是成功响应：让 L1 继续尝试下一 Provider，同时仍保留最终安全静默。
+            return ModelJson.HasChoices(outcome.Json)
+                ? ProviderCallResult<SendOutcome>.Success(outcome)
+                : ProviderCallResult<SendOutcome>.Failure("upstream_empty", hardFailure: true);
+        }, ct).ConfigureAwait(false);
+
+        if (!result.Succeeded)
+        {
+            FileLog.Warn("Agent", $"Provider 调用不可用，进入安全静默（reason={result.ReasonCode}，hops={result.FallbackHops}）");
+            if (string.Equals(result.ReasonCode, "upstream_empty", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            throw new HttpRequestException($"Provider 调用不可用（reason={result.ReasonCode}）");
+        }
+
+        if (result.FallbackHops > 0)
+        {
+            FileLog.Write("Agent", $"Provider 已故障转移（hops={result.FallbackHops}，provider={result.ProviderId}）");
+        }
+
+        return result.Value with { FallbackHops = result.FallbackHops };
     }
     private readonly List<long> _imageFilterSuspectOrder = new();
 
@@ -249,9 +345,46 @@ public sealed class OpenAiClient : IModelClient
         CancellationToken ct = default,
         string? baseUrlOverride = null,
         string? apiKeyOverride = null)
-        => CompleteChatCoreAsync(model, systemPrompt, messages, maxTokens, temperature,
+        => CompleteChatWithProviderFailoverAsync(model, systemPrompt, messages, maxTokens, temperature,
             null, ct, baseUrlOverride, apiKeyOverride);
 
+    private async Task<string?> CompleteChatWithProviderFailoverAsync(
+        string model,
+        string systemPrompt,
+        IReadOnlyList<(string Role, string Text)> messages,
+        int maxTokens,
+        double temperature,
+        string? reasoningEffort,
+        CancellationToken ct,
+        string? baseUrlOverride,
+        string? apiKeyOverride)
+    {
+        // 显式覆盖用于测试/指定上游时保持原语义，不把它误当注册表 Provider。
+        if (_providerFailover is null || !string.IsNullOrWhiteSpace(baseUrlOverride) || !string.IsNullOrWhiteSpace(apiKeyOverride))
+        {
+            return await CompleteChatCoreAsync(model, systemPrompt, messages, maxTokens, temperature,
+                reasoningEffort, ct, baseUrlOverride, apiKeyOverride).ConfigureAwait(false);
+        }
+
+        var result = await _providerFailover.RunAsync(async (candidate, token) =>
+        {
+            var route = _providerRouteResolver?.Invoke(candidate.Id);
+            if (route is null && !_providerRoutes.TryGetValue(candidate.Id, out route))
+            {
+                return ProviderCallResult<string>.Failure("provider_route_unavailable", hardFailure: false);
+            }
+
+            var routedModel = string.IsNullOrWhiteSpace(route.ModelName) ? model : route.ModelName;
+            var response = await CompleteChatCoreAsync(
+                routedModel, systemPrompt, messages, maxTokens, temperature,
+                reasoningEffort, token, route.BaseUrl, route.ApiKey).ConfigureAwait(false);
+            return response is null
+                ? ProviderCallResult<string>.Failure("chat_completion_failed", hardFailure: true)
+                : ProviderCallResult<string>.Success(response);
+        }, ct).ConfigureAwait(false);
+
+        return result.Succeeded ? result.Value : null;
+    }
     private async Task<string?> CompleteChatCoreAsync(
         string model,
         string systemPrompt,
@@ -367,7 +500,7 @@ public sealed class OpenAiClient : IModelClient
         CancellationToken ct = default,
         string? baseUrlOverride = null,
         string? apiKeyOverride = null)
-        => CompleteChatCoreAsync(model, systemPrompt, messages, maxTokens, temperature,
+        => CompleteChatWithProviderFailoverAsync(model, systemPrompt, messages, maxTokens, temperature,
             reasoningEffort, ct, baseUrlOverride, apiKeyOverride);
 
     private static bool LooksLikeUnsupportedReasoning(string body)
@@ -376,7 +509,7 @@ public sealed class OpenAiClient : IModelClient
     public async Task<(List<string> Delete, string? Reason)> CurateStickersAsync(string libraryTable, int maxDelete, CancellationToken ct = default)
     {
         var empty = (new List<string>(), (string?)null);
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey) || string.IsNullOrWhiteSpace(libraryTable) || maxDelete <= 0)
+        if ((_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey)) || string.IsNullOrWhiteSpace(libraryTable) || maxDelete <= 0)
         {
             return empty;
         }
@@ -404,19 +537,12 @@ public sealed class OpenAiClient : IModelClient
                 ["temperature"] = 0.2
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
-            {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-            using var response = await _auxHttp.SendAsync(request, ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+            if (json is null)
             {
                 return empty;
             }
 
-            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var raw = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
             return ParseCuration(raw, maxDelete);
@@ -434,6 +560,66 @@ public sealed class OpenAiClient : IModelClient
         {
             _stickerGate.Release();
         }
+    }
+
+    private async Task<string?> SendAuxPayloadAsync(JsonObject payload, CancellationToken ct, bool keepRequestedModel = false)
+    {
+        if (_providerFailover is null)
+        {
+            if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+            {
+                return null;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+            {
+                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
+
+            using var response = await _auxHttp.SendAsync(request, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return ModelJson.HasChoices(json) ? json : null;
+        }
+
+        var result = await _providerFailover.RunAsync(async (candidate, token) =>
+        {
+            var route = _providerRouteResolver?.Invoke(candidate.Id);
+            if (route is null && !_providerRoutes.TryGetValue(candidate.Id, out route))
+            {
+                return ProviderCallResult<string>.Failure("provider_route_unavailable", hardFailure: false);
+            }
+
+            var cloned = JsonNode.Parse(payload.ToJsonString())!.AsObject();
+            if (!keepRequestedModel && !string.IsNullOrWhiteSpace(route.ModelName))
+            {
+                cloned["model"] = route.ModelName;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(route.BaseUrl))
+            {
+                Content = new StringContent(cloned.ToJsonString(), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", route.ApiKey.Trim());
+
+            using var response = await _auxHttp.SendAsync(request, token).ConfigureAwait(false);
+            var json = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+            var code = (int)response.StatusCode;
+            if (!response.IsSuccessStatusCode || !ModelJson.HasChoices(json))
+            {
+                var hard = code >= 500 || code == 429 || !ModelJson.HasChoices(json);
+                return ProviderCallResult<string>.Failure($"aux_http_{code}", hardFailure: hard);
+            }
+
+            return ProviderCallResult<string>.Success(json);
+        }, ct).ConfigureAwait(false);
+
+        return result.Succeeded ? result.Value : null;
     }
 
     /// <summary>解析巡检结果（只收合法 id，并强制不得超过上限）。</summary>
@@ -504,7 +690,7 @@ public sealed class OpenAiClient : IModelClient
     /// </summary>
     public async Task<(string? Desc, List<string>? Tags, bool? IsSticker)> DescribeStickerAsync(byte[] image, string mime, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_settings.ApiKey) || image.Length == 0)
+        if ((_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey)) || image.Length == 0)
         {
             return (null, null, null);
         }
@@ -543,19 +729,12 @@ public sealed class OpenAiClient : IModelClient
                 ["temperature"] = 0.2
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
-            {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-            using var response = await _auxHttp.SendAsync(request, ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+            if (json is null)
             {
                 return (null, null, null);
             }
 
-            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var raw = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
             return ParseStickerDescription(raw);
@@ -637,7 +816,7 @@ public sealed class OpenAiClient : IModelClient
     /// </summary>
     public async Task<string?> SummarizeSessionTitleAsync(string digest, string? previousTitle, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(digest) || string.IsNullOrWhiteSpace(_settings.ApiKey))
+        if (string.IsNullOrWhiteSpace(digest) || (_providerFailover is null && string.IsNullOrWhiteSpace(_settings.ApiKey)))
         {
             return null;
         }
@@ -667,17 +846,10 @@ public sealed class OpenAiClient : IModelClient
                 ["temperature"] = 0.2
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+            var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+            if (json is null)
             {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-            using var response = await _auxHttp.SendAsync(request, ct);
-            var json = await response.Content.ReadAsStringAsync(ct);
-            if (!response.IsSuccessStatusCode || !ModelJson.HasChoices(json))
-            {
-                Services.FileLog.Warn("Agent", $"[会话标题] 没拿到标题（HTTP {(int)response.StatusCode}），本次不改名");
+                Services.FileLog.Warn("Agent", "[会话标题] 没拿到标题，本次不改名");
                 return null;
             }
 
@@ -776,20 +948,12 @@ public sealed class OpenAiClient : IModelClient
             ["temperature"] = 0.3
         };
 
-        var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+        var json = await SendAuxPayloadAsync(payload, ct).ConfigureAwait(false);
+        if (json is null)
         {
-            Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-
-        using var response = await _auxHttp.SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var detail = await response.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"画像摘要返回 {(int)response.StatusCode}：{Truncate(detail, 200)}");
+            return null;
         }
 
-        var json = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(json);
         var contentNode = doc.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content");
         var text = contentNode.ValueKind == JsonValueKind.Array
@@ -887,16 +1051,10 @@ public sealed class OpenAiClient : IModelClient
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl())
+            var body = await SendAuxPayloadAsync(payload, ct, keepRequestedModel: true).ConfigureAwait(false);
+            if (body is null)
             {
-                Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey.Trim());
-            using var response = await _auxHttp.SendAsync(request, ct);
-            var body = await response.Content.ReadAsStringAsync(ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                Services.FileLog.Warn("Agent", $"[Music] 音频识别模型 {model} 返回 {(int)response.StatusCode}：{Truncate(body, 160)}");
+                Services.FileLog.Warn("Agent", $"[Music] 音频识别模型 {model} 未返回有效响应");
                 return null;
             }
 

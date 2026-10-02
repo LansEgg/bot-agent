@@ -139,7 +139,7 @@ public sealed class OfficialBotGateway : IQqChatSource, IDisposable
     // ═══════════════════ 发送 ═══════════════════
 
     /// <summary>发文本。优先当**被动回复**（带上刚收到的 msg_id，能引用上下文），失败就退化成主动消息。</summary>
-    public async Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null)
+    public async Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null, bool directAddress = false)
     {
         var openId = _ids.OriginalOf(targetId);
         if (string.IsNullOrEmpty(openId))
@@ -206,7 +206,7 @@ public sealed class OfficialBotGateway : IQqChatSource, IDisposable
         var site = platform is "163" or "netease" or "" ? "网易云音乐" : platform;
         var name = string.IsNullOrWhiteSpace(title) ? $"（id {songId}）" : $"《{title}》";
         var text = $"🎵 {site}：{name}\n（官方通道发不了可点开的音乐卡片，去 {site} 搜一下就能听～）";
-        var sent = await SendTextAsync(isGroup, targetId, text, ct).ConfigureAwait(false);
+        var sent = await SendTextAsync(isGroup, targetId, text, ct, directAddress: false).ConfigureAwait(false);
         Log(sent.Ok
             ? $"官方通道音乐已降级为文字：{name}（官方无卡片、链接需报备）"
             : $"官方通道音乐降级文字也发送失败（messageId={sent.MessageId}）");

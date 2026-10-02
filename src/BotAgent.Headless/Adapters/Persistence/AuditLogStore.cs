@@ -10,11 +10,24 @@ namespace BotAgent.Adapters.Persistence;
 public sealed class AuditLogStore : IAuditChain
 {
     private const string EmptyHash = "";
-    private readonly object _gate = new();
 
     public void Append(AuditEvent auditEvent)
     {
         ArgumentNullException.ThrowIfNull(auditEvent);
+        // SQLite acquires the writer before reading the previous hash in both entry paths.
+        AppDatabase.Write(conn => AppendInternal(conn, auditEvent));
+    }
+
+    /// <summary>在已有 SQLite 事务内追加一条审计记录（保证与配置落盘处于同一事务边界）。</summary>
+    public void AppendInTransaction(Microsoft.Data.Sqlite.SqliteConnection conn, AuditEvent auditEvent)
+    {
+        ArgumentNullException.ThrowIfNull(conn);
+        ArgumentNullException.ThrowIfNull(auditEvent);
+        AppendInternal(conn, auditEvent);
+    }
+
+    private void AppendInternal(Microsoft.Data.Sqlite.SqliteConnection conn, AuditEvent auditEvent)
+    {
         var eventType = Require(auditEvent.EventType, nameof(auditEvent.EventType));
         var actorId = Require(auditEvent.ActorId, nameof(auditEvent.ActorId));
         var tenantId = Require(auditEvent.TenantId, nameof(auditEvent.TenantId));
@@ -22,22 +35,16 @@ public sealed class AuditLogStore : IAuditChain
         var policy = Require(auditEvent.PolicyVersion, nameof(auditEvent.PolicyVersion));
         var createdAt = Clock.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 
-        lock (_gate)
-        {
-            AppDatabase.Write(conn =>
-            {
-                var previous = ReadPreviousHash(conn) ?? EmptyHash;
-                var current = ComputeHash(eventType, actorId, tenantId, detail, policy, previous, createdAt);
-                AppDatabase.Exec(conn, """
-                    INSERT INTO security_audit_log
-                      (event_type, actor_id, tenant_id, action_detail, policy_version, prev_hash, curr_hash, created_at)
-                    VALUES ($eventType, $actorId, $tenantId, $detail, $policy, $previous, $current, $createdAt);
-                    """,
-                    ("$eventType", eventType), ("$actorId", actorId), ("$tenantId", tenantId),
-                    ("$detail", detail), ("$policy", policy), ("$previous", previous),
-                    ("$current", current), ("$createdAt", createdAt));
-            });
-        }
+        var previous = ReadPreviousHash(conn) ?? EmptyHash;
+        var current = ComputeHash(eventType, actorId, tenantId, detail, policy, previous, createdAt);
+        AppDatabase.Exec(conn, """
+            INSERT INTO security_audit_log
+              (event_type, actor_id, tenant_id, action_detail, policy_version, prev_hash, curr_hash, created_at)
+            VALUES ($eventType, $actorId, $tenantId, $detail, $policy, $previous, $current, $createdAt);
+            """,
+            ("$eventType", eventType), ("$actorId", actorId), ("$tenantId", tenantId),
+            ("$detail", detail), ("$policy", policy), ("$previous", previous),
+            ("$current", current), ("$createdAt", createdAt));
     }
 
     public AuditVerification Verify()

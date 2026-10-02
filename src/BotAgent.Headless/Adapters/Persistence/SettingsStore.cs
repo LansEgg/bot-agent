@@ -53,8 +53,15 @@ public sealed class SettingsStore : ISettingsRepository
         }
     }
 
-    public void Save(AppSettings settings)
+    public void Save(AppSettings settings) => Save(settings, null, null);
+
+    public void Save(AppSettings settings, BotAgent.Services.Ops.AuditEvent? auditEvent, BotAgent.Services.Ops.IAuditChain? auditChain)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (auditEvent is not null && auditChain is not AuditLogStore)
+        {
+            throw new InvalidOperationException("Settings audit requires the same SQLite transaction.");
+        }
         try
         {
             var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
@@ -69,14 +76,23 @@ public sealed class SettingsStore : ISettingsRepository
                 TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
             });
 
-            AppDatabase.Write(conn => AppDatabase.Exec(conn,
-                "INSERT INTO settings(id, json, updated_unix) VALUES(1, $json, $now) " +
-                "ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_unix = excluded.updated_unix",
-                ("$json", json), ("$now", Clock.Now.ToUnixTimeSeconds())));
+            AppDatabase.Write(conn =>
+            {
+                AppDatabase.Exec(conn,
+                    "INSERT INTO settings(id, json, updated_unix) VALUES(1, $json, $now) " +
+                    "ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_unix = excluded.updated_unix",
+                    ("$json", json), ("$now", Clock.Now.ToUnixTimeSeconds()));
+
+                if (auditEvent is not null)
+                {
+                    ((AuditLogStore)auditChain!).AppendInTransaction(conn, auditEvent);
+                }
+            });
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[Config] 写入配置失败: {ex.Message}");
+            throw;
         }
     }
 }

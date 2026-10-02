@@ -76,6 +76,8 @@ public sealed partial class WebUiServer
     {
         // ─────────── 静态资源 ───────────
         new("*", PanelMatch.ExactFile, "", (r) => WriteAssetAsync(r.Context, "index.html", "text/html; charset=utf-8")),
+        new("*", PanelMatch.ExactFile, "/playground", (r) => WriteAssetAsync(r.Context, "playground.html", "text/html; charset=utf-8")),
+        new("*", PanelMatch.ExactFile, "/playground.html", (r) => WriteAssetAsync(r.Context, "playground.html", "text/html; charset=utf-8")),
         new("*", PanelMatch.ExactFile, "/app.css", (r) => WriteAssetAsync(r.Context, "app.css", "text/css; charset=utf-8")),
         new("*", PanelMatch.ExactFile, "/app.js", (r) => WriteAssetAsync(r.Context, "app.js", "application/javascript; charset=utf-8")),
         // 追踪页（批次 H）：只读页面的脚本与样式 —— 与 app.js/app.css 同一套路（嵌进程序集，不引 CDN）
@@ -122,6 +124,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         new("*", PanelMatch.Exact, "/api/settings", (r) => r.Method == "POST"
             ? HandleSettingsSaveAsync(r.Context)
             : WriteJsonAsync(r.Context, 200, BuildSettingsPayload())),
+
+        // ─────────── 每日 Token 配额（按已登记 SourceKey 隔离） ───────────
+        new("GET", PanelMatch.Exact, "/api/quotas", (r) => HandleQuotaGetAsync(r.Context)),
+        new("POST", PanelMatch.Exact, "/api/quotas", (r) => HandleQuotaSaveAsync(r.Context)),
 
         // ─────────── 服务器健康日报 ───────────
         new("*", PanelMatch.Exact, "/api/health-report", (r) => r.Method == "POST"
@@ -176,6 +182,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         new("GET", PanelMatch.Exact, "/api/local", (r) => WriteJsonAsync(r.Context, 200, BuildLocalChannelPayload())),
         new("POST", PanelMatch.Exact, "/api/local/message", (r) => HandleLocalMessageAsync(r.Context)),
 
+        // ─────────── 多平台注册表与飞书 Webhook（多平台演进 · 阶段 2/4）───────────
+        new("GET", PanelMatch.Exact, "/api/platforms", (r) => HandlePlatformsAsync(r.Context)),
+        new("POST", PanelMatch.Exact, "/api/webhooks/feishu", (r) => HandleFeishuWebhookAsync(r.Context)),
+
         // ─────────── AI 总开关 ───────────
         new("POST", PanelMatch.Exact, "/api/ai-mode", HandleAiModeAsync),
 
@@ -214,6 +224,10 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         // ─────────── 表情包库（列表 / 取图 / 删除 / 立即巡检 / 导入） ───────────
         new("*", PanelMatch.Exact, "/api/stickers", (r) => HandleStickersAsync(r.Context, r.Path, r.Method)),
         new("*", PanelMatch.Prefix, "/api/stickers/", (r) => HandleStickersAsync(r.Context, r.Path, r.Method)),
+
+        // ─────────── 圈子黑话/俚语（Jargon：列表 / 审核 / 录入 / 删除） ───────────
+        new("*", PanelMatch.Exact, "/api/jargons", (r) => HandleJargonsAsync(r.Context, r.Path, r.Method)),
+        new("*", PanelMatch.Prefix, "/api/jargons/", (r) => HandleJargonsAsync(r.Context, r.Path, r.Method)),
     };
 
     /// <summary>按表分派；一条都不命中就是 404（与改造前同一句）。</summary>

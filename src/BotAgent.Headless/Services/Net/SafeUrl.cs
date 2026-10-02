@@ -1,10 +1,10 @@
 using System.Net;
-using System.Net.Sockets;
 
 namespace BotAgent.Services.Net;
 
 /// <summary>
-/// 出站 URL 的安全闸门（SSRF 防护）：图片下载与链接预览共用同一套判断。
+/// 出站 URL 的安全闸门（SSRF 防护）：图片、链接与页面抓取共用。
+/// 此处校验 URL 和跳转；DNS 地址在安全客户端的连接回调中校验并固定。
 ///
 /// 为什么必须拦：这些 URL 来自群消息，任何人都能发。
 /// 不拦的话群友发一个 http://169.254.169.254/latest/meta-data/（云元数据）
@@ -32,7 +32,7 @@ public static class SafeUrl
             return true;
         }
 
-        var host = parsed.DnsSafeHost.Trim('[', ']');
+        var host = parsed.DnsSafeHost.Trim('[', ']').TrimEnd('.');
         if (host.Length == 0)
         {
             reason = "没有主机名";
@@ -40,7 +40,7 @@ public static class SafeUrl
         }
 
         // 单标签主机名（localhost / napcat / redis …）一律拒绝：真实站点必定带点
-        if (!host.Contains('.'))
+        if (!IPAddress.TryParse(host, out _) && !host.Contains('.'))
         {
             reason = "单标签主机名（疑似内网服务）";
             return false;
@@ -54,39 +54,75 @@ public static class SafeUrl
             return false;
         }
 
-        if (IPAddress.TryParse(host, out var ip))
+        if (IPAddress.TryParse(host, out var ip) && OutboundAddressPolicy.IsBlocked(ip))
         {
-            if (IPAddress.IsLoopback(ip) || ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal ||
-                ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))
-            {
-                reason = "回环/未指定地址";
-                return false;
-            }
-
-            if (IsPrivateV4(ip) || (ip.IsIPv4MappedToIPv6 && IsPrivateV4(ip.MapToIPv4())))
-            {
-                reason = "私有地址";
-                return false;
-            }
+            reason = "回环/私有/链路本地地址";
+            return false;
         }
 
         uri = parsed;
         return true;
     }
 
-    private static bool IsPrivateV4(IPAddress ip)
+    /// <summary>
+    /// 在底层客户端已关闭自动重定向时，逐跳跟随并重新校验目标。
+    /// 返回的响应由调用方负责释放；中间响应在跳转时立即释放。
+    /// </summary>
+    public static async Task<HttpResponseMessage> SendFollowingRedirectsAsync(
+        IHttpFetcher http,
+        Uri start,
+        Func<Uri, HttpRequestMessage> createRequest,
+        bool allowPrivate,
+        CancellationToken ct,
+        int maxRedirects = 5)
     {
-        if (ip.AddressFamily != AddressFamily.InterNetwork)
+        if (maxRedirects < 0)
         {
-            return false;
+            throw new ArgumentOutOfRangeException(nameof(maxRedirects));
         }
 
-        var b = ip.GetAddressBytes();
-        return b[0] == 10                                 // 10.0.0.0/8
-            || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)  // 172.16.0.0/12
-            || (b[0] == 192 && b[1] == 168)               // 192.168.0.0/16
-            || (b[0] == 169 && b[1] == 254)               // 169.254.0.0/16 链路本地（云元数据）
-            || b[0] == 127                                // 127.0.0.0/8
-            || b[0] == 0;                                 // 0.0.0.0/8
+        var current = start;
+        for (var hop = 0; hop <= maxRedirects; hop++)
+        {
+            if (!TryValidate(current.ToString(), allowPrivate, out _, out var invalidReason))
+            {
+                throw new HttpRequestException($"出站目标被拒绝（{invalidReason}）");
+            }
+
+            using var request = createRequest(current);
+            var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            var location = response.Headers.Location;
+            if (!IsRedirect(response.StatusCode) || location is null)
+            {
+                return response;
+            }
+
+            if (hop == maxRedirects)
+            {
+                response.Dispose();
+                throw new HttpRequestException("重定向超过上限");
+            }
+
+            if (!Uri.TryCreate(current, location, out var next))
+            {
+                response.Dispose();
+                throw new HttpRequestException("重定向 Location 无效");
+            }
+
+            if (!TryValidate(next.ToString(), allowPrivate, out _, out var reason))
+            {
+                response.Dispose();
+                throw new HttpRequestException($"重定向目标被拒绝（{reason}）");
+            }
+
+            response.Dispose();
+            current = next;
+        }
+
+        throw new HttpRequestException("重定向超过上限");
     }
+
+    private static bool IsRedirect(HttpStatusCode status)
+        => status is HttpStatusCode.Moved or HttpStatusCode.Redirect or HttpStatusCode.SeeOther
+            or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
 }

@@ -4,7 +4,8 @@ public enum ConversationKind
 {
     LocalTest,
     PrivateChat,
-    GroupChat
+    GroupChat,
+    ChannelChat
 }
 
 public enum MessageRole

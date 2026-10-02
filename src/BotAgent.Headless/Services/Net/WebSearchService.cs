@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using BotAgent.Services.Resilience;
 
 namespace BotAgent.Services.Net;
 
@@ -76,21 +77,45 @@ public sealed record WebSearchResult(
 public sealed partial class WebSearchService
 {
     private readonly IHttpFetcher _http;
+    private readonly IHttpFetcher _pageHttp;
     private readonly Func<AppSettings> _settings;
     private readonly Action<string> _log;
+    private readonly ToolCircuitBreaker? _circuit;
 
     [GeneratedRegex(@"<a\s+[^>]*href\s*=\s*""(?<u>[^""]+)""[^>]*>(?<t>[\s\S]*?)</a>", RegexOptions.IgnoreCase)]
     private static partial Regex LinkRegex();
 
-    public WebSearchService(IHttpFetcher http, Func<AppSettings> settings, Action<string> log)
+    public WebSearchService(IHttpFetcher http, Func<AppSettings> settings, Action<string> log,
+        ToolCircuitBreaker? circuit = null,
+        IHttpFetcher? pageHttp = null)
     {
         _http = http;
+        _pageHttp = pageHttp ?? http;
         _settings = settings;
         _log = log;
+        _circuit = circuit;
     }
+
 
     /// <summary>搜索：先试模型自带搜索，再用模板源兜底。</summary>
     public async Task<WebSearchResult> SearchAsync(string query, CancellationToken ct)
+    {
+        if (_circuit is null)
+        {
+            return await SearchCoreAsync(query, ct).ConfigureAwait(false);
+        }
+
+        var run = await _circuit.RunAsync(token => SearchCoreAsync(query, token), ct).ConfigureAwait(false);
+        if (run.Succeeded)
+        {
+            return run.Value!;
+        }
+
+        _log($"[Search] 工具调用未完成（{run.ReasonCode}）");
+        return new WebSearchResult(query, null, Array.Empty<WebSearchHit>(), "不可用", run.ReasonCode);
+    }
+
+    private async Task<WebSearchResult> SearchCoreAsync(string query, CancellationToken ct)
     {
         var settings = _settings();
         var timeout = TimeSpan.FromSeconds(Math.Clamp(settings.WebSearchTimeoutSeconds, 5, 60));
@@ -190,6 +215,10 @@ public sealed partial class WebSearchService
                  (queries.Count > 0 ? $"，实际检索词 {string.Join("/", queries)}" : string.Empty));
 
             return (new WebSearchResult(query, answer, hits, "模型联网搜索"), null);
+        }
+        catch (OperationCanceledException) when (_circuit is not null)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -309,12 +338,8 @@ public sealed partial class WebSearchService
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(timeout);
 
-                using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-                req.Headers.TryAddWithoutValidation("User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
-                req.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-
-                using var resp = await _http.SendAsync(req, cts.Token);
+                using var resp = await SafeUrl.SendFollowingRedirectsAsync(
+                    _pageHttp, uri, CreatePageRequest, AllowPrivateForTests(), cts.Token);
                 if (!resp.IsSuccessStatusCode)
                 {
                     lastError = $"{name} 返回 HTTP {(int)resp.StatusCode}";
@@ -336,6 +361,10 @@ public sealed partial class WebSearchService
 
                 _log($"[Search] {name} 搜到 {hits.Count} 条：「{query}」");
                 return (new WebSearchResult(query, null, hits, name), null);
+            }
+            catch (OperationCanceledException) when (_circuit is not null)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -500,6 +529,23 @@ public sealed partial class WebSearchService
     /// </summary>
     public async Task<(string? Text, string? Error)> ReadPageAsync(string url, CancellationToken ct)
     {
+        if (_circuit is null)
+        {
+            return await ReadPageCoreAsync(url, ct).ConfigureAwait(false);
+        }
+
+        var run = await _circuit.RunAsync(token => ReadPageCoreAsync(url, token), ct).ConfigureAwait(false);
+        if (run.Succeeded)
+        {
+            return run.Value!;
+        }
+
+        _log($"[Search] 读页面工具未完成（{run.ReasonCode}）");
+        return (null, run.ReasonCode);
+    }
+
+    private async Task<(string? Text, string? Error)> ReadPageCoreAsync(string url, CancellationToken ct)
+    {
         if (!SafeUrl.TryValidate(url, AllowPrivateForTests(), out var uri, out var why))
         {
             return (null, why);
@@ -512,11 +558,8 @@ public sealed partial class WebSearchService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            req.Headers.TryAddWithoutValidation("User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
-
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            using var resp = await SafeUrl.SendFollowingRedirectsAsync(
+                _pageHttp, uri, CreatePageRequest, AllowPrivateForTests(), cts.Token);
             if (!resp.IsSuccessStatusCode)
             {
                 return (null, $"HTTP {(int)resp.StatusCode}");
@@ -550,6 +593,15 @@ public sealed partial class WebSearchService
         {
             return (null, $"{ex.GetType().Name} {ex.Message}");
         }
+    }
+
+    /// <summary>逐跳创建页面请求，不沿用模型客户端的鉴权头。</summary>
+    private static HttpRequestMessage CreatePageRequest(Uri target)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, target);
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
+        request.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+        return request;
     }
 
     /// <summary>是否允许抓内网/回环地址（自建 SearxNG 时需要；与图片、链接预览共用同一个开关）。</summary>

@@ -1,183 +1,180 @@
-# Bot Agent Headless 容器版
+# Bot Agent Headless
 
 [English](README.en.md) | 简体中文
 
-**无界面、跨平台、可容器部署**的 QQ 聊天机器人常驻服务：接 OneBot v11 协议端（NapCat 等），
-用 OpenAI 兼容模型自动回复 QQ 私聊与群聊，自带 Web 面板。
+**无界面、轻量化、支持多平台的聊天机器人服务**：这是 Bot Agent 的常驻后台核心服务，支持连接 QQ 私域（NapCat / OneBot v11）、QQ 开放平台官方通道、飞书应用机器人及本地无依赖测试通道。通过接入 OpenAI 兼容大模型（如 DeepSeek、ChatGPT、通义千问、Ollama 或自建中转接口），实现私聊与群聊的拟人化智能交互，并自带一个优雅易用的轻量 Web 管理面板。
 
 ```
-QQ 客户端 (Linux)  ←被注入—  NapCat (容器)  ←—OneBot v11 WS——  Bot Agent (容器)  ——→  模型 API
+聊天平台 (QQ / 飞书 / 本地)  ←——接收与发送——  Bot Agent (核心服务)  ——→  模型 API (思考与回复)
 ```
 
-- **无 UI、无 Windows 依赖**：`net8.0`，Docker 镜像约 80MB（运行阶段基于 `dotnet/runtime:8.0`）
-- **非 root 运行**，数据全部落在 `/data` 卷里，支持优雅退出（SIGTERM / `docker stop`）
-- **自带健康检查**：`/healthz`（存活）、`/readyz`（是否连上协议端）、`/status`（运行状态 JSON）
+- **资源占用极低**：Docker 镜像仅约 80MB，无桌面 UI 依赖，Linux / macOS / Windows 服务器均可稳定常驻。
+- **数据持久可靠**：非 root 安全运行，所有聊天记录、人物记忆与系统设置统一保存在 `/data` 目录（单个 SQLite 数据库，迁移备份极简）。
+- **运维开箱即用**：自带轻量 Web 管理面板，同时提供 `/healthz`（存活状态）、`/readyz`（协议端连接就绪）及 `/status`（详细状态 JSON）。
 
 ---
 
-## 快速开始（Docker Compose）
+## 快速开始（推荐：Docker Compose）
 
+只需要简单的 3 步即可跑起机器人：
+
+### 1. 准备配置文件
 ```bash
-# 1. 准备配置
 cp .env.example .env
-vim .env                      # 至少填 MODEL_API_KEY 和 WHITELIST
-
-# 2. 构建 + 启动
-docker compose up -d
-
-# 3. 首次登录：扫二维码
-#    推荐：打开机器人面板（http://<主机>:8080/），没登录时顶部会自动出现登录二维码
-#    备用：看 NapCat 日志里的 ASCII 二维码
-docker compose logs -f napcat
+vim .env                      # 至少填写 MODEL_API_KEY（模型密钥）和 WHITELIST（白名单）
 ```
 
-扫码登录后，还要让 NapCat 把消息转发出来（**一次性配置**）：
-
-1. 浏览器打开 `http://<主机IP>:6099` → NapCat WebUI
-2. **网络配置 → 添加「WebSocket 客户端」（正向 WS）**
-   - URL：`ws://qqchat:3001`
-   - Token：与 `.env` 里的 `ONEBOT_TOKEN` 保持一致（留空则都不用填）
-
-   > 容器之间用服务名互相解析，所以这里填 `qqchat`（compose 里的服务名），不是 `127.0.0.1`。
-3. 回到宿主机验证：
-
+### 2. 启动服务容器
 ```bash
-curl -s http://127.0.0.1:8080/readyz       # {"ready":true,...} 就通了
-curl -s http://127.0.0.1:8080/status       # 运行状态详情
+docker compose up -d
 ```
 
-之后往白名单里的群发一条 `@机器人 你好` 即可。
+### 3. 扫码登录与验证连通
+
+**① 登录 QQ 账号**：
+- **方式 A（最直观）**：在浏览器打开机器人面板 `http://<主机IP>:8080/`，账号未登录时面板顶部会自动展示登录二维码，手机 QQ 扫码即可。
+- **方式 B（终端查看）**：通过容器日志查看终端二维码：
+  ```bash
+  docker compose logs -f napcat
+  ```
+
+**② 确保 NapCat 消息能转发给机器人（首次配置一次即可）**：
+1. 浏览器打开 NapCat 控制台：`http://<主机IP>:6099`；
+2. 进入 **网络配置 → 添加「WebSocket 客户端」（正向 WS）**：
+   - **URL**：`ws://qqchat:3001`（注意：容器同在一个 Docker 内部网络，使用服务名 `qqchat`，不要填 `127.0.0.1`）；
+   - **Token**：与 `.env` 中的 `ONEBOT_TOKEN` 保持一致（若留空则都不填）。
+3. 在宿主机或命令行检查是否连通：
+   ```bash
+   curl -s http://127.0.0.1:8080/readyz       # 返回 {"ready":true,...} 说明连接就绪！
+   curl -s http://127.0.0.1:8080/status       # 查看运行状态概览
+   ```
+4. 现在去白名单内的群聊里发送 `@机器人 你好`，机器人就会为你回复啦！
 
 ---
 
-## 环境变量
+## 配置说明与环境变量
 
-配置要么在**面板里改**（存进 `data/qqchat.db`，见下），要么用环境变量提供 —— **首次启动时**环境变量当作种子写入；
-之后面板里改过的项就以面板为准（再改环境变量不再生效，机器人启动日志里会列出来提醒）。
-带 `_FILE` 后缀的变量从文件读取内容，适合 Docker secrets：
+> 💡 **小白上手建议（面板热更新优先）**：
+> - **面板随时改，立即生效**：大模型的 API Key、接口地址、机器人人设、发言欲望、白名单等绝大多数配置，启动后都可直接在 Web 面板（`http://<主机IP>:8080/`）的「设置」页可视化修改，**保存后立刻生效，不需要重启容器**。
+> - **环境变量的用途**：主要作为初次启动时的默认种子；一旦在面板中修改并保存过某项设置，系统将以数据库中的面板配置为准。
+> - 带 `_FILE` 后缀的环境变量可从指定文件读取敏感内容，方便搭配 Docker secrets 使用：
+>   ```yaml
+>   environment:
+>     QQCHAT_API_KEY_FILE: /run/secrets/model_key
+>   secrets:
+>     model_key:
+>       file: ./model_key.txt
+>   ```
 
-```yaml
-environment:
-  QQCHAT_API_KEY_FILE: /run/secrets/model_key
-secrets:
-  model_key:
-    file: ./model_key.txt
-```
+### 核心必备项（只要配好这几项就能跑起来）
 
-### 模型（OpenAI 兼容）
-
-| 变量 | 默认 | 说明 |
+| 变量 | 默认值 | 通俗说明 |
 | --- | --- | --- |
-| `QQCHAT_API_KEY` / `OPENAI_API_KEY` | — | **必填**。也支持 `QQCHAT_API_KEY_FILE` ；面板里也能填（存库里的 `secrets` 表，库文件权限 600）；面板填过之后以面板为准 |
-| `QQCHAT_BASE_URL` / `OPENAI_BASE_URL` | `https://api.openai.com/v1` | 接口地址（DeepSeek / 通义 / Ollama / 中转…）；面板「Agent 大脑」里可改，改完立即生效；面板改过之后环境变量不再覆盖它 |
-| `QQCHAT_MODEL` / `OPENAI_MODEL` | `gpt-4o-mini` | 模型名；面板里可改 |
-| `QQCHAT_MAX_TOKENS` | `2048` | 单次回复上限 |
+| `QQCHAT_API_KEY` / `OPENAI_API_KEY` | — | **必填**。大模型 API Key（也支持面板直接填，自动加密存库；面板配置优先） |
+| `QQCHAT_BASE_URL` / `OPENAI_BASE_URL` | `https://api.openai.com/v1` | 大模型 API 基础地址（支持 DeepSeek / 通义 / Ollama / 第三方中转，面板可随时切换） |
+| `QQCHAT_MODEL` / `OPENAI_MODEL` | `gpt-4o-mini` | 所用模型名称（如 `deepseek-chat` 等，面板可随时切换） |
+| `QQCHAT_WHITELIST` | 空 | ⚠️ **白名单**：**留空默认不理任何人（防止被乱拉群打扰）**。填允许生效的群号或私聊 QQ 号（英文逗号隔开），填 `*` 代表对所有群和私聊开放 |
 
-### QQ 通道
+### QQ 通道配置
 
-| 变量 | 默认 | 说明 |
+| 变量 | 默认值 | 通俗说明 |
 | --- | --- | --- |
-| `QQCHAT_ONEBOT_PROTOCOL` | `ForwardWebSocket` | `ForwardWebSocket` / `ReverseWebSocket` / `Http` |
-| `QQCHAT_ONEBOT_URL` | `ws://127.0.0.1:3001` | 正向：`ws://napcat:3001`；反向：`http://0.0.0.0:3001`；HTTP：`http://napcat:3000` |
-| `QQCHAT_ONEBOT_TOKEN` | 空 | 协议端 Access Token |
-| `QQCHAT_UIN` | 空 | 机器人 QQ 号（用于识别 `@机器人`；留空则连上后自动获取） |
+| `QQCHAT_ONEBOT_PROTOCOL` | `ForwardWebSocket` | 协议类型：正向 WebSocket (`ForwardWebSocket`)、反向 (`ReverseWebSocket`) 或 `Http` |
+| `QQCHAT_ONEBOT_URL` | `ws://127.0.0.1:3001` | 协议端地址。Docker Compose 内部正向连接填 `ws://napcat:3001` |
+| `QQCHAT_ONEBOT_TOKEN` | 空 | 协议通信密钥 Access Token（与 NapCat 保持一致） |
+| `QQCHAT_UIN` | 空 | 机器人的 QQ 号（用来准确识别别人 `@机器人`；留空连上后会自动获取） |
+| `QQCHAT_NAPCAT_WEBUI_URL` | `http://napcat:6099` | NapCat WebUI 地址（用于面板内直接显示扫码登录） |
+| `QQCHAT_NAPCAT_WEBUI_TOKEN` | 空 | NapCat WebUI 登录 Token（配置后，面板未登录时会直接内嵌登录二维码） |
 
-### 行为
+### 机器人个性与回复行为
 
-| 变量 | 默认 | 说明 |
+| 变量 | 默认值 | 通俗说明 |
 | --- | --- | --- |
-| `QQCHAT_WHITELIST` | 空 | ⚠️ **空 = 严格模式，忽略所有消息**。填群号/QQ 号（逗号或换行分隔），或 `*` 接收全部 |
-| `QQCHAT_PERSONA` | 空 | 机器人人设（性格 / 说话风格），每次请求注入 |
-| `QQCHAT_AI_DESIRE` | `50` | 对话欲望 0-100，越高越主动插话 |
-| `QQCHAT_SUITABILITY_THRESHOLD` | `10` | 发言适合度阈值，低于此值则沉默 |
-| `QQCHAT_AI_MODE` | `1` | `0` = 只收消息不回复（调试用） |
-
-### 回复节奏
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `QQCHAT_GROUP_COOLDOWN` | `8` | 同一群的最小回复间隔（秒） |
-| `QQCHAT_PRIVATE_COOLDOWN` | `3` | 同一私聊的最小回复间隔（秒） |
-| `QQCHAT_IDLE_FALLBACK` | `60` | 静默兜底：超过该秒数没有主动请求时补判断一次；`0` 关闭 |
-| `QQCHAT_SPLIT_REPLIES` | `1` | 长回复按句分句发送（最多 4 段，不丢字；不会在小数 / 域名 / 连续标点 / 收尾引号处切断） |
-| `QQCHAT_IGNORE_BRACKETS` | `0` | `1` = 把群友消息里的括号旁白**标注**成 `〔旁白：…〕`（不是忽略）：整条都是旁白（「（笑）」→`〔旁白：笑〕`）照样进聊天记录与模型上下文，但**不单独触发一次回复**（下一条真消息会带上它）；前后带旁白（「行（端在桌上）」→「行〔旁白：端在桌上〕」）正文照用。句子中间的括号与「（2026）」这种纯数字不碰；群友发表情的记录（`[表情:斜眼笑]`/`[图片]`）不当旁白；带图 / 带 @ 机器人 / 私聊永不动 |
-| `QQCHAT_SEGMENT_DELAY_MS` | `700` | 分句之间的间隔 |
+| `QQCHAT_PERSONA` | 空 | **机器人人设**：设定它的性格、口癖与说话风格（如“你是毒舌傲娇群友，说话简短口语化”），每次对话自动注入上下文 |
+| `QQCHAT_AI_DESIRE` | `50` | **发言欲望 (0~100)**：数值越低越克制沉稳，数值越高越容易在群聊中主动搭话接梗（日常建议 30~60） |
+| `QQCHAT_SUITABILITY_THRESHOLD` | `10` | **发言门槛**：模型评估该话题适不适合接话的分数门槛，低于此分保持沉默 |
+| `QQCHAT_AI_MODE` | `1` | `1` 为正常对话模式；`0` 为静默观察模式（只记录消息不回复，适合调试） |
+| `QQCHAT_GROUP_COOLDOWN` | `8` | **群聊回复冷却（秒）**：同一群两次发言之间的最小时间间隔，防止连续刷屏 |
+| `QQCHAT_PRIVATE_COOLDOWN` | `3` | **私聊回复冷却（秒）**：私聊回复最小间隔 |
+| `QQCHAT_IDLE_FALLBACK` | `60` | **冷场兜底（秒）**：群里一段时间没人说话时，机器人是否主动判断冷场并接话（`0` 代表关闭此功能） |
+| `QQCHAT_SPLIT_REPLIES` | `1` | **仿真人打字分句**：将较长的回复按标点切分成 2~4 段分批发送，体验更像真人（不会把小数、网址或引号切碎） |
+| `QQCHAT_SEGMENT_DELAY_MS` | `700` | 分句发送之间的时间间隔（毫秒） |
+| `QQCHAT_IGNORE_BRACKETS` | `0` | **括号旁白识别**：设为 `1` 后，群友发的「（笑）」「（叹气）」会被识别为动作说明而非正文，避免机器人误解原意 |
 | `QQCHAT_MAX_CONTEXT` | `200` | 喂给模型的最大上下文条数 |
 | `QQCHAT_PROFILE_LOOKUP` | `8` | 附带的人物档案数量上限 |
-### 运维
+### 运维与日志相关
 
-| 变量 | 默认 | 说明 |
+| 变量 | 默认值 | 通俗说明 |
 | --- | --- | --- |
-| `QQCHAT_DATA_DIR` | `/data`（镜像内） | 数据目录，建议挂卷 |
-| `QQCHAT_HEALTH_PORT` | `8080` | 健康检查端口，`0` 关闭 |
-| `QQCHAT_HEALTH_BIND` | `+` | 绑定地址；Windows 非管理员下自动回退 `127.0.0.1` |
-| `QQCHAT_VERBOSE` | `1` | `0` = 只输出关键日志 |
-| `QQCHAT_LOG_FILE` | `1` | `0` = 不写日志文件，只走 stdout |
-| `QQCHAT_NAPCAT_WEBUI_URL` | `http://napcat:6099` | NapCat WebUI 地址（面板内扫码登录用） |
-| `QQCHAT_NAPCAT_WEBUI_TOKEN` | 空 | NapCat WebUI 令牌（`napcat/config/webui.json` 的 `token`）。填了之后，账号未登录时面板会直接显示登录二维码 |
-| `QQCHAT_STICKERS` | `1` | 表情包总开关（自动收集 + 按语境发送 + 自巡检） |
-| `QQCHAT_STICKER_MAX` | `120` | 表情包库存储上限（张） |
-| `QQCHAT_STICKER_CANDIDATES` | `6` | 每次给模型看的候选张数 |
-| `QQCHAT_STICKER_CURATE_INTERVAL` | `3600` | 自巡检间隔（秒），0 = 关 |
-| `QQCHAT_STICKER_COOLDOWN` | `120` | 同一会话两次发表情包的最小间隔（秒），0 = 不限 |
-| `QQCHAT_ENABLE_POKE` | `1` | 戳一戳总开关：被戳时按语境回话/戳回去（别人互戳只进上下文，不插话） |
-| `QQCHAT_POKE_COOLDOWN` | `45` | 戳一戳冷却（秒）：同一个人连着戳只回一次；也是主动戳人的最小间隔 |
-| `QQCHAT_MOOD_TTL` | `7200` | 模型写的心情保留多久（秒）：超时没更新就回落到“按被戳次数自动描述”，0 = 不过期 |
-| `QQCHAT_ALLOW_PRIVATE_IMAGE_HOSTS` | `0` | `1` = 允许从内网/回环地址下载图片。**仅供自建/测试**，公网部署不要开 |
-| `QQCHAT_ENABLE_VOICE` | `0` | 语音消息总开关（模型填 `speak` 字段时才发）——需要先跑起 `tts` 旁路容器 |
-| `QQCHAT_VOICE` | `zh_CN-huayan-medium` | 音色（= `tts/<name>.onnx`）：`huayan-medium/x_low`、`xiao_ya-medium`、`chaowen-medium` |
-| `QQCHAT_VOICE_SPEED` | `100` | 语速百分比（100 = 原速，越大越快） |
-| `QQCHAT_VOICE_MAX_CHARS` | `80` | 单条语音字数上限（超过就不发语音，改打字） |
-| `QQCHAT_TTS_URL` | `http://tts:5000` | TTS 旁路服务地址（机器人拼 `/speak?text=…`，NapCat 去下载） |
-| `QQCHAT_WEB_SEARCH` | `1` | 联网搜索总开关（模型填 `search` / `read` 时才用） |
-| `QQCHAT_SEARCH_USE_MODEL` | `1` | 优先用“模型自带搜索”（检索在服务商侧完成，结果带来源）；置 `0` 就只用下面的搜索源模板 |
-| `QQCHAT_SEARCH_SOURCES` | Wikipedia API | 兜底搜索源模板（每行 `name|url`，`{q}` 是查询词；`searx*`/`wiki*` 有专用解析） |
-| `QQCHAT_SEARCH_MAX_RESULTS` | `5` | 每次给模型看几条结果 |
-| `QQCHAT_SEARCH_COOLDOWN` | `30` | 同一会话两次联网搜索的最小间隔（秒）；`0` = 不限 |
-| `QQCHAT_SEARCH_TIMEOUT` | `20` | 搜索 / 读页面超时（秒） |
-| `QQCHAT_SEARCH_READ_CHARS` | `1800` | `read` 抓到的正文截断长度（字） |
-| `TZ` | `Asia/Shanghai` | 影响消息时间戳与模型看到的"现在几点" |
+| `QQCHAT_DATA_DIR` | `/data` | 容器内的数据目录，必须挂载宿主机卷以实现数据持久化 |
+| `QQCHAT_HEALTH_PORT` | `8080` | 内置 Web 面板与健康检查监听端口，`0` 为关闭 |
+| `QQCHAT_HEALTH_BIND` | `+` | 监听绑定地址（Windows 环境下若无管理员权限会自动回退至 `127.0.0.1`） |
+| `QQCHAT_VERBOSE` | `1` | 日志详细程度：`1` 输出完整流程，`0` 仅输出关键提示 |
+| `QQCHAT_LOG_FILE` | `1` | 是否输出日志到文件：`1` 写入 `logs/qqchat.log`，`0` 仅输出到终端标准输出 |
+| `TZ` | `Asia/Shanghai` | 系统时区，直接影响群聊消息时间戳与机器人对“当前时间”的感知 |
 
+### 丰富互动特性（表情包 / 戳一戳 / 语音 / 联网搜索）
 
-### Agent 运行（三个默认关的开关）
-
-| 变量 | 默认 | 说明 |
+| 变量 | 默认值 | 通俗说明 |
 | --- | --- | --- |
-| `QQCHAT_MAX_AGENT_STEPS` | `1` | **聊天侧有限步进循环**的步数上限（面板滑杆 1–3，代码里再钳一次）。默认 1 = 与以前**逐字一致**；调高后模型可以“当场做完只读工具（联网搜索 / 读页面）再问一次”——仍只做只读，语音 / 表情 / 戳 / 分享照旧走发送阶段统一裁决；工具没拿到东西就不空转 |
-| `QQCHAT_AGENT_SERVER_GATE` | `0` | `1` = **`//` 任务的每一步也过统一工具闸门**（登记表 + 本轮策略快照 + 类别禁令）。打开后的判定与老白名单**一致**，关着 = 零行为变化。高风险例外只能按**工具名**点名（`ToolPolicy.HighRiskExceptions`，列了 `bash` 不会连带放开 `docker`），审批分支照旧不认高风险 |
-| `QQCHAT_LOCAL_CHANNEL_IDS` | 空 | **本地 HTTP 通道**的名单（`IQqChatSource` 的第三个实现）。**空 = 整条通道都不建**（与官方那条“空 = 全收”故意不同）；写**短 id**（`1`、`2`、`1001`），服务端换算成 **7e15 起**的专属号段；超范围（<1 或 >1e12）一律拒掉 —— 宁可 400，也不让它撞进官方号段 |
+| `QQCHAT_STICKERS` | `1` | **表情包总开关**：自动收集群友表情包、按聊天语境智能选图回复、定期自巡检清理 |
+| `QQCHAT_STICKER_MAX` | `120` | 本地表情包图库容量上限（张） |
+| `QQCHAT_STICKER_CANDIDATES` | `6` | 每次回复时供大模型挑选的候选表情包数量 |
+| `QQCHAT_STICKER_COOLDOWN` | `120` | 同一会话两次发表情包的最小间隔（秒），避免滥发刷屏 |
+| `QQCHAT_ENABLE_POKE` | `1` | **戳一戳总开关**：群友戳机器人时能拟人化回复甚至反戳回去（别人互戳只作记录不插话） |
+| `QQCHAT_POKE_COOLDOWN` | `45` | 戳一戳冷却时间（秒）：防止同一个人连续双击恶搞触发刷屏 |
+| `QQCHAT_ENABLE_VOICE` | `0` | **语音消息开关**：允许大模型偶尔用语音回复（需配合 TTS 语音容器使用） |
+| `QQCHAT_VOICE` | `zh_CN-huayan-medium` | 语音合成音色名称 |
+| `QQCHAT_WEB_SEARCH` | `1` | **联网搜索开关**：大模型可在需要时自动搜索最新事实与时事资讯 |
+| `QQCHAT_SEARCH_COOLDOWN` | `30` | 同一会话两次联网搜索的最小冷却间隔（秒） |
 
-> ⚠ **面板控件现状（如实登记）**：这三个里只有 *聊天步数上限* 在面板上有滑杆；另两个**没有单独的开关控件** ——
-> 改它们走**环境变量**（会随上面的 `docker-compose.yml` 透传）或面板保存接口 `POST /api/settings`
-> （`{"agentServerUseGate":true}` / `{"localChannelIds":"1"}`），面板的设置回显里能看到当前值。
-> 本地通道的名单改完**要重启容器才生效**（通道是在启动时按名单建的）。
+### 高级 Agent 循环与本地通道
 
-> 第三个开关的入口是 `POST /api/local/message`（注入一条本地消息，回复落在内存出箱里）：两道前置 **fail-closed** ——
-> 名单为空 → `403 local_channel_disabled`；未配面板令牌 → `403 panel_token_required`。
+| 变量 | 默认值 | 通俗说明 |
+| --- | --- | --- |
+| `QQCHAT_MAX_AGENT_STEPS` | `1` | **单轮工具循环步数上限**（1~3步）：设为 2~3 时，模型可在同一轮内先联网查询资料再结合结果组织回复 |
+| `QQCHAT_AGENT_SERVER_GATE` | `0` | `1` = 启用 `//` 远程指令的统一安全权限闸门 |
+| `QQCHAT_LOCAL_CHANNEL_IDS` | 空 | **本地 HTTP 虚拟测试通道**白名单：填入虚拟群号（如 `1`），即可在无需连接 QQ 的情况下通过演练场调试机器人 |
 
-> 面板内扫码登录为什么需要令牌：机器人是向 NapCat WebUI 的公开接口
-> （`/api/auth/login` + `/api/QQLogin/GetQQLoginQrcode`）取二维码，认证方式与 NapCat 自己的前端一致，
-> 不需要额外改 NapCat 配置。不填令牌只是面板里看不到二维码，不影响消息通道。
+> 💡 **平台实例策略与本地通道面板操作指引**：
+> 1. **集中治理**：Web 面板设置页提供「平台实例策略」表格，全平台（QQ私域、QQ官方、飞书、本地通道）的总开关、聊天开关、独立群聊/私聊白名单及特性功能在此一站式配置，支持原子级同步与清空保存。
+> 2. **为什么本地通道初始没有会话**：本地通道为纯进程内/HTTP 模拟通道，不依赖外部公网长连，不会有外部用户自发推消息。会话在**首次注入消息时按需动态建立**。
+> 3. **如何进行面板操作**：
+>    - **方式一（可视交互演练场，推荐）**：在面板设置页「本地通道」卡片中点击 `🧪 打开交互演练场 (Playground)`（或访问 `/playground.html`），选择场景群组与触发模式（@机器人/引用/普通发言），输入内容点击「注入演练 ↵」即可触发端到端回复并实时观察六节点治理分析；
+>    - **方式二（主面板会话管理）**：在演练场或接口注入第一条消息后，主面板会话列表立即出现带有紫色 `本地` 徽标的会话。点击左侧会话侧边栏「本地」标签即可专一查看聊天气泡、历史记录并继续进行人工回复；
+>    - **方式三（HTTP API 自动化）**：发送 `POST /api/local/message`（附带面板认证令牌），参数如 `{"id": 1, "text": "你好", "sender": "测试员", "isGroup": true}`，消息走完整回复流水线，回复自动落入内存出箱（`/api/local` 可查）。
+> 4. **安全前置（Fail-Closed）**：本地通道白名单为空时报 `403 local_channel_disabled`；未配置面板令牌时报 `403 panel_token_required`。
 
 ---
 
-## 数据目录（`/data`）
+## 数据目录与持久化（`/data`）
 
-| 路径 | 内容 |
-| --- | --- |
-| `data/qqchat.db` | **SQLite 库**：设置、会话、消息（含归档）、人物档案与画像、心情、听过的歌、表情包索引、密钥。WAL 模式，随同 `-wal/-shm` |
-| `data/legacy-json/` | 老版本 JSON 的留档（首次启动自动导入库之后移到这里，**不删**） |
-| `stickers/*.png` | **表情包图片本体**（索引在库里；二进制不适合塞库，备份/预览/清理都麻烦） |
-| `logs/qqchat.log` | 运行日志（面板日志页 / `/api/logs` 就是它的尾部；⚠ 目前**不轮转**，会一直追加） |
+机器人运行时产生的所有数据都存放在 `/data` 目录（对应宿主机挂载的 `./data` 文件夹）。
 
-> 为什么从“一堆 JSON”换成 SQLite：① 会话/消息/档案分散在多个文件里，一次崩溃可能只写了一半，跨文件没法用事务；
-> ② 消息是追加型数据，JSON 每次全量重写（几千条就明显卡）；③ 面板要的“某群更早的发言 / 某人某群的画像 / 归档翻旧账”
-> 在 JSON 上只能全量读进内存再过滤，SQL 一句就能干。
->
-> 备份：直接拷 `data/qqchat.db`（连同 `-wal/-shm`）就完事；想用 SQL 查配置可以 `json_extract(json,'$.AiDesire')`。
-> 密钥（面板里填过的 API Key）存在 `secrets` 表里，所以**库文件权限是 600**（不跟 `settings` 混在一起，依然不会跟着配置一块被贴出去）。
+| 路径 | 内容 | 说明 |
+| --- | --- | --- |
+| `data/qqchat.db` | **SQLite 核心数据库** | 设置、群聊与私聊会话、聊天历史与归档、人物画像档案、心情记录、听歌记录、表情包索引及加密密钥。采用 WAL 模式（伴随 `-wal`/`-shm` 文件） |
+| `data/legacy-json/` | 旧版本数据归档 | 早期旧版本 JSON 数据在首次启动自动导入数据库后安全保留于此，不影响日常读写 |
+| `data/feishu-ids-v2.json` | 飞书身份映射表 | 仅在使用飞书通道时生成，用于飞书用户与会话映射，需随同数据库一起备份 |
+| `stickers/*.png` | 表情包图片本体 | 机器人收集和使用的表情包真实图片文件（索引与情绪关键词保存在数据库中） |
+| `logs/qqchat.log` | 运行日志文件 | 机器人后台日志，Web 面板「日志」页面展示的就是该文件的实时最新输出 |
 
-JSON 在库里一律不转义中文，`sqlite3 ... "SELECT text FROM messages LIMIT 3"` 直接看得懂。
+### 💡 极简备份与迁移指南
+
+- **数据全量备份/迁移（仅需 1 步）**：将宿主机上的 `./data` 整个文件夹复制打包到新服务器相同目录下即可！所有聊天历史、用户记忆、设置与表情包将完整保留，开箱即用。
+- **为什么使用单个 SQLite 数据库**：
+  1. **防止异常断电/崩溃损坏**：支持完整 ACID 事务，彻底杜绝以前多文件并发写入导致数据损坏的风险；
+  2. **高效追加读写**：聊天记录是时间线数据，SQLite 的 WAL 机制使得追加消息极度轻快，不再需要每次重写几千行的 JSON 文件；
+  3. **检索秒级响应**：面板翻阅历史聊天、调取人物画像均有索引加速，毫秒级加载。
+- **密钥安全**：在面板中录入的大模型 API 密钥自动存放在数据库中隔离的 `secrets` 表内，数据库文件权限受严格控制，不随常规配置导出，保障安全。
+
+---
+
+## 修复兼容性与迁移
+
+- **飞书身份映射**：运行时装配持久化映射 `data/feishu-ids-v2.json`，使用与旧 32 位别名分离的新号段（`FeishuBase + 1e12` 至 `FeishuBase + 2e12`）。旧会话保留，但不自动关联原生身份或继承历史；旧数字白名单需重新配置为飞书原生 ID。
+- **OwnMessage 台账**：新记录按平台、账号、会话与原生消息 ID 隔离，写入 `own_messages_scoped`；旧裸数字 ID 行和旧 JSON 导入留档仍保留，但无法证明 scope 时 fail-closed，不猜归属、不作为 scoped 命中。旧版本读不到新增 scoped 记录，**不提供无损降级**，请保留升级前备份。
+- **工具硬超时边界**：限制的是调用方等待时长，并发出取消请求；不等于强制终止底层操作。不响应取消的操作仍可能继续并产生外部副作用。
 
 ---
 
@@ -520,10 +517,11 @@ Google/Bing/DuckDuckGo/百度 对爬虫一律回看板页或验证码；而模�
 
 ## 测试
 
-两层验证，都是真实端到端（非 mock 桩）：
+以下命令从仓库根目录运行，提供本地进程与隔离容器两层验证入口（真实机器人进程 + 合成协议端/模型），不代表本轮已执行容器测试、远端 CI 或生产部署：
 
 ```bash
-# ① 本地集成测试：起真实机器人进程 + 假协议端（真 WebSocket）+ 假模型（真 HTTP）
+# ① 本地集成测试：先单独构建机器人，再起真实进程 + 合成协议端/模型
+dotnet build src/BotAgent.Headless/BotAgent.Headless.csproj -c Release
 dotnet run --project tests/BotAgent.IntegrationHarness -c Release
 
 # ② 容器测试：验证真正跑在容器里的机器人（在容器网络里放置假协议端/假模型）
@@ -544,26 +542,33 @@ docker logs harness      # 断言结果
 模型沉默时不发言、回复引用（被插话时才带引用；模型指认的目标要经校验；复读时不挂错人；**收方向的引用回复也认得出来**）、
 分句发送不丢字、括号旁白标成 `〔旁白：…〕` 且不单独触发回复、人物档案读写、
 提示词组装（人设 / 档案 / `{发送者}{内容--时间}` 格式）、重启后会话恢复、健康端点。
-全量 **729** 条断言（2026-09-24 实测：**728 通过 / 1 条既有软提醒线** —— 那条是「系统提示 < 4000 字」的
-提醒线，实测约 4364 字，**是哨兵不是目标，别去改阈值**）；harness 里 `QQCHAT_IT_ONLY=s19` 可以只跑某个场景。
+harness 可调度 S1、S3–S41、S43–S51；S2 的提示词断言并入 S1，S42 官方通道场景仍排除在 harness/CI 回归之外，不代表已有官方通道端到端覆盖。
+2026-09-24 的历史快照为 728 通过 / 1 条软提醒线（系统提示 < 4000 字，实测约 4364 字；**是哨兵不是目标，别去改阈值**），不是本轮结果或当前固定断言总数。
+`QQCHAT_IT_ONLY=s19` 可以只跑某个场景；测试工程不引用机器人工程，改源码后必须先单独构建机器人。
 
-另有几支**秒级探针**（不连库、不连网，改完对应部分各跑一遍）：`ArchitectureProbe`（架构棘轮，**92/0**）、
-`SafetyProbe`（机制与安全边界，**341/0**）、`ParticipationProbe`（48/0）、`PipelineEval`（隔离评测，68/68）、
-`FrontendProbe`（面板静态 + 运行时，**230/0**）。
+另有几支**秒级探针**（合成场景，不访问生产数据或服务，改完对应部分各跑一遍）：`ArchitectureProbe`（架构棘轮）、
+`SafetyProbe`（机制与多平台策略安全边界）、`ParticipationProbe`、`PipelineEval`（隔离评测）、
+`ProductionSpecProbe`（生产契约与降级）、[FrontendProbe](<../../tests/BotAgent.FrontendProbe/probe.mjs>)（面板静态 + 运行时）。S50 飞书 Webhook 接入与 S51 每日 Token 配额面板也在集成场景列表中；计数以本地命令输出为准：
+
+```bash
+node tests/BotAgent.FrontendProbe/probe.mjs
+```
 
 ---
 
-## 故障排查
+## 常见问题与排查指南
 
-| 现象 | 原因与处理 |
-| --- | --- |
-| `/readyz` 一直 503 | 查 `docker compose logs qqchat`：地址/Token 不对，或 NapCat 没开正向 WS |
-| 日志出现「白名单为空 → 忽略所有消息」 | `QQCHAT_WHITELIST` 没填。填 `*` 或具体群号 |
-| `/status` 里 `connected:true` 但机器人不说话 | 模型把 `reply` 留空了（这是设计行为，避免刷屏）。调高 `QQCHAT_AI_DESIRE`，或在人设里写清楚什么时候该接话 |
-| 健康检查端口起不来 | Windows 非管理员绑不了 `+`：设 `QQCHAT_HEALTH_BIND=127.0.0.1`，或 `QQCHAT_HEALTH_PORT=0` 关闭 |
-| 收不到语音/文件 | Docker 版 NapCat 的已知限制（文字与图片正常） |
-| 时间戳差 8 小时 | 设 `TZ=Asia/Shanghai` 并重启容器 |
-| 登录态丢失、每次都要扫码 | `./napcat/ntqq` 卷没挂上或属主不对（`NAPCAT_UID`/`NAPCAT_GID`） |
+遇到机器人异常时，先看 `docker compose logs -f qqchat` 日志，大多数情况可通过下表快速解决：
+
+| 异常现象 | 常见原因 | 通俗解决办法 |
+| --- | --- | --- |
+| `/readyz` 一直返回 503，面板显示未连通 | 机器人与 NapCat 没有连通 | 1. 确认 NapCat 容器已正常启动；<br>2. 登录 NapCat WebUI（`6099` 端口），确认已添加正向 WebSocket `ws://qqchat:3001`；<br>3. 检查双方的 Token 是否配置一致。 |
+| 日志出现 `白名单为空 → 忽略所有消息` | 未配置有效白名单 | 在 `.env` 或 Web 面板「设置」中配置 `WHITELIST`：填入群号或 QQ 号，多个用英文逗号分隔；若想测试所有群，可填 `*`。 |
+| 机器人已连接（connected:true）但在群里不说话 | 1. 该群不在白名单内；<br>2. 机器人判断不该接话；<br>3. 开启了静默调试模式 | 1. 确认群号在白名单内；<br>2. 检查 `QQCHAT_AI_MODE` 是否设为 `0`（静默模式）；<br>3. 在面板适当调高「发言欲望」（建议 50 左右），并在人设里明确写出机器人的性格与说话意愿。 |
+| 每次重启容器都需要重新手机扫码 | NapCat 存储目录未持久化或权限不足 | 检查 `docker-compose.yml` 中 `./napcat/ntqq` 挂载目录是否存在，并确保容器内用户对该目录具有读写权限。 |
+| 消息里的时间与当前时间差了 8 个小时 | 容器时区未指定中国标准时间 | 在 `.env` 或 Compose 环境变量中增加 `TZ=Asia/Shanghai` 并重启容器。 |
+| Web 面板端口绑定失败报错 | Windows 环境下未以管理员权限运行 | 设置环境变量 `QQCHAT_HEALTH_BIND=127.0.0.1` 即可正常启动面板。 |
+| 收不到某些语音或文件 | 协议端或网络限制 | 目前建议优先使用文字与图片互动；语音特性需开启 `QQCHAT_ENABLE_VOICE=1` 并确保 TTS 容器正常运行。 |
 
 ## 许可
 

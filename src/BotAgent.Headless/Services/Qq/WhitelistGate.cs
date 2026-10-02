@@ -1,5 +1,7 @@
 using BotAgent.Domain.Qq;
+using BotAgent.Domain.Platforms;
 using BotAgent.Services.OneBot;
+using BotAgent.Services.Platforms;
 
 namespace BotAgent.Services.Qq;
 
@@ -18,6 +20,7 @@ namespace BotAgent.Services.Qq;
 public sealed class WhitelistGate
 {
     private readonly SettingsBox _box;
+    private readonly PlatformPolicyResolver _platformPolicies;
 
     private HashSet<long> _groups = new();
     private bool _allGroups;
@@ -39,9 +42,10 @@ public sealed class WhitelistGate
     private bool _groupsFromLegacy;
     private bool _privatesFromLegacy;
 
-    public WhitelistGate(SettingsBox box)
+    public WhitelistGate(SettingsBox box, PlatformPolicyResolver platformPolicies)
     {
-        _box = box;
+        _box = box ?? throw new ArgumentNullException(nameof(box));
+        _platformPolicies = platformPolicies ?? throw new ArgumentNullException(nameof(platformPolicies));
         Rebuild();
     }
 
@@ -57,19 +61,25 @@ public sealed class WhitelistGate
     public void Rebuild()
     {
         var legacy = _settings.MessageWhitelist;
+        var qqPolicy = FindPolicy(PlatformId.QqPrivate, AccountScope.Legacy);
+        var offPolicy = FindPolicy(PlatformId.QqOfficial, AccountScope.Legacy);
+        var locPolicy = FindPolicy(PlatformId.Local, AccountScope.Legacy);
 
-        _groupsFromLegacy = string.IsNullOrWhiteSpace(_settings.WhitelistGroups);
-        _privatesFromLegacy = string.IsNullOrWhiteSpace(_settings.WhitelistPrivates);
+        var groupSource = !string.IsNullOrWhiteSpace(qqPolicy?.GroupWhitelist) ? qqPolicy.GroupWhitelist : _settings.WhitelistGroups;
+        var privateSource = !string.IsNullOrWhiteSpace(qqPolicy?.PrivateWhitelist) ? qqPolicy.PrivateWhitelist : _settings.WhitelistPrivates;
+
+        _groupsFromLegacy = string.IsNullOrWhiteSpace(groupSource);
+        _privatesFromLegacy = string.IsNullOrWhiteSpace(privateSource);
 
         (_groups, _allGroups) = WhitelistPolicy.ParseWhitelist(
-            _groupsFromLegacy ? legacy : _settings.WhitelistGroups);
+            _groupsFromLegacy ? legacy : groupSource);
         (_privates, _allPrivates) = WhitelistPolicy.ParseWhitelist(
-            _privatesFromLegacy ? legacy : _settings.WhitelistPrivates);
+            _privatesFromLegacy ? legacy : privateSource);
 
         // 官方通道：单独的名单；两份都留空 = 全部接受（官方平台自身有准入与额度）——
         // 不能沿用 ParseWhitelist 的“空 = 全拦”，否则没配名单时官方通道会直接死掉。
-        var officialGroups = _settings.OfficialWhitelistGroups;
-        var officialPrivates = _settings.OfficialWhitelistPrivates;
+        var officialGroups = !string.IsNullOrWhiteSpace(offPolicy?.GroupWhitelist) ? offPolicy.GroupWhitelist : _settings.OfficialWhitelistGroups;
+        var officialPrivates = !string.IsNullOrWhiteSpace(offPolicy?.PrivateWhitelist) ? offPolicy.PrivateWhitelist : _settings.OfficialWhitelistPrivates;
         (_officialGroups, _officialAllGroups) = string.IsNullOrWhiteSpace(officialGroups)
             ? (new HashSet<long>(), true)
             : WhitelistPolicy.ParseWhitelist(officialGroups);
@@ -79,9 +89,20 @@ public sealed class WhitelistGate
 
         // 本地通道：只有点名才算数（空 = 全拦）。配置里写的是**短 id**（1、2、1001…），
         // 这里换算成内部目标号（+ LocalBase）—— 超出范围的直接丢掉（fail-closed，不让它撞进官方号段）。
-        var (localIds, _) = WhitelistPolicy.ParseWhitelist(_settings.LocalChannelIds);
+        var hasLocPolicy = !string.IsNullOrWhiteSpace(locPolicy?.GroupWhitelist) || !string.IsNullOrWhiteSpace(locPolicy?.PrivateWhitelist);
+        var localSource = hasLocPolicy
+            ? $"{locPolicy?.GroupWhitelist},{locPolicy?.PrivateWhitelist}"
+            : _settings.LocalChannelIds;
+        var (localIds, _) = WhitelistPolicy.ParseWhitelist(localSource);
         _local = localIds.Select(Channels.LocalTarget).Where(id => id > 0).ToHashSet();
     }
+
+    private PlatformPolicySettings? FindPolicy(string platform, string account)
+        => (_settings.PlatformPolicies ?? new List<PlatformPolicySettings>()).FirstOrDefault(p =>
+            p is not null
+            && string.Equals(PlatformId.Normalize(p.PlatformId), platform, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(string.IsNullOrWhiteSpace(p.AccountScope) ? AccountScope.Default : p.AccountScope,
+                account, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// 收消息那道闸：它必须**按通道**选名单（<c>msg.Channel</c> 直接传进来，别包一层 ChannelOf ——
@@ -115,10 +136,21 @@ public sealed class WhitelistGate
         }
 
         var channel = Channels.ChannelOf(sourceKey);
+        if (!_platformPolicies.IsChatEnabled(channel))
+        {
+            return false;
+        }
+
         if (Channels.IsLocal(channel))
         {
             // 本地通道：只有点名的 id 收（空 = 全拦，fail-closed）
             return _local.Contains(id);
+        }
+
+        if (Channels.IsFeishu(channel))
+        {
+            // 飞书通道：入站网关已核验签名、去重及自身白名单
+            return true;
         }
 
         return Channels.IsOfficial(channel)

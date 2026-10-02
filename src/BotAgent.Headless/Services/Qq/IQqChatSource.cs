@@ -9,8 +9,8 @@ namespace BotAgent.Services.Qq;
 public readonly record struct SendResult(bool Ok, long MessageId = 0);
 
 /// <summary>
-/// QQ 消息源统一抽象：上层（会话/Agent）只依赖此接口收发消息，
-/// 不关心背后是内置账号登录（Lagrange.Core）还是外部 OneBot 协议端。
+/// 既有通道消息源抽象（兼容外观 Facade）：供 QQ 私域、QQ 官方、本地通道及平台转接层使用。
+/// 通用核心已逐步通过 <see cref="Domain.Ports.IPlatformAdapter"/> 和 <see cref="Domain.Ports.IPlatformMessenger"/> 进行中立解耦。
 /// </summary>
 public interface IQqChatSource
 {
@@ -64,7 +64,7 @@ public interface IQqChatSource
     /// 拿得到消息 id 时上层会把它记到会话里 —— 这样**别人回复机器人那句话**时，
     /// 我们能认出“他在回你”，并把原话给模型看（以前 reply 段是被丢掉的）。
     /// </summary>
-    Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null);
+    Task<SendResult> SendTextAsync(bool isGroup, long targetId, string text, CancellationToken ct = default, long? replyToMessageId = null, bool directAddress = false);
 
     /// <summary>
     /// 按消息 id 取回（纯文本、发送者 QQ）—— 引用原文**本地找不到**时的兜底（OneBot <c>get_msg</c>）。

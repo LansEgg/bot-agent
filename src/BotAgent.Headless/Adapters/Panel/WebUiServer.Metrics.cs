@@ -10,9 +10,13 @@ public sealed partial class WebUiServer
     {
         var summary = _traceArchive?.Snapshot();
         var durations = summary?.Durations ?? Array.Empty<int>();
+        var started = _traces?.StartedTotal ?? 0;
         var completed = _traces?.CompletedTotal ?? 0;
         var active = _traces?.ActiveCount ?? 0;
         var body = new StringBuilder()
+            .AppendLine("# HELP botagent_turns_started_total Decision turns accepted by the processing pipeline since process start.")
+            .AppendLine("# TYPE botagent_turns_started_total counter")
+            .Append("botagent_turns_started_total ").AppendLine(started.ToString(CultureInfo.InvariantCulture))
             .AppendLine("# HELP botagent_turns_completed_total Completed decision turns since process start.")
             .AppendLine("# TYPE botagent_turns_completed_total counter")
             .Append("botagent_turns_completed_total ").AppendLine(completed.ToString(CultureInfo.InvariantCulture))
@@ -32,7 +36,46 @@ public sealed partial class WebUiServer
             .Append("botagent_trace_archive_prompt_tokens ").AppendLine((summary?.PromptTokens ?? 0).ToString(CultureInfo.InvariantCulture))
             .AppendLine("# HELP botagent_trace_archive_completion_tokens Archived completion token count.")
             .AppendLine("# TYPE botagent_trace_archive_completion_tokens gauge")
-            .Append("botagent_trace_archive_completion_tokens ").AppendLine((summary?.CompletionTokens ?? 0).ToString(CultureInfo.InvariantCulture));
+            .Append("botagent_trace_archive_completion_tokens ").AppendLine((summary?.CompletionTokens ?? 0).ToString(CultureInfo.InvariantCulture))
+            .AppendLine("# HELP botagent_prompt_tokens_total Cumulative prompt tokens consumed since process start.")
+            .AppendLine("# TYPE botagent_prompt_tokens_total counter")
+            .Append("botagent_prompt_tokens_total ").AppendLine((_traces?.PromptTokensTotal ?? 0).ToString(CultureInfo.InvariantCulture))
+            .AppendLine("# HELP botagent_completion_tokens_total Cumulative completion tokens produced since process start.")
+            .AppendLine("# TYPE botagent_completion_tokens_total counter")
+            .Append("botagent_completion_tokens_total ").AppendLine((_traces?.CompletionTokensTotal ?? 0).ToString(CultureInfo.InvariantCulture));
+
+        var circuits = _circuitStatusProvider?.Invoke();
+        if (circuits is { Count: > 0 })
+        {
+            body.AppendLine("# HELP botagent_circuit_breaker_state Current state of circuit breakers.")
+                .AppendLine("# TYPE botagent_circuit_breaker_state gauge");
+            foreach (var c in circuits)
+            {
+                body.Append("botagent_circuit_breaker_state{type=\"")
+                    .Append(c.Type)
+                    .Append("\",id=\"")
+                    .Append(c.Id)
+                    .Append("\",state=\"")
+                    .Append(c.State)
+                    .AppendLine("\"} 1");
+            }
+        }
+
+        var platforms = _platformRegistry?.GetSnapshots();
+        if (platforms is { Count: > 0 })
+        {
+            body.AppendLine("# HELP botagent_platform_adapter_connected Connection status of registered platform adapters.")
+                .AppendLine("# TYPE botagent_platform_adapter_connected gauge");
+            foreach (var p in platforms)
+            {
+                body.Append("botagent_platform_adapter_connected{platform=\"")
+                    .Append(p.PlatformId)
+                    .Append("\",account=\"")
+                    .Append(p.AccountScope)
+                    .Append("\"} ")
+                    .AppendLine(p.Connected ? "1" : "0");
+            }
+        }
 
         return WriteBytesAsync(context, 200, "text/plain; version=0.0.4; charset=utf-8", Encoding.UTF8.GetBytes(body.ToString()));
     }

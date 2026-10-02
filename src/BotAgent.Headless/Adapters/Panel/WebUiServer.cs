@@ -24,6 +24,7 @@ using BotAgent.Services.Qq;
 using BotAgent.Services.Reply;
 using BotAgent.Services.Settings;
 using BotAgent.Services.Stickers;
+using BotAgent.Services.Platforms;
 using BotAgent.Services.Voice;
 using BotAgent.Adapters.Persistence;
 using BotAgent.Domain.Ports;
@@ -112,6 +113,8 @@ public sealed partial class WebUiServer : IDisposable
     private readonly ReplyPipeline _reply;
     private readonly ParticipationUseCase _participation;
     private readonly AgentCommandService _agentCmds;
+    private readonly ITenantQuotaLedger _quotas;
+    private readonly IJargonRepository _jargons;
     private readonly DateTimeOffset _startedAt = Clock.Now;
     private readonly CancellationTokenSource _cts = new();
 
@@ -148,7 +151,8 @@ public sealed partial class WebUiServer : IDisposable
         ReplyPipeline reply,
         ParticipationUseCase participation,
         AgentCommandService agentCmds,
-        AgentBridgeServer? agentBridge = null,
+        ITenantQuotaLedger quotas,
+         AgentBridgeServer? agentBridge = null,
         HealthReportService? healthReports = null,
         SessionPolicyLedger? sessionPolicies = null,
         TurnTraceStore? traces = null,
@@ -156,7 +160,12 @@ public sealed partial class WebUiServer : IDisposable
          IAuditChain? audit = null,
         ApprovalUseCase? approvals = null,
         LocalChannelSource? localChannel = null,
-        Action? onRestart = null)
+        Action? onRestart = null,
+        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? circuitStatusProvider = null,
+        IPlatformRegistry? platformRegistry = null,
+        Platforms.Feishu.FeishuBotGateway? feishuGateway = null,
+         PlatformPolicyResolver? platformPolicies = null,
+        IJargonRepository? jargons = null)
     {
         _port = port;
         _box = box;
@@ -184,7 +193,9 @@ public sealed partial class WebUiServer : IDisposable
         _reply = reply;
         _participation = participation;
         _agentCmds = agentCmds;
-        _agentBridge = agentBridge;
+        _quotas = quotas;
+        _jargons = jargons ?? new JargonStore();
+         _agentBridge = agentBridge;
         _healthReports = healthReports;
         _sessionPolicies = sessionPolicies;
         _traces = traces;
@@ -194,6 +205,10 @@ public sealed partial class WebUiServer : IDisposable
         _approvals = approvals;
         _localChannel = localChannel;
         _onRestart = onRestart;
+        _circuitStatusProvider = circuitStatusProvider;
+        _platformRegistry = platformRegistry;
+        _feishuGateway = feishuGateway;
+         _platformPolicies = platformPolicies;
 
         // 启动时把密钥库里那份 TTS 密钥重新写给 tts 容器（容器可能刚被重建、
         // 或者上次写文件前我们就重启了）——否则面板里存着 key，语音却发不出去。
@@ -239,20 +254,17 @@ public sealed partial class WebUiServer : IDisposable
     /// 为 null 时（例如集成测试里）只记一条日志，不真的退。
     /// </summary>
     private readonly Action? _onRestart;
+    private readonly Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>>? _circuitStatusProvider;
+    private readonly IPlatformRegistry? _platformRegistry;
+    private readonly Platforms.Feishu.FeishuBotGateway? _feishuGateway;
+    private readonly PlatformPolicyResolver? _platformPolicies;
+    private readonly SemaphoreSlim _feishuWebhookSlots = new(16, 16);
 
     /// <summary>实际监听的前缀（启动失败为 null）。</summary>
     public string? ListeningOn { get; private set; }
 
     public void Start()
     {
-        try
-        {
-            TlsCertificateManager.EnsureCertificate(autoGenerateIfMissing: true);
-        }
-        catch (Exception ex)
-        {
-            FileLog.Warn("TLS", $"TLS 证书初始化异常：{ex.Message}");
-        }
 
         // 订阅面板事件（订阅写法一字未改：事件本体本来就在 PanelNotifier 上，以前只是 BotAgentHost 转发了一层）
         _ui.MessageAdded += OnMessageAdded;
@@ -326,14 +338,17 @@ public sealed partial class WebUiServer : IDisposable
             var path = context.Request.Url?.AbsolutePath ?? "/";
             var method = context.Request.HttpMethod;
 
-            var publicPath = path.Equals("/healthz", StringComparison.OrdinalIgnoreCase) ||
+            var isFeishuWebhook = path.Equals("/api/webhooks/feishu", StringComparison.OrdinalIgnoreCase);
+            var publicPath = isFeishuWebhook ||
+                path.Equals("/healthz", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/readyz", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/metrics", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/api/auth/status", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/api/auth/login", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/agent-bridge", StringComparison.OrdinalIgnoreCase) ||
                 (method == "GET" && (path == "/" || path == "/app.css" || path == "/app.js" ||
-                    path == "/trace.css" || path == "/trace.js" || path == "/dash.js" || path == "/favicon.ico"));
+                    path == "/trace.css" || path == "/trace.js" || path == "/dash.js" || path == "/favicon.ico" ||
+                    path.Equals("/playground", StringComparison.OrdinalIgnoreCase) || path.Equals("/playground.html", StringComparison.OrdinalIgnoreCase)));
             if (!publicPath && !(path.Equals("/api/auth/change-password", StringComparison.OrdinalIgnoreCase) && HasPendingSession(context)))
             {
                 if (!IsAuthorized(context))
@@ -348,7 +363,7 @@ public sealed partial class WebUiServer : IDisposable
                 }
             }
 
-            if (string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) && !IsSameOrigin(context))
+            if (!isFeishuWebhook && string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase) && !IsSameOrigin(context))
             {
                 await WriteJsonAsync(context, 403, new JsonObject { ["error"] = "cross-origin request rejected" });
                 context.Response.Close();
@@ -869,6 +884,7 @@ public sealed partial class WebUiServer : IDisposable
             // 忽略
         }
 
+        _feishuWebhookSlots.Dispose();
         _ = _loop;
     }
 

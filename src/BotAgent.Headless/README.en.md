@@ -1,14 +1,14 @@
-# Bot Agent Headless (container edition)
+# Bot Agent Headless
 
 [简体中文](README.md) | English
 
-A **headless, cross-platform, container-deployable** QQ chat bot service: it connects to an OneBot v11 protocol side (NapCat and friends) and uses an OpenAI-compatible model to reply automatically in QQ private chats and group chats, with a web panel built in.
+A **headless, pluggable multi-platform, container-deployable** universal chat agent runtime: it supports QQ private (OneBot v11/NapCat), QQ Official Platform, Feishu (Lark) Bot, and local zero-dependency testing channels, using an OpenAI-compatible model to reply automatically in private, group, and channel chats, with a lightweight web panel built in.
 
 > A note on Chinese literals: some inline examples below are Chinese-language strings — prompt templates, in-chat markers such as `[已撤回]` / `〔旁白：…〕`, and settings values — because that is what the bot actually emits. They are kept verbatim so they can be copied as-is.
 
 
 ```
-QQ client (Linux)  ←injected—  NapCat (container)  ←—OneBot v11 WS——  Bot Agent (container)  ——→  model API
+Chat Platforms (QQ / Feishu / Local)  ←—Adapter Seam—  Bot Agent (Container)  ——→  Model API
 ```
 
 - **No UI, no Windows dependency**: `net8.0`, Docker image around 80MB (the runtime stage is based on `dotnet/runtime:8.0`)
@@ -146,13 +146,16 @@ secrets:
 | --- | --- | --- |
 | `QQCHAT_MAX_AGENT_STEPS` | `1` | Upper bound on **the bounded stepping loop on the chat side** (a 1–3 slider in the panel, clamped once more in code). The default of 1 is **byte-for-byte** the previous behaviour; raised, the model can "run read-only tools (web search / page read) on the spot, then ask once more" — still read-only, and voice / stickers / pokes / sharing still go through the unified verdict at the send stage; if a tool yields nothing it does not spin |
 | `QQCHAT_AGENT_SERVER_GATE` | `0` | `1` = **every `//` step also passes through the unified tool gate** (registry + this turn's policy snapshot + category denials). Once on, the verdict matches the old allowlist; off = zero behaviour change. High-risk exceptions can only be named by **tool name** (`ToolPolicy.HighRiskExceptions`; listing `bash` does not incidentally open up `docker`), and the approval branch still does not accept high-risk ones |
-| `QQCHAT_LOCAL_CHANNEL_IDS` | empty | The roster for the **local HTTP channel** (the third `IQqChatSource` implementation). **Empty = the whole channel is not built** (deliberately unlike the official channel's "empty = accept all"); write **short ids** (`1`, `2`, `1001`) and the server maps them to a dedicated **7e15-onward** number range; anything out of range (below 1 or above 1e12) is rejected outright — better a 400 than a collision with the official number range |
+| `QQCHAT_LOCAL_CHANNEL_IDS` | empty | The roster for the **local HTTP channel** (the third `IQqChatSource` implementation). **Empty = the channel is not constructed** (unlike official); write **short IDs** (`1`, `2`, `1001`), mapped to **7e15-onward** internal IDs; can be configured and updated dynamically in the panel's "Platform Instance Policy" |
 
-> ⚠ **Current state of the panel controls (recorded honestly)**: of these three, only *the chat step limit* has a slider in the panel; the other two have **no dedicated switch control** — change them through **environment variables** (passed through by the `docker-compose.yml` above) or the panel save endpoint `POST /api/settings`
-> (`{"agentServerUseGate":true}` / `{"localChannelIds":"1"}`); the current values are visible in the settings echo in the panel.
-> Changing the local channel roster **requires a container restart to take effect** (channels are built from the roster at startup).
-
-> The entry point for the third switch is `POST /api/local/message` (inject a local message; replies land in an in-memory outbox): two **fail-closed** preconditions — an empty roster gives `403 local_channel_disabled`; no panel token configured gives `403 panel_token_required`.
+> 💡 **Platform Instance Policy & Local Channel Panel Operations**:
+> 1. **Centralized governance**: Web panel Settings features the "Platform Instance Policy" table, managing all platforms (QQ Private, QQ Official, Feishu, Local Channel) for master switches, chat toggles, independent group/private whitelists, and capability overrides with atomic synchronization.
+> 2. **Why Local Channel initially has 0 conversations**: Local Channel is a pure in-process / HTTP test channel with no external push connection. Conversations are **dynamically created upon the first injected message**.
+> 3. **How to operate on the panel**:
+>    - **Method 1 (Interactive Playground, Recommended)**: In panel Settings under "Local Channel", click `🧪 Open Interactive Playground (Playground)` (or visit `/playground.html`). Select scenario group, trigger mode (@bot / quote / plain), enter text, and click "Inject Exercise ↵" to see real-time replies and the six-stage governance analysis.
+>    - **Method 2 (Main Dashboard Management)**: Once injected, the conversation immediately appears with a purple `Local` badge in the main conversation list. Click the "Local" filter tab on the left sidebar to view messages, archives, and reply manually.
+>    - **Method 3 (HTTP API)**: Call `POST /api/local/message` with panel token: `{"id": 1, "text": "Hello", "sender": "Tester", "isGroup": true}`. Replies are recorded into the memory outbox (`/api/local`).
+> 4. **Preconditions (Fail-Closed)**: Empty whitelist returns `403 local_channel_disabled`; missing panel token returns `403 panel_token_required`.
 
 > Why QR login from the panel needs a token: the bot fetches the QR code from NapCat WebUI's public endpoints
 > (`/api/auth/login` + `/api/QQLogin/GetQQLoginQrcode`) using the same authentication as NapCat's own frontend,
@@ -166,15 +169,24 @@ secrets:
 | --- | --- |
 | `data/qqchat.db` | **SQLite database**: settings, conversations, messages (including the archive), member profiles and personas, mood, songs heard, sticker index, secrets. WAL mode, accompanied by `-wal` / `-shm` |
 | `data/legacy-json/` | Archive of old JSON data (moved here after the automatic import on first start; **not deleted**) |
+| `data/feishu-ids-v2.json` | Feishu v2 native identity-to-alias map (persisted when new identities are bound); include in data backups, with no automatic legacy-alias migration |
 | `stickers/*.png` | **Sticker image data** (the index is in the database; binary data does not belong in there — backup, preview and cleanup all get awkward) |
 | `logs/qqchat.log` | Runtime log (the panel log page and `/api/logs` are just its tail; ⚠ it currently **does not rotate**, so it keeps growing) |
 
 > Why SQLite replaced "a pile of JSON": ① conversations / messages / profiles were spread across several files, a single crash could write only half of them, and cross-file transactions were impossible; ② messages are append-only, while JSON rewrote everything each time (noticeably slow at a few thousand entries); ③ the panel's "earlier messages in this group / one person's persona in one group / dig through the archive" could only be done by loading everything into memory and filtering, whereas in SQL it is one statement.
 >
-> Backup: just copy `data/qqchat.db` (together with `-wal` / `-shm`); to inspect settings with SQL, `json_extract(json,'$.AiDesire')` works.
+> Database backup: copy `data/qqchat.db` (together with `-wal` / `-shm`); when Feishu is enabled, retain and back up `data/feishu-ids-v2.json` too — restoring only the database is insufficient. To inspect settings with SQL, `json_extract(json,'$.AiDesire')` works.
 > Secrets (API keys entered in the panel) live in the `secrets` table, which is why **the database file mode is 600** (kept out of `settings`, so it never gets pasted out along with the configuration).
 
 JSON inside the database never escapes Chinese characters, so `sqlite3 ... "SELECT text FROM messages LIMIT 3"` is readable as-is.
+
+---
+
+## Fix compatibility and migration
+
+- **Feishu identity map**: runtime composition persists `data/feishu-ids-v2.json`, using a new alias range (`FeishuBase + 1e12` to `FeishuBase + 2e12`) separate from legacy 32-bit aliases. Legacy conversations are retained, but native identity bindings and history are not inherited automatically; replace old numeric whitelist entries with Feishu native IDs.
+- **OwnMessage ledger**: new entries are scoped by platform, account, conversation and native message ID in `own_messages_scoped`. Legacy bare-ID rows and imported/archived JSON are retained, but ambiguous scope fails closed: no inferred ownership and no scoped lookup hit. Old binaries cannot read new scoped entries; **lossless downgrade is not provided**. Keep a pre-upgrade backup.
+- **Tool hard-timeout boundary**: the deadline bounds the caller's await and requests cancellation; it does not forcibly stop the underlying operation. Work that ignores cancellation may continue and produce external side effects.
 
 ---
 
@@ -514,10 +526,11 @@ The following are **deliberate trade-offs**, not a to-do list:
 
 ## Tests
 
-Two layers of verification, both genuinely end-to-end (no mock stubs):
+Run these commands from the repository root. They provide local-process and isolated-container verification entry points (a real bot process with synthetic protocol/model peers), not claims that this round ran container tests, remote CI or a production deployment:
 
 ```bash
-# ① Local integration tests: a real bot process + a fake protocol side (real WebSocket) + a fake model (real HTTP)
+# ① Local integration tests: build the bot separately, then start a real process + synthetic protocol/model peers
+dotnet build src/BotAgent.Headless/BotAgent.Headless.csproj -c Release
 dotnet run --project tests/BotAgent.IntegrationHarness -c Release
 
 # ② Container tests: verify the bot as it really runs in a container (place the fake protocol side / model on the container network)
@@ -538,12 +551,17 @@ Coverage: reverse / forward WebSocket handshake, login-number detection, group a
 staying silent when the model is silent, quoted replies (a quote is attached only when someone cut in; targets the model points at are validated; no wrong credit when repeating; **incoming quoted replies are recognised too**),
 sentence splitting without losing characters, parenthetical narration tagged as `〔旁白：…〕` without triggering a reply on its own, member profile reads and writes,
 prompt assembly (persona / profiles / the `{sender}{content--time}` format), conversation recovery after a restart, and the health endpoints.
-The full suite has **729** assertions (measured 2026-09-24: **728 pass / 1 pre-existing soft warning line** — the "system prompt < 4000 characters"
-warning line, measuring ~4364 characters; **it is a sentinel, not a target, so don't move the threshold**). Inside the harness, `QQCHAT_IT_ONLY=s19` runs a single scenario.
+The harness dispatches S1, S3–S41 and S43–S51. S2 prompt assertions run inside S1; S42 (official channel) remains excluded from harness/CI regression, so official-channel end-to-end coverage is not claimed.
+The historical 2026-09-24 snapshot was 728 pass / 1 soft warning line (system prompt < 4000 characters, measuring ~4364; **it is a sentinel, not a target, so don't move the threshold**), not this round's result or a fixed current assertion count.
+`QQCHAT_IT_ONLY=s19` runs one scenario. The harness project does not reference the bot project; build the bot separately after source changes.
 
-There are also several **sub-second probes** (no database, no network, each run after changing the corresponding part): `ArchitectureProbe` (architecture ratchet, **92/0**),
-`SafetyProbe` (mechanisms and safety boundaries, **341/0**), `ParticipationProbe` (48/0), `PipelineEval` (isolated evaluation, 68/68),
-`FrontendProbe` (panel static + runtime, **230/0**).
+There are also several **sub-second probes** (synthetic scenarios, no production data or services; run after changing the corresponding part): `ArchitectureProbe` (architecture ratchet),
+`SafetyProbe` (mechanisms and multi-platform safety boundaries), `ParticipationProbe`, `PipelineEval` (isolated evaluation),
+`ProductionSpecProbe` (production specs & fallbacks), and [FrontendProbe](<../../tests/BotAgent.FrontendProbe/probe.mjs>) (panel static + runtime). S50 Feishu Webhook and S51 Daily Token Quota are also in the integration scenario list; counts come from local command output:
+
+```bash
+node tests/BotAgent.FrontendProbe/probe.mjs
+```
 
 ---
 

@@ -28,8 +28,13 @@ public static class AppPaths
 
     private static string ResolveRuntimeRoot()
     {
-        // 1) 显式指定（容器 / systemd 推荐）
-        var configured = Environment.GetEnvironmentVariable("QQCHAT_DATA_DIR");
+        // 1) 显式指定（容器 / systemd 推荐，新中立变量优先）
+        var configured = Environment.GetEnvironmentVariable("BOTAGENT_DATA_DIR");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            configured = Environment.GetEnvironmentVariable("QQCHAT_DATA_DIR");
+        }
+
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return Path.GetFullPath(configured.Trim());

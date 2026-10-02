@@ -16,8 +16,8 @@ namespace BotAgent.Headless;
 using System.Text;
 
 /// <summary>
-/// 无界面机器人宿主：加载配置 → 组装服务 → 建立 OneBot 连接 → 常驻运行、优雅退出。
-/// Agent 逻辑无 UI 化后跑在这里：去掉界面、改为容器部署。
+/// 通用 BotAgent 宿主：加载配置 → 组装服务 → 建立多平台连接 → 常驻运行、优雅退出。
+/// Agent 核心面向多平台解耦，具备可插拔平台适配器体系并支持容器化部署。
 /// </summary>
 public static class Program
 {
@@ -40,7 +40,7 @@ public static class Program
 
         if (args.Contains("--version"))
         {
-            Console.WriteLine("BotAgent.Headless 0.1.0");
+            Console.WriteLine("BotAgent.Headless 1.1.0");
             return 0;
         }
 
@@ -182,7 +182,7 @@ public static class Program
     private static void PrintBanner(AppSettings settings, bool loginQrConfigured)
     {
         Console.WriteLine("══════════════════════════════════════════════");
-        Console.WriteLine("  Bot Agent（Headless）  0.1.0");
+        Console.WriteLine("  Bot Agent（Headless）  1.1.0");
         Console.WriteLine("══════════════════════════════════════════════");
         Console.WriteLine($"  数据目录   {AppPaths.RuntimeRoot}");
         Console.WriteLine($"  配置文件   {new SettingsStore().FilePath}" + (new SettingsStore().ExistsOnDisk ? "" : "（不存在，全部来自环境变量/默认值）"));

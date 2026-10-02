@@ -1,8 +1,14 @@
 using BotAgent.Adapters.Persistence;
 using BotAgent.Adapters.Panel;
 using BotAgent.Adapters.Model;
+using BotAgent.Adapters.Platforms;
+using BotAgent.Adapters.Platforms.Feishu;
 using BotAgent.Domain.Qq;
+using BotAgent.Domain.Platforms;
 using BotAgent.Domain.Ports;
+using BotAgent.Domain.Model;
+using BotAgent.Services.Platforms;
+using BotAgent.Services.Resilience;
 using BotAgent.Services;
 using BotAgent.Services.Agent;
 using BotAgent.Services.NapCat;
@@ -87,19 +93,28 @@ internal static class CompositionRoot
         // 配置库：同样无状态；热更新与面板共用它。
         var settingsStore = new SettingsStore();
 
-        // ① 上行通道层（协议端 + 可选的官方通道 + 聚合器）：见 BuildChannelLayer
-        var (gateway, source, official, local) = BuildChannelLayer(settings, settingsBox);
+        // Provider 注册表只登记非敏感路由元数据；实际密钥仍由环境变量/密钥库提供。
+        // 启动时同步 primary 的地址与模型名，但不覆盖已有熔断状态。
+        var providerStore = new ModelProviderStore();
+        providerStore.EnsurePrimary(settings);
+
+        // ① 上行通道层（协议端 + 可选的官方通道 + 本地通道 + 飞书通道 + 平台注册表）：见 BuildChannelLayer
+        var riskBackoff = new ProtocolRiskBackoff(msg => FileLog.Write("OneBot", msg));
+        var (gateway, source, official, local, feishu, platformRegistry) = BuildChannelLayer(settings, settingsBox, riskBackoff);
+        var platformPolicies = new PlatformPolicyResolver(settingsBox, platformRegistry);
 
         // ② 模型与媒体层（模型客户端 / 表情包 / 桥 / 语音 / 音乐与链接 / 联网研究）：见 BuildModelAndMediaLayer
+        var ttsBreaker = new ToolCircuitBreaker("tts");
+        var searchBreaker = new ToolCircuitBreaker("search");
         var (brain, store, profiles, stickers, agentBridge, voice, music, links, research) =
-            BuildModelAndMediaLayer(settings, settingsBox, source, secrets);
+            BuildModelAndMediaLayer(settings, settingsBox, source, secrets, providerStore, ttsBreaker, searchBreaker);
 
         // ---------------- 用例层：谁依赖谁，只在这里看得到 ----------------
         // 共享状态先建：登录号 / 收摊标记 / 事件聚合 / 白名单闸门（其余组件都要问它们）
         var identity = new BotIdentity();
         var lifetime = new BotLifetime();
         var ui = new PanelNotifier();
-        var whitelist = new WhitelistGate(settingsBox);
+        var whitelist = new WhitelistGate(settingsBox, platformPolicies);
 
         // 数据侧
         var registry = new ConversationRegistry(store, settingsBox, source, whitelist.AllowsKey, ui.EmitLog);
@@ -115,7 +130,8 @@ internal static class CompositionRoot
         // 决策轨迹（批次 C）：一轮一条、只有形状；回复链 / 发送层 / 能力闸门三处往上记节点。
         var traces = new TurnTraceStore(archive: new TraceArchiveStore());
         var audit = new AuditLogStore();
-        var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit);
+        var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit, riskBackoff,
+            platformPolicies, brain);
 
         // 各域用例
         var vibes = new VibeTracker();
@@ -151,7 +167,8 @@ internal static class CompositionRoot
                 return target is null ? Task.CompletedTask : plain.SendPlainAsync(target, text);
             }),
             sessionPolicies,
-            traces);
+            traces,
+            audit);
 
         // agent 命令（//）：会话台账 + 内置/外部两路后端
         var sessions = new AgentSessionStore(
@@ -165,16 +182,21 @@ internal static class CompositionRoot
                 Log: ui.EmitLog,
                 SelfId: () => identity.SelfId,
                 IsOfficialUserAllowed: whitelist.IsOfficialPrivateExplicit,
-                SendPlainAsync: plain.SendPlainAsync));
+                SendPlainAsync: plain.SendPlainAsync),
+             actionGateway: gateway,
+             platformPolicies: platformPolicies);
 
         // 回复主链（要用到上面所有用例）→ 建好之后把"戳一戳请求一轮回复"这条边接上
+        var quotas = new TenantQuotaStore();
         var reply = new ReplyPipeline(settingsBox, source, brain, profiles, registry, ui, whitelist, approvals,
             participation, poke, vibes, roles, ownLedger, agentCmds, plain, stickers, voice, music, research, links, mood,
             new ReplyHooks(
                 Log: ui.EmitLog,
                 SelfId: () => identity.SelfId,
                 IsDisposed: () => lifetime.IsDisposed),
-            traces);
+            traces, riskBackoff,
+            quotas: quotas,
+            platformPolicies: platformPolicies);
         poke.RequestReply = conversation => reply.RequestReply(conversation, null);
 
         // 后台巡检（静默兜底 / 画像巡检 / 表情包巡检 / 账号在线探测）
@@ -224,9 +246,11 @@ internal static class CompositionRoot
         var panelHttp = new HttpFetcher(TimeSpan.FromSeconds(20), msg => FileLog.Write("Net", msg), "panel-models");
         var neteaseHttp = new HttpFetcher(TimeSpan.FromSeconds(15), msg => FileLog.Write("Net", msg), "panel-netease");
 
+        var circuitStatusProvider = BuildCircuitStatusProvider(brain, ttsBreaker, searchBreaker, riskBackoff);
+
         var web = new WebUiServer(settings.HealthPort, settingsBox, gateway, source, agent, loginQr, panelHttp, neteaseHttp,
             settingsHotReload, ui, stickers, mood, voice, music, research, registry, profiles, secrets, settingsStore, identity, scheduler,
-            reply, participation, agentCmds, agentBridge, healthReports,
+            reply, participation, agentCmds, quotas, agentBridge, healthReports,
             sessionPolicies: sessionPolicies,
             traces: traces,
             hostFacts: hostFacts,
@@ -236,7 +260,7 @@ internal static class CompositionRoot
             onRestart: () =>
             {
                 FileLog.Write("Host", "一键重启：即将退出，让 Docker 把容器重新拉起来…");
-                foreach (var svc in new IDisposable?[] { official })
+                foreach (var svc in new IDisposable?[] { official, feishu })
                 {
                     try
                     {
@@ -249,7 +273,11 @@ internal static class CompositionRoot
                 }
 
                 Environment.Exit(0);
-            });
+            },
+            circuitStatusProvider: circuitStatusProvider,
+            platformRegistry: platformRegistry,
+            feishuGateway: feishu,
+             platformPolicies: platformPolicies);
 
         return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web);
     }
@@ -258,20 +286,18 @@ internal static class CompositionRoot
     /// 上行通道层：私域协议端 →（配齐了 appid/secret 且开关打开时）官方通道 → 聚合器。
     /// 两条路交给**同一个** Agent，隔离靠会话 key 的通道前缀（见 Channels.Key）。顺序与日志措辞逐字搬来。
     /// </summary>
-    private static (OneBotGateway Gateway, IQqChatSource Source, OfficialBotGateway? Official, LocalChannelSource? Local) BuildChannelLayer(
-        AppSettings settings, SettingsBox settingsBox)
+    private static (OneBotGateway Gateway, IQqChatSource Source, OfficialBotGateway? Official, LocalChannelSource? Local, FeishuBotGateway? Feishu, IPlatformRegistry Registry) BuildChannelLayer(
+        AppSettings settings, SettingsBox settingsBox, ProtocolRiskBackoff riskBackoff)
     {
-        var gateway = new OneBotGateway(settingsBox)
+        var gateway = new OneBotGateway(settingsBox, riskBackoff)
         {
             SelfIdHint = settings.UinOrZero
         };
 
-        // 上行通道聚合：默认只有私域（自建 NapCat）。配了官方平台 appid/secret 并打开开关时，
-        // 官方那条也接进来 —— 两条路交给**同一个** BotAgentHost，隔离靠会话 key 的通道前缀
-        // （见 Channels.Key），而不是靠两套 Agent（那样白名单/上下文/面板都得写两遍，迟早不一致）。
         IQqChatSource source = gateway;
         OfficialBotGateway? official = null;
         LocalChannelSource? local = null;
+        FeishuBotGateway? feishu = null;
         if (settings.OfficialEnabled
             && !string.IsNullOrWhiteSpace(settings.OfficialAppId)
             && !string.IsNullOrWhiteSpace(settings.OfficialAppSecret))
@@ -285,9 +311,6 @@ internal static class CompositionRoot
                                    $"{(settings.OfficialSandbox ? "沙箱" : "正式")}环境，与私域通道隔离）");
             if (settings.OfficialSandbox)
             {
-                // 沙箱环境**只**推「沙箱群 / 沙箱单聊」的事件 —— 正式群里 @ 它一条都不会到，
-                // 而且日志里什么都不会出现（2026-09-21 管理员卡在这里："艾特了日志根本不显示"）。
-                // 所以这句话要说到最响：它解释的正是"看起来啥都没发生"。
                 FileLog.Write("Channel", "⚠ 官方通道跑在**沙箱环境**：只能收到开放平台「沙箱配置」里那些沙箱群/沙箱单聊的事件；"
                                         + "正式群里 @ 机器人不会被推送，日志里也不会有任何行。要在正式群用，取消面板「用沙箱环境」并重启。");
             }
@@ -298,25 +321,78 @@ internal static class CompositionRoot
         }
 
         // 本地通道（批次 F）：**名单非空才建**（默认关）。
-        // 它走的是同一张工具表 + 同一套治理，只是入站来自面板那张令牌门后的 POST /api/local/message。
         if (!string.IsNullOrWhiteSpace(settings.LocalChannelIds))
         {
             local = new LocalChannelSource(msg => FileLog.Write("Local", msg));
-            if (source is ChannelRouter router)
-            {
-                // 已经有两条上行：把本地这条也接进同一个路由器（隔离靠会话 key 前缀 local:）
-                source = new ChannelRouter(
-                    router.Sources.Concat(new IQqChatSource[] { local }), msg => FileLog.Write("Channel", msg));
-            }
-            else
-            {
-                source = new ChannelRouter(new IQqChatSource[] { gateway, local }, msg => FileLog.Write("Channel", msg));
-            }
+            source = source is ChannelRouter r1
+                ? new ChannelRouter(r1.Sources.Concat(new IQqChatSource[] { local }), msg => FileLog.Write("Channel", msg))
+                : new ChannelRouter(new IQqChatSource[] { gateway, local }, msg => FileLog.Write("Channel", msg));
 
             FileLog.Write("Channel", "本地通道已启用（名单非空；入口：面板 POST /api/local/message，与另两条上行隔离）");
         }
 
-        return (gateway, source, official, local);
+        // 飞书通道（阶段 4）：默认关，开启且配置了 appid 才构造，禁用的平台零网络零凭据。
+        if (settings.FeishuEnabled && !string.IsNullOrWhiteSpace(settings.FeishuAppId))
+        {
+            feishu = new FeishuBotGateway(
+                settingsBox,
+                new HttpFetcher(TimeSpan.FromSeconds(30), msg => FileLog.Write("Net", msg), "feishu"),
+                msg => FileLog.Write("Feishu", msg),
+                ids: new FeishuIdMap(Path.Combine(AppPaths.DataDir, "feishu-ids-v2.json")));
+            source = source is ChannelRouter r2
+                ? new ChannelRouter(r2.Sources.Concat(new IQqChatSource[] { feishu }), msg => FileLog.Write("Channel", msg))
+                : new ChannelRouter(new IQqChatSource[] { gateway, feishu }, msg => FileLog.Write("Channel", msg));
+
+            FileLog.Write("Channel", $"飞书通道已启用（appid={settings.FeishuAppId}，入口：POST /api/webhooks/feishu）");
+        }
+        else if (settings.FeishuEnabled)
+        {
+            FileLog.Write("Channel", "飞书通道开关是开的，但 appid 没配齐 → 这次不启用飞书通道");
+        }
+
+        var adapters = new List<IPlatformAdapter>();
+        var messengers = new List<IPlatformMessenger>();
+        var gwAdapter = new QqChatSourcePlatformAdapter(
+            gateway,
+            new PlatformContext(PlatformId.QqPrivate, AccountScope.Legacy),
+            PlatformCapabilities.QqOneBot,
+            "QQ私域",
+            "私域");
+        adapters.Add(gwAdapter);
+        messengers.Add(gwAdapter);
+
+        if (official is not null)
+        {
+            var offAdapter = new QqChatSourcePlatformAdapter(
+                official,
+                new PlatformContext(PlatformId.QqOfficial, AccountScope.Legacy),
+                PlatformCapabilities.QqOfficial,
+                "QQ官方",
+                "官方");
+            adapters.Add(offAdapter);
+            messengers.Add(offAdapter);
+        }
+
+        if (local is not null)
+        {
+            var locAdapter = new QqChatSourcePlatformAdapter(
+                local,
+                new PlatformContext(PlatformId.Local, AccountScope.Legacy),
+                PlatformCapabilities.Local,
+                "本地通道",
+                "本地");
+            adapters.Add(locAdapter);
+            messengers.Add(locAdapter);
+        }
+
+        if (feishu is not null)
+        {
+            adapters.Add(feishu);
+            messengers.Add(feishu);
+        }
+
+        var platformRegistry = new PlatformRegistry(adapters, messengers);
+        return (gateway, source, official, local, feishu, platformRegistry);
     }
 
     /// <summary>
@@ -325,19 +401,55 @@ internal static class CompositionRoot
     /// </summary>
     private static (OpenAiClient Brain, ConversationStore Store, MemberProfileStore Profiles, StickerService Stickers,
         AgentBridgeServer AgentBridge, VoiceUseCase Voice, MusicUseCase Music, LinkPreviewer Links, ResearchUseCase Research)
-        BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets)
+        BuildModelAndMediaLayer(AppSettings settings, SettingsBox settingsBox, IQqChatSource source, ISecretsRepository secrets, ModelProviderStore providerStore,
+            ToolCircuitBreaker ttsBreaker, ToolCircuitBreaker searchBreaker)
     {
+        var allowPrivateOutbound = Environment.GetEnvironmentVariable("QQCHAT_ALLOW_PRIVATE_IMAGE_HOSTS") == "1";
         // 模型那条路的出网：辅助调用 60 秒、聊天按 QQCHAT_MODEL_TIMEOUT_SECONDS（默认 120）、图片下载 8 秒
         var modelAuxHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "model-aux");
         var modelChatHttp = new HttpFetcher(OpenAiClient.ModelTimeout(), msg => FileLog.Write("Net", msg), "model-chat");
-        var imageHttp = new HttpFetcher(TimeSpan.FromSeconds(8), msg => FileLog.Write("Net", msg), "image");
+        var imageHttp = new HttpFetcher(
+            TimeSpan.FromSeconds(8),
+            msg => FileLog.Write("Net", msg),
+            "image",
+            allowAutoRedirect: false,
+            rejectPrivateDestinations: !allowPrivateOutbound);
 
         // 图片下载器与传输层（模型那条路的两个 IO 件）：都在这里造，客户端只拿端口。
         var imageDownloader = new ImageDownloader(imageHttp);
         var transport = new ModelTransport(
             settingsBox, modelChatHttp, modelAuxHttp, imageDownloader, OpenAiClient.ModelTimeout());
 
-        var brain = new OpenAiClient(settingsBox, modelAuxHttp, modelChatHttp, imageDownloader, transport)
+        var persistedProviders = providerStore.LoadAll();
+        var providerRoutes = persistedProviders
+            .Select(p => TryBuildProviderRoute(p, settings, secrets))
+            .Where(route => route is not null)
+            .Cast<ModelProviderRoute>()
+            .ToDictionary(route => route.ProviderId, StringComparer.Ordinal);
+        var providerRunner = new ProviderFailoverRunner(
+            persistedProviders.Select(p => new ProviderCandidate(p.Id, p.Priority, p.IsEnabled)),
+            initialSnapshots: persistedProviders.Select(ToCircuitSnapshot),
+            onSnapshotChanged: snapshot =>
+            {
+                try
+                {
+                    providerStore.SaveCircuit(snapshot);
+                }
+                catch (Exception ex)
+                {
+                    FileLog.Warn("Model", $"Provider 熔断状态持久化失败（仅影响恢复台账）：{ex.GetType().Name}");
+                }
+            });
+
+                var brain = new OpenAiClient(settingsBox, modelAuxHttp, modelChatHttp, imageDownloader, transport,
+            providerRunner,
+            providerRoutes,
+            providerId =>
+            {
+                var provider = persistedProviders.FirstOrDefault(p =>
+                    string.Equals(p.Id, providerId, StringComparison.Ordinal));
+                return provider is null ? null : TryBuildProviderRoute(provider, settingsBox.Current, secrets);
+            })
         {
             BotIdentity = string.IsNullOrWhiteSpace(settings.NormalizedUin) ? null : settings.NormalizedUin,
             BotPersona = settings.BotPersona,
@@ -361,7 +473,7 @@ internal static class CompositionRoot
         // 语音（TTS）：客户端、频率门、面板试听都在这个用例里（HttpClient 也只在这里造一个）
         var voiceHttp = new HttpFetcher(TimeSpan.FromSeconds(30), msg => FileLog.Write("Net", msg), "voice");
         var voice = new VoiceUseCase(
-            new VoiceService(voiceHttp, () => settingsBox.Current, secrets, msg => FileLog.Write("Voice", msg)),
+            new VoiceService(voiceHttp, () => settingsBox.Current, secrets, msg => FileLog.Write("Voice", msg), ttsBreaker),
             settingsBox,
             msg => FileLog.Write("Voice", msg));
 
@@ -386,15 +498,100 @@ internal static class CompositionRoot
                 Path.Combine(AppPaths.DataDir, "music", "audio"), new AudioCache(), msg => FileLog.Write("Music", msg)),
             source,
             msg => FileLog.Write("Music", msg));
-        var links = new LinkPreviewer(mediaHttp, () => settingsBox.Current, msg => FileLog.Write("Links", msg));
+        var linkHttp = new HttpFetcher(
+            TimeSpan.FromSeconds(45),
+            msg => FileLog.Write("Net", msg),
+            "links",
+            allowAutoRedirect: false,
+            rejectPrivateDestinations: !allowPrivateOutbound);
+        var links = new LinkPreviewer(linkHttp, () => settingsBox.Current, msg => FileLog.Write("Links", msg));
 
         // 联网研究（搜索 / 读页面）：它自己的 HttpClient 超时给宽松点（检索要等上游模型回话）
         var researchHttp = new HttpFetcher(TimeSpan.FromSeconds(60), msg => FileLog.Write("Net", msg), "search");
+        var researchPageHttp = new HttpFetcher(
+            TimeSpan.FromSeconds(60),
+            msg => FileLog.Write("Net", msg),
+            "search-page",
+            allowAutoRedirect: false,
+            rejectPrivateDestinations: !allowPrivateOutbound);
         var research = new ResearchUseCase(
-            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg)),
+            new WebSearchService(researchHttp, () => settingsBox.Current, msg => FileLog.Write("Search", msg), searchBreaker, researchPageHttp),
             msg => FileLog.Write("Search", msg));
 
 
         return (brain, store, profiles, stickers, agentBridge, voice, music, links, research);
     }
+
+    private static ModelProviderRoute? TryBuildProviderRoute(
+        PersistedModelProvider provider, AppSettings settings, ISecretsRepository secrets)
+    {
+        var apiKey = ResolveProviderSecret(provider.SecretKeyRef, settings, secrets);
+                if (string.IsNullOrWhiteSpace(apiKey) ||
+            apiKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            apiKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(provider.BaseUrl) ||
+            string.IsNullOrWhiteSpace(provider.ModelName))
+        {
+            return null;
+        }
+
+                var baseUrl = string.Equals(provider.Id, "primary", StringComparison.Ordinal)
+            ? settings.ModelBaseUrl
+            : provider.BaseUrl;
+        var model = string.Equals(provider.Id, "primary", StringComparison.Ordinal)
+            ? settings.Model
+            : provider.ModelName;
+        if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        return new ModelProviderRoute(provider.Id, baseUrl.Trim(), model.Trim(), apiKey.Trim());
+    }
+
+    private static string? ResolveProviderSecret(
+        string secretRef, AppSettings settings, ISecretsRepository secrets)
+    {
+        if (secretRef.StartsWith("secret:", StringComparison.OrdinalIgnoreCase))
+        {
+            return secrets.Load(secretRef["secret:".Length..].Trim());
+        }
+
+        if (secretRef.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            var name = secretRef["env:".Length..].Trim();
+            var value = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value) &&
+                string.Equals(name, "QQCHAT_API_KEY", StringComparison.OrdinalIgnoreCase))
+            {
+                value = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            }
+
+            // 兼容 BotConfig 已经解析好的环境变量快照；不把它写回注册表。
+            return string.IsNullOrWhiteSpace(value) &&
+                   string.Equals(name, "QQCHAT_API_KEY", StringComparison.OrdinalIgnoreCase)
+                ? settings.ApiKey
+                : value;
+        }
+
+        return null;
+    }
+
+    private static ProviderCircuitSnapshot ToCircuitSnapshot(PersistedModelProvider provider)
+        => new(provider.Id, provider.CircuitState, provider.ConsecutiveHardFailures,
+            provider.CooldownUntil, ProbeInFlight: false);
+
+    private static Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>> BuildCircuitStatusProvider(
+        Domain.Ports.IModelClient brain,
+        ToolCircuitBreaker ttsBreaker,
+        ToolCircuitBreaker searchBreaker,
+        ProtocolRiskBackoff riskBackoff) => () =>
+    {
+        var list = new List<Domain.Ops.CircuitStatusSnapshot>();
+        list.AddRange(brain.CircuitSnapshots);
+        list.Add(new Domain.Ops.CircuitStatusSnapshot("tool", "tts", ttsBreaker.Snapshot().State.ToString().ToLowerInvariant()));
+        list.Add(new Domain.Ops.CircuitStatusSnapshot("tool", "search", searchBreaker.Snapshot().State.ToString().ToLowerInvariant()));
+        list.Add(new Domain.Ops.CircuitStatusSnapshot("protocol", "onebot", riskBackoff.HasAnyActive() ? "open" : "closed"));
+        return list;
+    };
 }

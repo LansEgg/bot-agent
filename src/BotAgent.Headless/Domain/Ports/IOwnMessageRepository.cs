@@ -1,4 +1,5 @@
 using BotAgent.Domain.Conversation;
+using BotAgent.Domain.Messaging;
 
 namespace BotAgent.Domain.Ports;
 
@@ -13,12 +14,19 @@ public interface IOwnMessageRepository
     /// <summary>台账最多留多少条（引旧消息的情况极少，两百条足够）。</summary>
     int MaxEntries { get; }
 
-    /// <summary>读出最近若干条（按时间倒序）。首次调用会把老的 JSON 导进来（幂等）。</summary>
+    /// <summary>读取保留的 legacy 数据供迁移/检查；裸 id 不能参与 scoped 查询。</summary>
     List<OwnMessage> LoadRecent(int max);
 
-    /// <summary>记一条（已存在就覆盖）。</summary>
+    /// <summary>仅兼容旧签名；裸 id 缺 scope，不得新增模糊身份。</summary>
     void Upsert(long id, string text, DateTimeOffset at);
 
-    /// <summary>只留最近 <paramref name="max" /> 条（按时间）。</summary>
+    /// <summary>Read only fully scoped identities; legacy implementations fail closed.</summary>
+    List<OwnMessage> LoadRecentScoped(int max) => new();
+
+    /// <summary>Persist the full platform/account/conversation/native-message identity.</summary>
+    void Upsert(MessageRef messageRef, string text, DateTimeOffset at)
+        => throw new NotSupportedException("Scoped own-message storage is not supported.");
+
+    /// <summary>只剪枝 scoped 台账，不删除缺 scope 的 legacy 保留数据。</summary>
     void PruneTo(int max);
 }

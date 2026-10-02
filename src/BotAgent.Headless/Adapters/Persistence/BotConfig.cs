@@ -49,23 +49,25 @@ public static class BotConfig
     /// <summary>基础设施与密钥：环境变量始终覆盖（改这些要重启容器）。</summary>
     private static void ApplyInfrastructureEnvironment(AppSettings s)
     {
-        s.ApiKey = Secret("QQCHAT_API_KEY", "OPENAI_API_KEY") ?? s.ApiKey;
-        s.ModelBaseUrl = Str("QQCHAT_BASE_URL", "OPENAI_BASE_URL") ?? s.ModelBaseUrl;
-        s.Model = Str("QQCHAT_MODEL", "OPENAI_MODEL") ?? s.Model;
+        s.ApiKey = Secret("BOTAGENT_API_KEY", "QQCHAT_API_KEY", "OPENAI_API_KEY") ?? s.ApiKey;
+        s.ModelBaseUrl = Str("BOTAGENT_BASE_URL", "QQCHAT_BASE_URL", "OPENAI_BASE_URL") ?? s.ModelBaseUrl;
+        s.Model = Str("BOTAGENT_MODEL", "QQCHAT_MODEL", "OPENAI_MODEL") ?? s.Model;
         // 思考档位：快速回复（聊天用轻量模型）。这两个是“可由面板改”的，所以只在面板没改过时才播种 ——
         // 严格说它们属于“运行时可改”那类，放在这里是为了跟模型名挨着（真值以 settings 为准）。
-        s.FastModel = Str("QQCHAT_FAST_MODEL") ?? s.FastModel;
-        s.FastReply = Bool("QQCHAT_FAST_REPLY") ?? s.FastReply;
-        s.OneBotToken = Secret("QQCHAT_ONEBOT_TOKEN") ?? s.OneBotToken;
-        s.QuickLoginUin = Str("QQCHAT_UIN", "QQCHAT_QUICK_LOGIN_UIN") ?? s.QuickLoginUin;
-        s.OneBotProtocol = Str("QQCHAT_ONEBOT_PROTOCOL") ?? s.OneBotProtocol;
-        s.OneBotAddress = Str("QQCHAT_ONEBOT_URL", "QQCHAT_ONEBOT_ADDRESS") ?? s.OneBotAddress;
-        s.HealthPort = Int("QQCHAT_HEALTH_PORT") ?? s.HealthPort;
-        s.PanelToken = Str("QQCHAT_PANEL_TOKEN") ?? s.PanelToken;
-        s.AgentToken = Secret("QQCHAT_AGENT_TOKEN") ?? s.AgentToken;
-        s.NapCatWebUiUrl = Str("QQCHAT_NAPCAT_WEBUI_URL") ?? s.NapCatWebUiUrl;
-        s.NapCatWebUiToken = Secret("QQCHAT_NAPCAT_WEBUI_TOKEN") ?? s.NapCatWebUiToken;
-        s.VerboseLog = Bool("QQCHAT_VERBOSE") ?? s.VerboseLog;
+        s.FastModel = Str("BOTAGENT_FAST_MODEL", "QQCHAT_FAST_MODEL") ?? s.FastModel;
+        s.FastReply = Bool("BOTAGENT_FAST_REPLY", "QQCHAT_FAST_REPLY") ?? s.FastReply;
+        s.OneBotToken = Secret("BOTAGENT_QQ_ONEBOT_TOKEN", "QQCHAT_ONEBOT_TOKEN") ?? s.OneBotToken;
+        s.QuickLoginUin = Str("BOTAGENT_QQ_UIN", "QQCHAT_UIN", "QQCHAT_QUICK_LOGIN_UIN") ?? s.QuickLoginUin;
+        s.OneBotProtocol = Str("BOTAGENT_QQ_ONEBOT_PROTOCOL", "QQCHAT_ONEBOT_PROTOCOL") ?? s.OneBotProtocol;
+        s.OneBotAddress = Str("BOTAGENT_QQ_ONEBOT_URL", "QQCHAT_ONEBOT_URL", "QQCHAT_ONEBOT_ADDRESS") ?? s.OneBotAddress;
+        s.HealthPort = Int("BOTAGENT_HEALTH_PORT") ?? Int("QQCHAT_HEALTH_PORT") ?? s.HealthPort;
+        s.PanelToken = Str("BOTAGENT_PANEL_TOKEN", "QQCHAT_PANEL_TOKEN") ?? s.PanelToken;
+        s.AgentToken = Secret("BOTAGENT_AGENT_TOKEN", "QQCHAT_AGENT_TOKEN") ?? s.AgentToken;
+        s.NapCatWebUiUrl = Str("BOTAGENT_NAPCAT_WEBUI_URL", "QQCHAT_NAPCAT_WEBUI_URL") ?? s.NapCatWebUiUrl;
+        s.NapCatWebUiToken = Secret("BOTAGENT_NAPCAT_WEBUI_TOKEN", "QQCHAT_NAPCAT_WEBUI_TOKEN") ?? s.NapCatWebUiToken;
+        s.FeishuAppSecret = Secret("BOTAGENT_FEISHU_APP_SECRET", "QQCHAT_FEISHU_APP_SECRET") ?? s.FeishuAppSecret;
+        s.FeishuEncryptKey = Secret("BOTAGENT_FEISHU_ENCRYPT_KEY", "QQCHAT_FEISHU_ENCRYPT_KEY") ?? s.FeishuEncryptKey;
+        s.VerboseLog = Bool("BOTAGENT_VERBOSE", "QQCHAT_VERBOSE") ?? s.VerboseLog;
     }
 
     /// <summary>
@@ -109,6 +111,13 @@ public static class BotConfig
     [nameof(AppSettings.WhitelistPrivates)] = new[] { "QQCHAT_WHITELIST_PRIVATES" },
             [nameof(AppSettings.AiDesire)] = new[] { "QQCHAT_AI_DESIRE" },
             [nameof(AppSettings.SuitabilityThreshold)] = new[] { "QQCHAT_SUITABILITY_THRESHOLD" },
+            [nameof(AppSettings.AdaptiveSamplingEnabled)] = new[] { "QQCHAT_ADAPTIVE_SAMPLING" },
+            [nameof(AppSettings.RationalTemperature)] = new[] { "QQCHAT_RATIONAL_TEMP" },
+            [nameof(AppSettings.RationalTopP)] = new[] { "QQCHAT_RATIONAL_TOP_P" },
+            [nameof(AppSettings.EmotionalTemperature)] = new[] { "QQCHAT_EMOTIONAL_TEMP" },
+            [nameof(AppSettings.EmotionalTopP)] = new[] { "QQCHAT_EMOTIONAL_TOP_P" },
+            [nameof(AppSettings.DefaultTemperature)] = new[] { "QQCHAT_DEFAULT_TEMP" },
+            [nameof(AppSettings.DefaultTopP)] = new[] { "QQCHAT_DEFAULT_TOP_P" },
             [nameof(AppSettings.AiModeEnabled)] = new[] { "QQCHAT_AI_MODE" },
             [nameof(AppSettings.MaxTokens)] = new[] { "QQCHAT_MAX_TOKENS" },
             [nameof(AppSettings.PrivateCooldownSeconds)] = new[] { "QQCHAT_PRIVATE_COOLDOWN" },
@@ -128,6 +137,8 @@ public static class BotConfig
       [nameof(AppSettings.ProactiveCooldownSeconds)] = new[] { "QQCHAT_PROACTIVE_COOLDOWN" },
       [nameof(AppSettings.ProactiveQuietSeconds)] = new[] { "QQCHAT_PROACTIVE_QUIET" },
       [nameof(AppSettings.IgnoreBracketMessages)] = new[] { "QQCHAT_IGNORE_BRACKETS" },
+      [nameof(AppSettings.FilterActionNarration)] = new[] { "QQCHAT_FILTER_ACTION_NARRATION" },
+      [nameof(AppSettings.EnableAtmosphereDamping)] = new[] { "QQCHAT_ENABLE_ATMOSPHERE_DAMPING" },
             [nameof(AppSettings.SegmentDelayMs)] = new[] { "QQCHAT_SEGMENT_DELAY_MS" },
             [nameof(AppSettings.MaxContextMessages)] = new[] { "QQCHAT_MAX_CONTEXT" },
             [nameof(AppSettings.ProfileLookupCount)] = new[] { "QQCHAT_PROFILE_LOOKUP" },
@@ -177,6 +188,11 @@ public static class BotConfig
     [nameof(AppSettings.OfficialWhitelistPrivates)] = new[] { "QQCHAT_OFFICIAL_WHITELIST_PRIVATES" },
     [nameof(AppSettings.OfficialApiBase)] = new[] { "QQCHAT_OFFICIAL_API_BASE" },
     [nameof(AppSettings.OfficialTokenUrl)] = new[] { "QQCHAT_OFFICIAL_TOKEN_URL" },
+    [nameof(AppSettings.FeishuEnabled)] = new[] { "BOTAGENT_FEISHU", "QQCHAT_FEISHU" },
+    [nameof(AppSettings.FeishuAppId)] = new[] { "BOTAGENT_FEISHU_APP_ID", "QQCHAT_FEISHU_APP_ID" },
+    [nameof(AppSettings.FeishuVerificationToken)] = new[] { "BOTAGENT_FEISHU_VERIFICATION_TOKEN", "QQCHAT_FEISHU_VERIFICATION_TOKEN" },
+    [nameof(AppSettings.FeishuWhitelist)] = new[] { "BOTAGENT_FEISHU_WHITELIST", "QQCHAT_FEISHU_WHITELIST" },
+    [nameof(AppSettings.FeishuApiBase)] = new[] { "BOTAGENT_FEISHU_API_BASE", "QQCHAT_FEISHU_API_BASE" },
     [nameof(AppSettings.LinkPreviewTimeoutSeconds)] = new[] { "QQCHAT_LINK_PREVIEW_TIMEOUT" },
     [nameof(AppSettings.LinkPreviewMax)] = new[] { "QQCHAT_LINK_PREVIEW_MAX" },
     [nameof(AppSettings.MusicBitrate)] = new[] { "QQCHAT_MUSIC_BITRATE" },
@@ -261,6 +277,13 @@ public static class BotConfig
         s.WhitelistPrivates = Str("QQCHAT_WHITELIST_PRIVATES") ?? s.WhitelistPrivates;
         s.AiDesire = Int("QQCHAT_AI_DESIRE") ?? s.AiDesire;
         s.SuitabilityThreshold = Int("QQCHAT_SUITABILITY_THRESHOLD") ?? s.SuitabilityThreshold;
+        s.AdaptiveSamplingEnabled = Bool("QQCHAT_ADAPTIVE_SAMPLING") ?? s.AdaptiveSamplingEnabled;
+        s.RationalTemperature = Dbl("QQCHAT_RATIONAL_TEMP") ?? s.RationalTemperature;
+        s.RationalTopP = Dbl("QQCHAT_RATIONAL_TOP_P") ?? s.RationalTopP;
+        s.EmotionalTemperature = Dbl("QQCHAT_EMOTIONAL_TEMP") ?? s.EmotionalTemperature;
+        s.EmotionalTopP = Dbl("QQCHAT_EMOTIONAL_TOP_P") ?? s.EmotionalTopP;
+        s.DefaultTemperature = Dbl("QQCHAT_DEFAULT_TEMP") ?? s.DefaultTemperature;
+        s.DefaultTopP = Dbl("QQCHAT_DEFAULT_TOP_P") ?? s.DefaultTopP;
         s.AiModeEnabled = Bool("QQCHAT_AI_MODE") ?? s.AiModeEnabled;
         s.MaxTokens = Int("QQCHAT_MAX_TOKENS") ?? s.MaxTokens;
         s.PrivateCooldownSeconds = Int("QQCHAT_PRIVATE_COOLDOWN") ?? s.PrivateCooldownSeconds;
@@ -278,6 +301,8 @@ public static class BotConfig
         s.ProactiveCooldownSeconds = Int("QQCHAT_PROACTIVE_COOLDOWN") ?? s.ProactiveCooldownSeconds;
         s.ProactiveQuietSeconds = Int("QQCHAT_PROACTIVE_QUIET") ?? s.ProactiveQuietSeconds;
         s.IgnoreBracketMessages = Bool("QQCHAT_IGNORE_BRACKETS") ?? s.IgnoreBracketMessages;
+        s.FilterActionNarration = Bool("QQCHAT_FILTER_ACTION_NARRATION") ?? s.FilterActionNarration;
+        s.EnableAtmosphereDamping = Bool("QQCHAT_ENABLE_ATMOSPHERE_DAMPING") ?? s.EnableAtmosphereDamping;
         s.SegmentDelayMs = Int("QQCHAT_SEGMENT_DELAY_MS") ?? s.SegmentDelayMs;
         s.MaxContextMessages = Int("QQCHAT_MAX_CONTEXT") ?? s.MaxContextMessages;
         s.ProfileLookupCount = Int("QQCHAT_PROFILE_LOOKUP") ?? s.ProfileLookupCount;
@@ -369,6 +394,11 @@ public static class BotConfig
     s.OfficialWhitelistPrivates = Str("QQCHAT_OFFICIAL_WHITELIST_PRIVATES") ?? s.OfficialWhitelistPrivates;
     s.OfficialApiBase = Str("QQCHAT_OFFICIAL_API_BASE") ?? s.OfficialApiBase;
     s.OfficialTokenUrl = Str("QQCHAT_OFFICIAL_TOKEN_URL") ?? s.OfficialTokenUrl;
+    s.FeishuEnabled = Bool("BOTAGENT_FEISHU") ?? Bool("QQCHAT_FEISHU") ?? s.FeishuEnabled;
+    s.FeishuAppId = Str("BOTAGENT_FEISHU_APP_ID", "QQCHAT_FEISHU_APP_ID") ?? s.FeishuAppId;
+    s.FeishuVerificationToken = Str("BOTAGENT_FEISHU_VERIFICATION_TOKEN", "QQCHAT_FEISHU_VERIFICATION_TOKEN") ?? s.FeishuVerificationToken;
+    s.FeishuWhitelist = Str("BOTAGENT_FEISHU_WHITELIST", "QQCHAT_FEISHU_WHITELIST") ?? s.FeishuWhitelist;
+    s.FeishuApiBase = Str("BOTAGENT_FEISHU_API_BASE", "QQCHAT_FEISHU_API_BASE") ?? s.FeishuApiBase;
         s.LinkPreviewTimeoutSeconds = Int("QQCHAT_LINK_PREVIEW_TIMEOUT") ?? s.LinkPreviewTimeoutSeconds;
         s.LinkPreviewMax = Int("QQCHAT_LINK_PREVIEW_MAX") ?? s.LinkPreviewMax;
         s.MusicBitrate = Int("QQCHAT_MUSIC_BITRATE") ?? s.MusicBitrate;
@@ -396,6 +426,14 @@ public static class BotConfig
     if (string.IsNullOrWhiteSpace(s.OfficialAppSecret) && new SecretsStore().LoadOfficialSecret() is { Length: > 0 } storedSecret)
     {
         s.OfficialAppSecret = storedSecret;
+    }
+    if (string.IsNullOrWhiteSpace(s.FeishuAppSecret) && new SecretsStore().LoadFeishuSecret() is { Length: > 0 } storedFeishuSecret)
+    {
+        s.FeishuAppSecret = storedFeishuSecret;
+    }
+    if (string.IsNullOrWhiteSpace(s.FeishuEncryptKey) && new SecretsStore().LoadFeishuEncryptKey() is { Length: > 0 } storedFeishuKey)
+    {
+        s.FeishuEncryptKey = storedFeishuKey;
     }
         s.ApiKeyOverride ??= new SecretsStore().LoadApiKey();
         s.AgentServerApiKeyOverride ??= new SecretsStore().LoadAgentServerKey();
@@ -463,6 +501,12 @@ public static class BotConfig
         s.QuickLoginUin = s.QuickLoginUin.Trim();
         s.AiDesire = Math.Clamp(s.AiDesire, 0, 100);
         s.SuitabilityThreshold = Math.Clamp(s.SuitabilityThreshold, 0, 100);
+        s.RationalTemperature = Math.Clamp(s.RationalTemperature, 0.0, 2.0);
+        s.RationalTopP = Math.Clamp(s.RationalTopP, 0.0, 1.0);
+        s.EmotionalTemperature = Math.Clamp(s.EmotionalTemperature, 0.0, 2.0);
+        s.EmotionalTopP = Math.Clamp(s.EmotionalTopP, 0.0, 1.0);
+        s.DefaultTemperature = Math.Clamp(s.DefaultTemperature, 0.0, 2.0);
+        s.DefaultTopP = Math.Clamp(s.DefaultTopP, 0.0, 1.0);
         // 参与状态机的上限（P1）：env / 老配置里的值同样要钳 —— 这是服务端那道硬边界，
         // 面板与 env 都只是“愿望”。（状态机内部还会再过一次 Clamped()，两层都不省。）
         s.ParticipationMaxConsecutiveReplies = Math.Clamp(s.ParticipationMaxConsecutiveReplies, 1, 10);
@@ -639,7 +683,34 @@ public static class BotConfig
         return null;
     }
 
-    private static bool? Bool(string name)
+    private static bool? Bool(params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            return raw.Trim().ToLowerInvariant() switch
+            {
+                "1" or "true" or "yes" or "y" or "on" => true,
+                "0" or "false" or "no" or "n" or "off" => false,
+                _ => Warn(name, raw)
+            };
+        }
+
+        return null;
+
+        static bool? Warn(string n, string v)
+        {
+            Console.Error.WriteLine($"[Config] {n}='{v}' 不是布尔值，已忽略");
+            return null;
+        }
+    }
+
+    private static double? Dbl(string name)
     {
         var raw = Environment.GetEnvironmentVariable(name);
         if (string.IsNullOrWhiteSpace(raw))
@@ -647,17 +718,12 @@ public static class BotConfig
             return null;
         }
 
-        return raw.Trim().ToLowerInvariant() switch
+        if (double.TryParse(raw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
         {
-            "1" or "true" or "yes" or "y" or "on" => true,
-            "0" or "false" or "no" or "n" or "off" => false,
-            _ => Warn(name, raw)
-        };
-
-        static bool? Warn(string n, string v)
-        {
-            Console.Error.WriteLine($"[Config] {n}='{v}' 不是布尔值，已忽略");
-            return null;
+            return value;
         }
+
+        Console.Error.WriteLine($"[Config] {name}='{raw}' 不是浮点数，已忽略");
+        return null;
     }
 }

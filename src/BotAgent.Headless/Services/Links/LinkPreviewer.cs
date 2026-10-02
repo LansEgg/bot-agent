@@ -121,11 +121,18 @@ public sealed partial class LinkPreviewer
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(settings.LinkPreviewTimeoutSeconds, 2, 30)));
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
-            req.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            using var resp = await SafeUrl.SendFollowingRedirectsAsync(
+                _http,
+                uri,
+                target =>
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, target);
+                    request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122 Safari/537.36");
+                    request.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+                    return request;
+                },
+                AllowPrivateForTests(),
+                cts.Token);
             if (!resp.IsSuccessStatusCode)
             {
                 _log($"[Link] {Shorten(url)} 返回 {(int)resp.StatusCode}");
@@ -140,7 +147,7 @@ public sealed partial class LinkPreviewer
                 return null;
             }
 
-            result = Parse(body, uri);
+            result = Parse(body, resp.RequestMessage?.RequestUri ?? uri);
             if (result is null)
             {
                 _log($"[Link] {Shorten(url)} 没解析出标题");

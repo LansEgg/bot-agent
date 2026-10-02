@@ -38,6 +38,12 @@ public sealed class MemberSummary
 
     /// <summary>已折叠的消息条数（可观测）。</summary>
     public int FoldedCount { get; set; }
+
+    /// <summary>人工设定的覆盖画像文本（优先级高于模型自动摘要）。</summary>
+    public string OverrideText { get; set; } = string.Empty;
+
+    /// <summary>画像关联证据链 JSON。</summary>
+    public string EvidenceJson { get; set; } = string.Empty;
 }
 
 public sealed class MemberMessageRecord
@@ -290,17 +296,26 @@ public sealed class MemberProfileStore : IProfileRepository
 
             var summaries = allScopes
                 ? AppDatabase.Query(
-                    "SELECT scope, text FROM member_summaries WHERE uid = $uid AND text <> ''",
-                    r => (Scope: AppDatabase.Str(r, "scope") ?? string.Empty, Text: AppDatabase.Str(r, "text") ?? string.Empty),
+                    "SELECT scope, text, override_text, evidence_json FROM member_summaries WHERE uid = $uid AND (text <> '' OR override_text <> '')",
+                    r => (
+                        Scope: AppDatabase.Str(r, "scope") ?? string.Empty,
+                        Text: AppDatabase.Str(r, "text") ?? string.Empty,
+                        OverrideText: AppDatabase.Str(r, "override_text") ?? string.Empty,
+                        EvidenceJson: AppDatabase.Str(r, "evidence_json") ?? string.Empty),
                     ("$uid", uid))
                 : AppDatabase.Query(
-                    "SELECT scope, text FROM member_summaries WHERE uid = $uid AND scope = $scope AND text <> ''",
-                    r => (Scope: AppDatabase.Str(r, "scope") ?? string.Empty, Text: AppDatabase.Str(r, "text") ?? string.Empty),
+                    "SELECT scope, text, override_text, evidence_json FROM member_summaries WHERE uid = $uid AND scope = $scope AND (text <> '' OR override_text <> '')",
+                    r => (
+                        Scope: AppDatabase.Str(r, "scope") ?? string.Empty,
+                        Text: AppDatabase.Str(r, "text") ?? string.Empty,
+                        OverrideText: AppDatabase.Str(r, "override_text") ?? string.Empty,
+                        EvidenceJson: AppDatabase.Str(r, "evidence_json") ?? string.Empty),
                     ("$uid", uid), ("$scope", ScopeKey(scopeGroupId)));
 
             var scopedScope = ScopeKey(scopeGroupId);
             var summary = summaries.FirstOrDefault(s => s.Scope == scopedScope);
-            var hasSummary = !string.IsNullOrWhiteSpace(summary.Text);
+            var effectiveText = !string.IsNullOrWhiteSpace(summary.OverrideText) ? summary.OverrideText : summary.Text;
+            var hasSummary = !string.IsNullOrWhiteSpace(effectiveText);
 
             // 画像已折叠到的序号：比它更早的原文不用再带（无画像时用 long.MinValue —— 补录的群历史序号是负数）
             var foldedThrough = AppDatabase.Scalar<long?>(
@@ -339,10 +354,11 @@ public sealed class MemberProfileStore : IProfileRepository
             var header = $"{name}（QQ:{uid}）";
             var sb = new StringBuilder();
 
-            // 第一段：长期画像（由模型压缩而来，信息密度高）
+            // 第一段：长期画像（人工设定覆盖优先，否则为模型压缩）
             if (hasSummary)
             {
-                sb.Append(header).Append(" · 画像：").Append(summary.Text.Trim());
+                var tag = !string.IsNullOrWhiteSpace(summary.OverrideText) ? " · 设定画像：" : " · 画像：";
+                sb.Append(header).Append(tag).Append(effectiveText.Trim());
             }
 
             // 面板视图：列出各会话的画像，并标明来源，方便人工核对隔离是否生效
@@ -350,9 +366,10 @@ public sealed class MemberProfileStore : IProfileRepository
             {
                 foreach (var other in summaries.Where(s => s.Scope != scopedScope))
                 {
+                    var otherEffective = !string.IsNullOrWhiteSpace(other.OverrideText) ? other.OverrideText : other.Text;
                     sb.Append('\n').Append(header)
                       .Append(" · 画像[").Append(DescribeScope(other.Scope)).Append("]：")
-                      .Append(other.Text.Trim());
+                      .Append(otherEffective.Trim());
                 }
             }
 
@@ -394,4 +411,56 @@ public sealed class MemberProfileStore : IProfileRepository
     /// <summary>把会话范围键转成人能看懂的描述。</summary>
     private static string DescribeScope(string scope)
         => scope.StartsWith("group:", StringComparison.Ordinal) ? "群 " + scope[6..] : "私聊";
+
+    public void SetProfileOverride(string uid, string scope, string? overrideText)
+    {
+        if (string.IsNullOrWhiteSpace(uid) || string.IsNullOrWhiteSpace(scope))
+        {
+            return;
+        }
+
+        var cleaned = (overrideText ?? string.Empty).Trim();
+        var now = Clock.Now.ToUnixTimeSeconds();
+        AppDatabase.Write(conn => AppDatabase.Exec(conn, """
+            INSERT INTO member_summaries(uid, scope, text, through_seq, updated_unix, folded_count, override_text, evidence_json)
+            VALUES($uid, $scope, '', 0, $now, 0, $ot, '')
+            ON CONFLICT(uid, scope) DO UPDATE SET
+                override_text = excluded.override_text,
+                updated_unix = excluded.updated_unix
+            """,
+            ("$uid", uid), ("$scope", scope), ("$now", now), ("$ot", cleaned)));
+    }
+
+    public void SetEvidence(string uid, string scope, string evidenceJson)
+    {
+        if (string.IsNullOrWhiteSpace(uid) || string.IsNullOrWhiteSpace(scope))
+        {
+            return;
+        }
+
+        var cleaned = (evidenceJson ?? string.Empty).Trim();
+        var now = Clock.Now.ToUnixTimeSeconds();
+        AppDatabase.Write(conn => AppDatabase.Exec(conn, """
+            INSERT INTO member_summaries(uid, scope, text, through_seq, updated_unix, folded_count, override_text, evidence_json)
+            VALUES($uid, $scope, '', 0, $now, 0, '', $ev)
+            ON CONFLICT(uid, scope) DO UPDATE SET
+                evidence_json = excluded.evidence_json,
+                updated_unix = excluded.updated_unix
+            """,
+            ("$uid", uid), ("$scope", scope), ("$now", now), ("$ev", cleaned)));
+    }
+
+    public (string AutoSummary, string OverrideText, string EvidenceJson) GetDetailedSummary(string uid, string scope)
+    {
+        var row = AppDatabase.Query(
+            "SELECT text, override_text, evidence_json FROM member_summaries WHERE uid = $uid AND scope = $scope LIMIT 1",
+            r => (
+                Auto: AppDatabase.Str(r, "text") ?? string.Empty,
+                Override: AppDatabase.Str(r, "override_text") ?? string.Empty,
+                Evidence: AppDatabase.Str(r, "evidence_json") ?? string.Empty
+            ),
+            ("$uid", uid), ("$scope", scope));
+
+        return row.Count > 0 ? row[0] : (string.Empty, string.Empty, string.Empty);
+    }
 }
