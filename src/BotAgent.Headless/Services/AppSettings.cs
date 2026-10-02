@@ -250,7 +250,7 @@ public sealed class AppSettings
     /// </summary>
     public bool IgnoreBracketMessages { get; set; }
 
-    /// <summary>禁止回复夹带动作/心理描写（自动过滤括号动作如 (晃了晃耳朵)、（叹气）、*微笑* 等）。</summary>
+    /// <summary>禁止回复夹带动作/心理描写。发送前由模型仅删除或局部自然改写确认的动作旁白；数学公式、普通括号、代码和链接保持原文，判断失败则保留整条回复。</summary>
     public bool FilterActionNarration { get; set; }
 
     /// <summary>启用群聊氛围感知与发言疲劳阻尼冷却（连续发言多次后自动衰减欲望，冷清/对线时克制，防止刷屏）。</summary>
