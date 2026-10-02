@@ -98,7 +98,7 @@ public static class PromptBuilder
         var suitabilityText = BuildSuitabilityInstruction(request.AiDesire, request.SuitabilityThreshold);
         if (request.FilterActionNarration)
         {
-            suitabilityText += "\n【语言形式禁令】严禁在 reply 中输出任何带括号的动作描写、心理活动或神态说明（如 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等），只输出真正说出口的口语！";
+            suitabilityText += "\n【语言形式禁令】严禁在 reply 中输出任何带括号的动作描写、心理活动或神态说明（如 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等），只输出真正说出口的口语！数学公式、函数参数、乘法星号、普通括号解释、代码和链接不是动作旁白，必须完整保留。";
         }
         systemContent += suitabilityText;
 

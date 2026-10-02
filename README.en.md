@@ -17,6 +17,13 @@ docker compose logs -f napcat       # first-time QR login (or scan it in the bot
 
 Open `http://<host>:8080/` for the control panel: chat history, conversation management, settings, live logs.
 
+## 📚 Documentation
+
+| Document | Contents |
+| --- | --- |
+| [src/BotAgent.Headless/README.en.md](src/BotAgent.Headless/README.en.md) ([中文](src/BotAgent.Headless/README.md)) | **Deployment and operations**: the full environment-variable reference, data directory, panel usage, troubleshooting, design trade-offs and operating boundaries |
+| [.env.example](.env.example) | Every configurable option, with commentary (including Docker secrets usage; comments are in Chinese) |
+
 ## ✨ Features
 
 **Conversation**
@@ -49,7 +56,7 @@ Open `http://<host>:8080/` for the control panel: chat history, conversation man
 
 **Operations**
 
-- **Web panel**: chat history and conversation management, settings, live logs (**refreshing the page does not clear them**: the first screen backfills the last 300 lines from `/api/logs`, after which SSE appends in real time; logs from before a restart are still visible after the process restarts; there are **↑ top / ↓ bottom** one-click jump buttons above the log box), plus mobile support. The settings page uses a **two-level categorized navigation architecture** (grouped into 5 top-level categories: **Channels** (ordered cleanly as `QQ Private (NapCat)`, `QQ Official`, `Feishu`, `Local Channel`, and overseen by `Platform Instance Policy`), **Models & Agent**, **Chat & Interaction**, **Voice & Search**, and **Other** for standalone items; an expanded 236px collapsible accordion tree on desktop with increased font size and line height avoiding premature truncation, and dual-row linked pills on mobile, showing one section at a time with a final "show all" option; refreshing or sharing a link automatically expands the matching category; card descriptions collapse to one line by default, with "expand" for the full text); **persona and speaking controls unified into "Reply Cadence"** (bot persona, AI desire, suitability threshold, max agent steps, adaptive sampling parameters, and AI auto-reply toggle are consolidated from Model advanced settings into Reply Cadence, alongside a new toggle to **filter action narrations** like `(晃了晃耳朵)` or `*sigh*` via prompt enforcement and output sanitization). **QR login inside the panel** (when the account is not logged in the QR code appears directly — no need to find NapCat's own entry point).
+- **Web panel**: chat history and conversation management, settings, live logs (**refreshing the page does not clear them**: the first screen backfills the last 300 lines from `/api/logs`, after which SSE appends in real time; logs from before a restart are still visible after the process restarts; there are **↑ top / ↓ bottom** one-click jump buttons above the log box), plus mobile support. The settings page uses a **two-level categorized navigation architecture** (grouped into 5 top-level categories: **Channels** (ordered cleanly as `QQ Private (NapCat)`, `QQ Official`, `Feishu`, `Local Channel`, and overseen by `Platform Instance Policy`), **Models & Agent**, **Chat & Interaction**, **Voice & Search**, and **Other** for standalone items; an expanded 236px collapsible accordion tree on desktop with increased font size and line height avoiding premature truncation, and dual-row linked pills on mobile, showing one section at a time with a final "show all" option; refreshing or sharing a link automatically expands the matching category; card descriptions collapse to one line by default, with "expand" for the full text); **persona and speaking controls unified into "Reply Cadence"** (bot persona, AI desire, suitability threshold, max agent steps, adaptive sampling parameters, and AI auto-reply toggle are consolidated from Model advanced settings into Reply Cadence, alongside a new toggle to **filter action narrations** like `(晃了晃耳朵)` or `*sigh*` via generation guidance and a pre-send semantic model check. Only confirmed narration is removed or locally rewritten into natural speech; markers preserve formulas, ordinary parenthetical explanations, code, links, and existing dialogue verbatim. The auxiliary check has an 8-second total budget; timeout, unavailable, empty, or invalid results retain the original reply before the existing audit and Markdown rendering). **QR login inside the panel** (when the account is not logged in the QR code appears directly — no need to find NapCat's own entry point).
 - **Three new read-only panel blocks**: **tool catalogue** (`GET /api/tools`: one catalogue shared by three channels — chat 10 / QQ actions 10 / server 6 = **26 entries** — plus four self-checks; `healthy:true` means nothing is inconsistent);
   **trace page** (`GET /api/traces`: one trace per turn with **six nodes** 〈participation decision / context assembly / model decision / tool gate / tool execution / sanitised send〉, exposing only **shape** 〈status code / reason code / duration / count / tool name〉 and **no message text**, keeping the last 50 turns in memory);
   **health dashboard** (`GET /api/dashboard`: active conversations / in-flight and queued / average latency / memory and load / tool count / trace count — a screenful of numbers, inventing no new statistics). The only write path on the trace page is an **approval decision** (two fail-closed preconditions; the verdict reuses the very same validation as in-group approval, relaxed nowhere).
@@ -99,13 +106,6 @@ NapCat container ── OneBot v11 forward WS ──┐
 | Speech synthesis | A separate container (a **cloud TTS proxy**: `tools/tts-cloud-server.py` + `tools/tts-cloud.Dockerfile`, ~60MB image / ~20MB RAM, **no local model**) — if it dies only voice is affected and the bot degrades to text |
 | Web search | Prefers the model provider's own web retrieval (`/v1beta/…:generateContent` with a search tool, results carrying sources); falls back to pluggable sources (SearxNG JSON / MediaWiki JSON / generic HTML) |
 | Health checks | A built-in minimal HTTP service: `/healthz` `/readyz` `/status` |
-
-## 📚 Documentation
-
-| Document | Contents |
-| --- | --- |
-| [src/BotAgent.Headless/README.en.md](src/BotAgent.Headless/README.en.md) ([中文](src/BotAgent.Headless/README.md)) | **Deployment and operations**: the full environment-variable reference, data directory, panel usage, troubleshooting, design trade-offs and operating boundaries |
-| [.env.example](.env.example) | Every configurable option, with commentary (including Docker secrets usage; comments are in Chinese) |
 
 ## Fix compatibility and migration
 

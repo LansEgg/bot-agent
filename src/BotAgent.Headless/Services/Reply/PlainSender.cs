@@ -4,6 +4,7 @@ using BotAgent.Domain.Qq;
 using BotAgent.Domain.Platforms;
 using BotAgent.Domain.Messaging;
 using BotAgent.Domain.Ops;
+using BotAgent.Domain.Ports;
 using BotAgent.Domain.Rendering;
 using BotAgent.Services.Conversations;
 using BotAgent.Services.OneBot;
@@ -37,6 +38,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
     private readonly IAuditChain? _audit;
     private readonly ProtocolRiskBackoff? _riskBackoff;
     private readonly PlatformPolicyResolver? _platformPolicies;
+    private readonly ActionNarrationFilter? _actionNarrationFilter;
 
     public PlainSender(
         SettingsBox box,
@@ -48,7 +50,8 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         TurnTraceStore traces,
         IAuditChain? audit = null,
         ProtocolRiskBackoff? riskBackoff = null,
-         PlatformPolicyResolver? platformPolicies = null)
+         PlatformPolicyResolver? platformPolicies = null,
+         IModelClient? model = null)
     {
         _box = box;
         _source = source;
@@ -60,6 +63,7 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         _audit = audit;
         _riskBackoff = riskBackoff;
         _platformPolicies = platformPolicies;
+        _actionNarrationFilter = model is null ? null : new ActionNarrationFilter(model, box);
     }
 
     private AppSettings _settings => _box.Current;
@@ -118,9 +122,12 @@ public sealed class PlainSender : IQqMessageSender, IConversationReplySender
         }
 
         var rawReply = reply;
-        if (_settings.FilterActionNarration)
+        if (_settings.FilterActionNarration && _actionNarrationFilter is not null)
         {
-            reply = QqPlainText.StripActionNarrations(reply);
+            reply = await _actionNarrationFilter.FilterAsync(reply).ConfigureAwait(false);
+            // 改写也必须通过既有审计；新引入敏感形状时回退到已审计的原回复。
+            if (ReplyAuditRules.Judge(reply, allowLocalPaths: false) != ReplyAuditVerdict.Allow)
+                reply = rawReply;
         }
         reply = QqPlainText.Sanitize(reply);
         if (reply.Length == 0)

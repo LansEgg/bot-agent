@@ -51,6 +51,9 @@ public static class QqPlainText
         "(?<![A-Za-z0-9_])__(?<t>[^_\\s](?:[^_\\n]*[^_\\s])?)__(?![A-Za-z0-9_])", RegexOptions.Compiled);
     private static readonly Regex Strike = new(
         "(?<!~)~~(?<t>[^~\\s](?:[^~\\n]*[^~\\s])?)~~(?!~)", RegexOptions.Compiled);
+    // 单字变量连续乘法（如 长*宽*高、δ*β*γ）先保护；不改变普通中文斜体的降级契约。
+    private static readonly Regex VariableProduct = new(
+        @"(?<![\p{L}\p{N}_])([\p{L}\p{N}_])(?:\*[\p{L}\p{N}_]){2,}(?![\p{L}\p{N}_])", RegexOptions.Compiled);
     private static readonly Regex ItalicStar = new(
         "(?<![A-Za-z0-9*])\\*(?<t>[^*\\s](?:[^*\\n]*[^*\\s])?)\\*(?![A-Za-z0-9*])", RegexOptions.Compiled);
     private static readonly Regex ItalicUnderscore = new(
@@ -76,37 +79,12 @@ public static class QqPlainText
     private static readonly Regex SentinelBack = new("\uE000(\\d+)\uE001", RegexOptions.Compiled);
 
     /// <summary>
-    /// 剥离成对的圆括号动作描写与星号动作描写（如 (晃了晃耳朵)、（叹了口气）、*伸懒腰* 等）。
-    /// 保留纯数字序号如 (1)/(2) 和系统占位符如 [图片]。
+    /// 兼容旧调用的保守入口：动作旁白必须通过 <c>ActionNarrationFilter</c> 做语义判断，
+    /// 这里不再使用宽泛正则删除任何正文。
     /// </summary>
-    private static readonly Regex BracketActionRegex = new(
-        @"[\(（](?!\s*\d+\s*[\)）])[^\)）\r\n]{1,40}[\)）]",
-        RegexOptions.Compiled);
-
-    private static readonly Regex StarActionRegex = new(
-        @"(?<!\*)\*(?!\*)[^\*\r\n]{1,40}\*(?!\*)",
-        RegexOptions.Compiled);
-
-    /// <summary>
-    /// 过滤文本中夹带的角色动作描写/心理活动（如 (晃了晃耳朵)、（轻笑一声）、*叹了口气*）。
-    /// </summary>
+    [Obsolete("Use BotAgent.Services.Reply.ActionNarrationFilter for semantic filtering.")]
     public static string StripActionNarrations(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return string.Empty;
-        }
-
-        // 1. 去除圆括号动作：(晃了晃耳朵) / （叹了口气）
-        var res = BracketActionRegex.Replace(text, string.Empty);
-
-        // 2. 去除单星号包裹的动作描写：*叹了口气* / *微笑*
-        res = StarActionRegex.Replace(res, string.Empty);
-
-        // 3. 整理连续空格
-        res = Regex.Replace(res, @"[ \t]{2,}", " ");
-        return res.Trim();
-    }
+        => text ?? string.Empty;
 
     /// <summary>把一个（模型生成的）回复文本降级成适合 QQ 的纯文本。</summary>
     public static string Sanitize(string? text)
@@ -227,6 +205,7 @@ public static class QqPlainText
         work = ImageLink.Replace(work, m => LinkSpan(m.Groups[1].Value, m.Groups[2].Value, protectedSpans));
         work = MdLink.Replace(work, m => LinkSpan(m.Groups[1].Value, m.Groups[2].Value, protectedSpans));
         work = Url.Replace(work, m => Protect(m.Value, protectedSpans));
+        work = VariableProduct.Replace(work, m => Protect(m.Value, protectedSpans));
 
         work = Bold.Replace(work, "${t}");
         work = BoldUnderscore.Replace(work, "${t}");

@@ -131,7 +131,7 @@ internal static class CompositionRoot
         var traces = new TurnTraceStore(archive: new TraceArchiveStore());
         var audit = new AuditLogStore();
         var plain = new PlainSender(settingsBox, source, registry, ui, ownLedger, ui.EmitLog, traces, audit, riskBackoff,
-            platformPolicies);
+            platformPolicies, brain);
 
         // 各域用例
         var vibes = new VibeTracker();
