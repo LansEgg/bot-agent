@@ -12,10 +12,32 @@ internal sealed class PanelPasswordStore
     private byte[] _hash;
 
     public bool MustChange { get; private set; }
+    public bool IsConfigured { get; private set; }
     public bool Created { get; }
 
     public PanelPasswordStore(string path)
     {
+        var authDisabled = string.Equals(Environment.GetEnvironmentVariable("QQCHAT_DISABLE_PANEL_AUTH"), "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Environment.GetEnvironmentVariable("QQCHAT_DISABLE_PANEL_AUTH"), "1")
+            || string.Equals(Environment.GetEnvironmentVariable("QQCHAT_PANEL_AUTH"), "false", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Environment.GetEnvironmentVariable("QQCHAT_PANEL_AUTH"), "0");
+
+        var initialPassword = Environment.GetEnvironmentVariable(InitialPasswordEnvironmentVariable);
+        if (string.Equals(initialPassword, "none", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(initialPassword, "disabled", StringComparison.OrdinalIgnoreCase))
+        {
+            authDisabled = true;
+        }
+
+        if (authDisabled)
+        {
+            _salt = Array.Empty<byte>();
+            _hash = Array.Empty<byte>();
+            MustChange = false;
+            IsConfigured = false;
+            return;
+        }
+
         var stored = _secrets.Load("panelPassword", throwOnError: true);
         var legacy = SecretFiles.TryRead(path, out var readError);
         if (readError is not null)
@@ -34,26 +56,44 @@ internal sealed class PanelPasswordStore
                 _secrets.Save("panelPassword", legacy, throwOnError: true);
             if (legacy is not null)
                 File.Delete(path);
+            IsConfigured = true;
         }
         else
         {
-            var initialPassword = Environment.GetEnvironmentVariable(InitialPasswordEnvironmentVariable);
-            if (string.IsNullOrWhiteSpace(initialPassword) || initialPassword.Length < 10 || initialPassword.Length > 200)
+            if (!string.IsNullOrWhiteSpace(initialPassword) && initialPassword.Length >= 6 && initialPassword.Length <= 200)
             {
-                throw new InvalidOperationException(
-                    $"首次启动必须设置 {InitialPasswordEnvironmentVariable}（10-200 个字符）；初始化后可从环境变量移除。");
+                _salt = RandomNumberGenerator.GetBytes(16);
+                _hash = Hash(initialPassword, _salt);
+                MustChange = initialPassword.Length < 10;
+                IsConfigured = true;
+                _secrets.Save("panelPassword", Serialize(), throwOnError: true);
             }
+            else
+            {
+                _salt = Array.Empty<byte>();
+                _hash = Array.Empty<byte>();
+                MustChange = false;
+                IsConfigured = false;
+            }
+        }
+    }
 
-            _salt = RandomNumberGenerator.GetBytes(16);
-            _hash = Hash(initialPassword, _salt);
-            MustChange = true;
-            _secrets.Save("panelPassword", Serialize(), throwOnError: true);
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _secrets.Save("panelPassword", null, throwOnError: false);
+            _salt = Array.Empty<byte>();
+            _hash = Array.Empty<byte>();
+            MustChange = false;
+            IsConfigured = false;
         }
     }
 
     public bool Verify(string password)
     {
-        if (password.Length > 200) return false;
+        if (!IsConfigured) return true;
+        if (password.Length > 200 || _salt.Length == 0) return false;
         lock (_gate)
             return CryptographicOperations.FixedTimeEquals(Hash(password, _salt), _hash);
     }

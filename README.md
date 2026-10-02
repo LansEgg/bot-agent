@@ -133,13 +133,16 @@ docker compose logs -f napcat
 | `MODEL_BASE_URL` | `https://api.deepseek.com/v1` | 模型调用 Base URL |
 | `MODEL_NAME` | `deepseek-chat` | 使用的模型标识 |
 | `MAX_TOKENS` | `2048` | 单次回复 Token 上限 |
-| `PANEL_PASSWORD` | `your_password_here` | Web 控制面板初始认证密码（至少 10 位） |
+| `PANEL_PASSWORD` | `your_password_here` | Web 控制面板访问密码（可选，留空则免密访问；可在面板中随时修改或清除） |
+| `DISABLE_PANEL_AUTH` | `1` | 强制禁用控制面板认证（可选，默认 0） |
 | `HEALTH_PORT` | `8080` | Web 控制面板与健康探针监听端口 |
 | `WHITELIST` | `*` 或 `123456,789012` | 允许响应的 QQ 群号或用户号（逗号分隔，`*` 为全量） |
 | `ONEBOT_PROTOCOL` | `ForwardWebSocket` | 协议端通信模式（`ForwardWebSocket` / `ReverseWebSocket`） |
 | `ONEBOT_URL` | `ws://127.0.0.1:3001` | 协议端 WebSocket 接入地址 |
 | `ONEBOT_TOKEN` | `your_token` | 协议端鉴权令牌（如设置） |
 | `BOT_UIN` | `10001` | 机器人 QQ 号（留空时连接后自动获取） |
+| `QQCHAT_TLS_CERT` | `/etc/letsencrypt/live/.../fullchain.pem` | 自定义 TLS/HTTPS 证书链路径（可选，支持 Let's Encrypt） |
+| `QQCHAT_TLS_KEY` | `/etc/letsencrypt/live/.../privkey.pem` | 自定义 TLS/HTTPS 证书私钥路径（可选） |
 
 ### QQ 官方开放平台（可选）
 
@@ -156,16 +159,37 @@ OFFICIAL_APP_SECRET=your_app_secret
 
 ---
 
-## Web 控制面板功能
+## Web 控制面板与移动端体验
 
-访问 `http://<服务器IP>:8080/` 即可登录控制面板：
+访问 `http://<服务器IP>:8080/` 即可直接进入控制面板：
 
-- **会话监视**：以对话气泡形式实时展示私聊与群聊会话流、用户画像与上下文堆栈。
-- **参数热调**：在线调整 AI 互动欲望、发言阈值、冷却间隔及系统提示词。
-- **模型切换**：动态修改 API Base URL、模型名称与 API Key，即时热加载生效。
-- **状态观测**：查看 `/healthz`（存活状态）、`/readyz`（协议端就绪状态）与详细监控指标。
-- **扫码接入**：当协议端未登录时，直接在控制面板界面渲染登录二维码。
-- **实时日志**：采用 Server-Sent Events (SSE) 持续输出运行日志，首屏自动回填历史输出。
+- **免密访问与安全管控**：控制面板无需强制设置密码即可直接使用；同时支持在面板「设置」页随时设置保护密码或清除已有密码。
+- **移动端与液态玻璃导航**：深度适配智能手机屏幕与触控操作，底部导航栏采用 Apple 风格的液态玻璃（Liquid Glass）胶囊浮动 Dock 样式，完美支持 iOS/Android 的 Safe Area 安全区域Inset。在移动端进入聊天视图时自动隐藏底部导航，最大化可视空间。
+- **全链路性能优化**：
+  - **内存静态资产缓存 (Asset Cache)**：静态文件与前端资产在内存中高效驻留，规避频繁的文件系统与程序集反射流开销。
+  - **动态 GZip 压缩**：对 HTML、JavaScript、CSS、JSON、SVG 等文本内容根据浏览器请求头动态进行 GZip 压缩，整体网络传输体积减少约 70%。
+  - **硬件加速与渲染隔离**：运用 CSS Containment、GPU 合成层加速 (`translateZ`) 与原生弹性滚动，确保长会话列表高帧率丝滑滑动。
+- **会话监视与上下文栈**：以对话气泡形式实时展示私聊与群聊会话流、用户画像与上下文堆栈。
+- **参数热调与模型切换**：在线调整互动欲望、回复阈值、冷却间隔、API 地址与模型配置，即时生效。
+- **状态观测与扫码接入**：实时查看 `/healthz`、`/readyz` 及系统监控指标；协议端离线时直接渲染扫码登录二维码。
+- **实时日志流**：采用 Server-Sent Events (SSE) 持续推流控制台日志，首屏秒级回填历史记录。
+
+---
+
+## SSL/TLS 安全与证书管理
+
+服务内建针对 Linux 平台的 X.509 证书管理机制，支持开箱即用的自签名证书与标准 Let's Encrypt 证书链：
+
+- **自签名证书自动生成**：启动时如未检测到已有证书，服务内核将自动生成有效期为 3 年的标准自签名证书，并输出至 `runtime/certs/` 目录：
+  - `runtime/certs/botagent.crt`：X.509 公钥证书 (PEM)
+  - `runtime/certs/botagent.key`：RSA-2048 私钥 (PEM)
+  - `runtime/certs/botagent.pfx`：PKCS#12 密钥库
+  亦可执行 `./tools/gencert.sh [域名] [IP]` 手动指定 SAN 扩展生成。
+- **Let's Encrypt / 生产证书加载**：若已通过 certbot 或 acme.sh 申请标准域名证书，可在 `.env` 中配置对应路径进行挂载：
+  ```ini
+  QQCHAT_TLS_CERT=/etc/letsencrypt/live/example.com/fullchain.pem
+  QQCHAT_TLS_KEY=/etc/letsencrypt/live/example.com/privkey.pem
+  ```
 
 ---
 

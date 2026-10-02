@@ -36,14 +36,14 @@ kill -TERM "$PID" 2>/dev/null || true
 # 等待优雅收尾（落盘 SQLite）
 for i in {1..10}; do
     if ! kill -0 "$PID" 2>/dev/null; then
-        echo "✅ Bot Agent 已正常停止"
+        echo "[+] Bot Agent 已正常停止"
         rm -f "$PID_FILE"
         exit 0
     fi
     sleep 1
 done
 
-echo "⚠️ 进程未响应，正在强制结束..."
+echo "[!] 进程未响应，正在强制结束..."
 kill -KILL "$PID" 2>/dev/null || true
 rm -f "$PID_FILE"
-echo "已强制结束"
+echo "[+] 已强制结束"

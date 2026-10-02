@@ -49,9 +49,9 @@ if [ -f "$ENV_FILE" ]; then
         fi
     done < "$ENV_FILE"
 else
-    echo "⚠️ 未找到 .env 文件！正在从 .env.example 复制..."
+    echo "[*] 未找到 .env 文件，正在从 .env.example 复制..."
     cp "$DIR/.env.example" "$ENV_FILE"
-    echo "请先编辑 $ENV_FILE 填入必要参数（如 MODEL_API_KEY, PANEL_PASSWORD）后重新启动！"
+    echo "[!] 请先编辑 $ENV_FILE 填入必要参数（如 MODEL_API_KEY）后重新启动。"
     exit 1
 fi
 
@@ -79,6 +79,9 @@ export QQCHAT_SEGMENT_DELAY_MS="${QQCHAT_SEGMENT_DELAY_MS:-${SEGMENT_DELAY_MS:-7
 
 export QQCHAT_PANEL_PASSWORD="${QQCHAT_PANEL_PASSWORD:-${PANEL_PASSWORD:-}}"
 export QQCHAT_PANEL_TOKEN="${QQCHAT_PANEL_TOKEN:-${PANEL_TOKEN:-}}"
+export QQCHAT_DISABLE_PANEL_AUTH="${QQCHAT_DISABLE_PANEL_AUTH:-${DISABLE_PANEL_AUTH:-}}"
+export QQCHAT_TLS_CERT="${QQCHAT_TLS_CERT:-${TLS_CERT:-}}"
+export QQCHAT_TLS_KEY="${QQCHAT_TLS_KEY:-${TLS_KEY:-}}"
 export QQCHAT_HEALTH_PORT="${QQCHAT_HEALTH_PORT:-${HEALTH_PORT:-8080}}"
 export QQCHAT_DATA_DIR="${QQCHAT_DATA_DIR:-$DIR/runtime}"
 
@@ -87,15 +90,14 @@ export QQCHAT_NAPCAT_WEBUI_TOKEN="${QQCHAT_NAPCAT_WEBUI_TOKEN:-${NAPCAT_WEBUI_TO
 
 # 检查必填项
 if [ -z "$QQCHAT_API_KEY" ] || [ "$QQCHAT_API_KEY" = "sk-xxxxxxxxxxxxxxxxxxxxxxxx" ]; then
-    echo "❌ 错误: 未配置有效的 MODEL_API_KEY / QQCHAT_API_KEY！"
+    echo "[!] 错误: 未配置有效的 MODEL_API_KEY / QQCHAT_API_KEY。"
     echo "请在 $ENV_FILE 中设置 MODEL_API_KEY 后重试。"
     exit 1
 fi
 
-if [ -z "$QQCHAT_PANEL_PASSWORD" ] && [ ! -f "$DIR/runtime/data/qqchat.db" ]; then
-    echo "❌ 错误: 首次启动必须配置 PANEL_PASSWORD（面板密码，至少 10 位）！"
-    echo "请在 $ENV_FILE 中设置 PANEL_PASSWORD 后重试。"
-    exit 1
+# 如果未设置 PANEL_PASSWORD，则控制面板为公开免密模式（可在面板设置中随时配置）
+if [ -z "$QQCHAT_PANEL_PASSWORD" ]; then
+    echo "[*] 提示: 未配置 PANEL_PASSWORD，面板将以免密模式运行。"
 fi
 
 # 自动检测与适配运行环境（标准 Linux / Termux）
@@ -127,7 +129,7 @@ if ! command -v dotnet >/dev/null 2>&1; then
     if [ -n "$DOTNET_ROOT" ] && [ -x "$DOTNET_ROOT/dotnet" ]; then
         export PATH="$DOTNET_ROOT:$PATH"
     else
-        echo "❌ 错误: 未检测到 dotnet 命令，请确保已安装 .NET 8.0 SDK 并加入 PATH。"
+        echo "[!] 错误: 未检测到 dotnet 命令，请确保已安装 .NET 8.0 SDK 并加入 PATH。"
         echo "例如在 Ubuntu/Debian 上执行: sudo apt update && sudo apt install -y dotnet-sdk-8.0"
         exit 1
     fi
@@ -137,24 +139,41 @@ PROJECT_FILE="$DIR/src/BotAgent.Headless/BotAgent.Headless.csproj"
 
 # 运行模式选择（直接从源码项目运行）
 if [ "$1" = "--foreground" ] || [ "$1" = "-f" ]; then
-    echo "正在以[前台模式]从源码运行 Bot Agent..."
+    echo "正在以前台模式从源码运行 Bot Agent..."
     exec dotnet run --project "$PROJECT_FILE" -c Release --no-launch-profile
 fi
 
-echo "正在以[后台模式]从源码运行 Bot Agent..."
+echo "正在以后台模式从源码运行 Bot Agent..."
 nohup dotnet run --project "$PROJECT_FILE" -c Release --no-launch-profile >> "$LOG_FILE" 2>&1 &
 BOT_PID=$!
 echo $BOT_PID > "$PID_FILE"
 
-sleep 2
-if kill -0 $BOT_PID 2>/dev/null; then
-    echo "✅ Bot Agent 启动成功！(PID: $BOT_PID)"
-    echo " Web 面板: http://127.0.0.1:${QQCHAT_HEALTH_PORT}/"
-    echo " 运行日志: $LOG_FILE"
+echo "正在启动服务，请稍候..."
+STARTED=false
+for i in $(seq 1 20); do
+    if ! kill -0 $BOT_PID 2>/dev/null; then
+        break
+    fi
+    if curl -s -m 1 "http://127.0.0.1:${QQCHAT_HEALTH_PORT}/healthz" 2>/dev/null | grep -q '"status":"ok"'; then
+        STARTED=true
+        break
+    fi
+    sleep 1
+done
+
+if [ "$STARTED" = true ]; then
+    echo "[+] Bot Agent 启动成功 (PID: $BOT_PID)"
+    echo "    Web 面板: http://127.0.0.1:${QQCHAT_HEALTH_PORT}/"
+    echo "    运行日志: $LOG_FILE"
     echo "使用 './status.sh' 查看状态，'./stop.sh' 停止服务。"
 else
-    echo "❌ Bot Agent 启动失败，请查看日志:"
-    tail -n 25 "$LOG_FILE"
-    rm -f "$PID_FILE"
-    exit 1
+    if kill -0 $BOT_PID 2>/dev/null; then
+        echo "[!] 进程已启动 (PID: $BOT_PID)，正在后台初始化中..."
+        echo "请稍后运行 './status.sh' 检查状态，或查看日志: $LOG_FILE"
+    else
+        echo "[!] Bot Agent 启动失败，请查看日志:"
+        tail -n 25 "$LOG_FILE"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
 fi
