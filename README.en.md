@@ -17,6 +17,13 @@ docker compose logs -f napcat       # first-time QR login (or scan it in the bot
 
 Open `http://<host>:8080/` for the control panel: chat history, conversation management, settings, live logs.
 
+## 📚 Documentation
+
+| Document | Contents |
+| --- | --- |
+| [src/BotAgent.Headless/README.en.md](src/BotAgent.Headless/README.en.md) ([中文](src/BotAgent.Headless/README.md)) | **Deployment and operations**: the full environment-variable reference, data directory, panel usage, troubleshooting, design trade-offs and operating boundaries |
+| [.env.example](.env.example) | Every configurable option, with commentary (including Docker secrets usage; comments are in Chinese) |
+
 ## ✨ Features
 
 **Conversation**
@@ -99,13 +106,6 @@ NapCat container ── OneBot v11 forward WS ──┐
 | Speech synthesis | A separate container (a **cloud TTS proxy**: `tools/tts-cloud-server.py` + `tools/tts-cloud.Dockerfile`, ~60MB image / ~20MB RAM, **no local model**) — if it dies only voice is affected and the bot degrades to text |
 | Web search | Prefers the model provider's own web retrieval (`/v1beta/…:generateContent` with a search tool, results carrying sources); falls back to pluggable sources (SearxNG JSON / MediaWiki JSON / generic HTML) |
 | Health checks | A built-in minimal HTTP service: `/healthz` `/readyz` `/status` |
-
-## 📚 Documentation
-
-| Document | Contents |
-| --- | --- |
-| [src/BotAgent.Headless/README.en.md](src/BotAgent.Headless/README.en.md) ([中文](src/BotAgent.Headless/README.md)) | **Deployment and operations**: the full environment-variable reference, data directory, panel usage, troubleshooting, design trade-offs and operating boundaries |
-| [.env.example](.env.example) | Every configurable option, with commentary (including Docker secrets usage; comments are in Chinese) |
 
 ## Fix compatibility and migration
 

@@ -1,4 +1,4 @@
-# Bot Agent Headless (container edition)
+# Bot Agent Headless
 
 [简体中文](README.md) | English
 

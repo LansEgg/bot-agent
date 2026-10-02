@@ -14,6 +14,13 @@ docker compose logs -f napcat       # 首次扫码登录（或在机器人面板
 
 打开 `http://<主机>:8080/` 就是控制面板：聊天记录、会话管理、设置、实时日志。
 
+## 📚 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [src/BotAgent.Headless/README.md](src/BotAgent.Headless/README.md) | **部署与运维**：环境变量清单、数据目录、面板使用、故障排查、设计取舍与运行边界 |
+| [.env.example](.env.example) | 全部可配置项与说明（含 Docker secrets 用法） |
+
 ## ✨ 功能
 
 **对话**
@@ -103,13 +110,6 @@ NapCat 容器 ── OneBot v11 正向 WS ──┐
 | 语音合成 | 独立容器（**云端 TTS 代理**：`tools/tts-cloud-server.py` + `tools/tts-cloud.Dockerfile`，~60MB 镜像 / ~20MB 内存、**不跑本地模型**）——挂了只影响语音，机器人自动降级成打字 |
 | 联网搜索 | 优先用模型服务商自带的联网检索（`/v1beta/…:generateContent` + 搜索工具，结果带来源）；不可用时回退到可插拔搜索源（SearxNG JSON / MediaWiki JSON / 通用 HTML） |
 | 健康检查 | 内置极简 HTTP 服务：`/healthz` `/readyz` `/status` |
-
-## 📚 文档
-
-| 文档 | 内容 |
-| --- | --- |
-| [src/BotAgent.Headless/README.md](src/BotAgent.Headless/README.md) | **部署与运维**：环境变量清单、数据目录、面板使用、故障排查、设计取舍与运行边界 |
-| [.env.example](.env.example) | 全部可配置项与说明（含 Docker secrets 用法） |
 
 ## 修复兼容性与迁移
 
