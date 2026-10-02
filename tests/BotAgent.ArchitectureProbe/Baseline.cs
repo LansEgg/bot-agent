@@ -32,7 +32,7 @@ internal static class Baseline
     /// “当场做掉只读工具”搬进 `Services/Reply/InlineTurnTools.cs`。
     /// 这格仍然只许往下调：回复主链里动作分派那一段还能拆，谁接着拆记得同步这里。
     /// </summary>
-    public const int MaxFileLines = 2320;
+    public const int MaxFileLines = 1765;
     public const string BotAgentHostPath = "Services/BotAgentHost.cs";
     // 2026-09-23 批次 5 第 3 步达成 DoD：面板直连组件 + 删掉 façade 转发之后，
     // 807 → 242 行 / 43 → 10 字段 / 48 → 10 方法（同时把"启动自述"搬去 Services/Ops/BootReport.cs）。
@@ -54,7 +54,7 @@ internal static class Baseline
     /// ApplyChannelAndAgentSettings），全 src 超过 200 行的成员块 **0 个**。基线按 DoD 钉死在 200。
     /// 诊断用 <c>--longest</c> 看当前最长的若干个（拆的时候从上往下走）。
     /// </summary>
-    public const int LongestMethodAnywhere = 200;
+    public const int LongestMethodAnywhere = 198;
 
     // ── 易变细节 ──
     /// <summary>

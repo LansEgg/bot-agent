@@ -103,6 +103,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         string? verificationToken = null,
         CancellationToken ct = default)
     {
+        await Task.CompletedTask;
         var settings = _box.Current;
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(body))
