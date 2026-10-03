@@ -179,6 +179,20 @@ internal sealed class ModelTransport : IModelTransport
             }
         }
 
+        // 模型思考程度与预算预设（低 1K / 中 4K / 高 16K / 自定义）
+        var (thinkingEffort, thinkingTokens) = _settings.ResolveThinkingBudget();
+        if (!string.IsNullOrWhiteSpace(thinkingEffort))
+        {
+            if (thinkingEffort is "low" or "medium" or "high")
+            {
+                payload["reasoning_effort"] = thinkingEffort;
+            }
+            if (thinkingTokens > 0)
+            {
+                payload["max_thinking_tokens"] = thinkingTokens;
+            }
+        }
+
         return new BuiltRequest(payload, attachedImages, attachedImageIds);
     }
 
@@ -280,6 +294,23 @@ internal sealed class ModelTransport : IModelTransport
 
             var detail = await response.Content.ReadAsStringAsync(ct);
             var status = (int)response.StatusCode;
+            if (status is 400 or 422 && (requestPayload.ContainsKey("reasoning_effort") || requestPayload.ContainsKey("max_thinking_tokens")) &&
+                (detail.Contains("reasoning_effort", StringComparison.OrdinalIgnoreCase) || detail.Contains("thinking", StringComparison.OrdinalIgnoreCase)))
+            {
+                requestPayload.Remove("reasoning_effort");
+                requestPayload.Remove("max_thinking_tokens");
+                Services.FileLog.Warn("Agent", "模型拒绝 reasoning_effort/max_thinking_tokens，自动降级为默认重试");
+                response.Dispose();
+                response = null;
+                request = new HttpRequestMessage(HttpMethod.Post, requestUrl)
+                {
+                    Content = new StringContent(requestPayload.ToJsonString(), Encoding.UTF8, "application/json")
+                };
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+                attempt--;
+                continue;
+            }
+
             failureDetail = $"Chat Completions 返回 {status}：{Truncate(detail, 200)}";
             if (attempt >= 1 || (status < 500 && status != 429))
             {
@@ -287,7 +318,6 @@ internal sealed class ModelTransport : IModelTransport
                 response = null;
                 break;
             }
-
             Services.FileLog.Write("Agent", $"模型返回 {status}（{Truncate(detail, 80)}）→ 2 秒后重试一次");
             response.Dispose();
             response = null;
