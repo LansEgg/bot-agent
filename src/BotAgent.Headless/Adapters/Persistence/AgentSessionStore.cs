@@ -194,8 +194,8 @@ public sealed class AgentSessionStore : IAgentSessionStore
     {
         lock (_gate)
         {
-            used = _chats.TryGetValue(sourceKey, out var chat) ? Resolve(chat, idNameOrIndex) : null;
-            if (used is null)
+            used = _chats.TryGetValue(sourceKey, out var chat) && chat is not null ? Resolve(chat, idNameOrIndex) : null;
+            if (used is null || chat is null)
             {
                 return false;
             }

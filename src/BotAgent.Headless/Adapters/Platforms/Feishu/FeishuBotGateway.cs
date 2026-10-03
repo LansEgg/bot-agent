@@ -103,6 +103,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         string? verificationToken = null,
         CancellationToken ct = default)
     {
+        await Task.CompletedTask;
         var settings = _box.Current;
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(body))
@@ -473,7 +474,7 @@ public sealed class FeishuBotGateway : IQqChatSource, IPlatformAdapter, IPlatfor
         var policyWl = isGroup ? policy?.GroupWhitelist : policy?.PrivateWhitelist;
         var wl = !string.IsNullOrWhiteSpace(policyWl) ? policyWl : settings.FeishuWhitelist;
         if (string.IsNullOrWhiteSpace(wl)) return false;
-        var tokens = wl.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var tokens = wl.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Contains("*") || tokens.Contains("all", StringComparer.OrdinalIgnoreCase)) return true;
         if (tokens.Contains(target, StringComparer.OrdinalIgnoreCase)) return true;
         var alias = _ids.AliasFor(settings.FeishuAppId?.Trim() ?? string.Empty, IdentityKind(isGroup), target);

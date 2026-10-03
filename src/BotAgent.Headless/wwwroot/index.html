@@ -67,6 +67,7 @@
     </div>
   </div>
   <div class="titlebar-right">
+    <button class="header-save-btn" id="headerSaveBtn" type="button" hidden>保存设置</button>
     <span class="conn" id="connPill"><i class="dot" id="connDot"></i><span id="connText">连接中…</span></span>
   </div>
 </header>
@@ -435,6 +436,16 @@
             <span id="panelPasswordNotice" role="status"></span>
           </form>
         </div>
+        <!-- 插件中心：展示已装载的预设插件与扩展 -->
+        <div class="card" id="pluginsCard" data-category="model">
+          <div class="card-head">
+            <h3>插件与扩展</h3>
+            <p>基于微内核架构的可插拔模块中心。当前系统已分离并激活预设插件，开箱即用。</p>
+          </div>
+          <div id="pluginListContainer" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 12px;">
+            <div style="color:var(--text-secondary); font-size:13px;">正在加载插件清单…</div>
+          </div>
+        </div>
 
         <!-- 模型工作区：沿用现有设置接口，按运行上下文切换，不引入新的供应商存储协议。 -->
         <div class="card model-studio-card" id="modelSettingsCard" data-category="model">
@@ -627,7 +638,7 @@
 
           <div class="field">
             <label>白名单管理</label>
-            <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：QQ 私域的群聊白名单与私聊白名单已统一收敛至页面下方的「平台实例策略」卡片集中配置，各通道独立治理、互不串台。</p>
+            <p class="path-hint"><b>已全集成至「平台实例策略」</b>：QQ 私域的群聊白名单与私聊白名单已统一收敛至页面下方的「平台实例策略」卡片集中配置，各通道独立治理、互不串台。</p>
             <div style="display:none" aria-hidden="true">
               <textarea id="setWhitelistGroups" rows="3" placeholder="例如：&#10;10001&#10;20002（留空 = 使用共用名单；共用名单也空 = 忽略全部）"></textarea>
               <textarea id="setWhitelistPrivates" rows="3" placeholder="例如：&#10;30001（留空 = 使用共用名单；共用名单也空 = 忽略全部）与群聊名单各管各的"></textarea>
@@ -669,7 +680,7 @@
             </div>
             <div class="field">
               <label>白名单管理</label>
-              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：官方通道群聊与单聊白名单（别名号）已统一在下方的「平台实例策略」集中管理，留空默认全部接受。</p>
+              <p class="path-hint"><b>已全集成至「平台实例策略」</b>：官方通道群聊与单聊白名单（别名号）已统一在下方的「平台实例策略」集中管理，留空默认全部接受。</p>
               <input type="hidden" id="setOfficialWhitelistGroups" />
               <input type="hidden" id="setOfficialWhitelistPrivates" />
             </div>
@@ -721,7 +732,7 @@
             </div>
             <div class="field">
               <label>白名单管理</label>
-              <p class="path-hint">💡 <b>已全集成至「平台实例策略」</b>：飞书的群聊白名单（<code>chat_id</code>）与单聊白名单（<code>open_id</code>）已统一在下方的「平台实例策略」卡片中按群和私聊分别管理。</p>
+              <p class="path-hint"><b>已全集成至「平台实例策略」</b>：飞书的群聊白名单（<code>chat_id</code>）与单聊白名单（<code>open_id</code>）已统一在下方的「平台实例策略」卡片中按群和私聊分别管理。</p>
               <input type="hidden" id="setFeishuWhitelist" />
             </div>
             <div class="field">
@@ -746,7 +757,7 @@
 
           <p class="path-hint">本地通道接口地址：<code>/api/local/message</code>（需携带面板认证令牌 <code>token=...</code> 或 <code>X-Panel-Token</code> 头）。</p>
           <div class="field">
-            <a href="/playground.html" target="_blank" class="btn-secondary" style="display:inline-block;text-decoration:none;padding:8px 16px;font-size:13px;border-radius:6px">🧪 打开交互演练场 (Playground)</a>
+            <a href="/playground.html" target="_blank" class="btn-secondary" style="display:inline-block;text-decoration:none;padding:8px 16px;font-size:13px;border-radius:6px">打开交互演练场 (Playground)</a>
             <span class="path-hint">演练场提供完整的六步治理节点时间轴可视化与端到端模拟测试。</span>
           </div>
         </div>
@@ -1459,7 +1470,7 @@
                         <li>本机装好 <code>pi</code>（本机 agent 的干活工具），并确认 <code>pi --version</code> 能跑；Python 3 也要有。</li>
                         <li>点上面「一键连接本机…」→ 填一个名字（比如 <code>ZHAOSPC</code>）→ 下载两个文件（<code>connect-pi-bridge.cmd</code> 与 <code>pi-bridge.py</code>）放到同一个目录。</li>
                         <li>双击 <code>connect-pi-bridge.cmd</code>（Windows）或 <code>sh connect-pi-bridge.sh</code>（Linux/Mac）——窗口别关。
-                            回到这里点「我已运行，检测连接」，看到 🟢 在线就成了。</li>
+                            回到这里点「我已运行，检测连接」，看到 在线 就成了。</li>
                     </ol>
 
                     <div style="margin-top:8px"><b>不想用一键脚本（手动）：</b>

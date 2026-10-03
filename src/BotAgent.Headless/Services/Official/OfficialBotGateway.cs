@@ -97,9 +97,11 @@ public sealed class OfficialBotGateway : IQqChatSource, IDisposable
 
     public event Action<QqChatMessage>? MessageReceived;
 
+#pragma warning disable CS0067
     public event Action<QqPokeEvent>? Poked;
 
     public event Action<QqRecallEvent>? MessageRecalled;
+#pragma warning restore CS0067
 
     public event Action<bool>? ConnectionChanged;
 

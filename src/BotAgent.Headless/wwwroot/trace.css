@@ -399,6 +399,6 @@
     border-bottom: 1px solid var(--line, #e3e3e3);
   }
 
-  .trace-body { gap: 8px; padding: 8px; }
+  .trace-body { gap: 8px; padding: 8px 8px calc(84px + env(safe-area-inset-bottom, 0px)); }
   .trace-col { padding: 11px; border-radius: 12px; }
 }

@@ -353,7 +353,7 @@ public sealed partial class AgentCommandService
             return (true, rest.Length == 0 ? "接着上文继续（上一件事接着做或接着说）" : rest);
         }
 
-        return (false, payload);
+        return (false, payload ?? string.Empty);
     }
 
     /// <summary>把会话改回中性的自动名（<c>//reset</c> 用；不动手动改过名的会话）。</summary>
