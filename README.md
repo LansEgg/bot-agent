@@ -64,8 +64,8 @@ sudo apt-get install -y dotnet-sdk-8.0 git curl openssl
 #### 2. 获取源码与编译构建
 
 ```bash
-# 克隆代码仓库
-git clone https://github.com/mgyanik/bot-agent.git
+# 克隆主仓库代码（main 分支）
+git clone -b main https://github.com/ZhaoJun233/bot-agent.git
 cd bot-agent
 
 # 生成并编辑配置文件
