@@ -545,6 +545,19 @@
                         <input type="number" id="setMaxTokens" min="64" max="32000" step="64" />
                       </div>
                     </div>
+                    <div class="field model-thinking-settings" style="margin-top: 14px;">
+                      <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <label for="setThinkingBudgetSlider">模型思考程度与预算预设</label>
+                        <span class="val" id="thinkingBudgetVal">中 (Medium · 4,096 Tokens)</span>
+                      </div>
+                      <input type="range" id="setThinkingBudgetSlider" min="1" max="4" step="1" value="2" />
+                      <input type="hidden" id="setThinkingBudget" value="medium" />
+                      <div id="thinkingCustomBudgetWrap" class="field" style="margin-top: 8px;" hidden>
+                        <label for="setThinkingCustomBudget">自定义思考程度 / 预算（Tokens 或档位名称）</label>
+                        <input type="text" id="setThinkingCustomBudget" placeholder="例如 8192 或特定档位名称" value="4096" />
+                      </div>
+                      <span class="hint">调节大模型推理思考预算深度（预设：低 1K / 中 4K / 高 16K，或自定义）。<br><b>注：暂时不能完全关闭思考，当前在测试中。</b></span>
+                    </div>
                   </div>
                 </details>
               </div>
