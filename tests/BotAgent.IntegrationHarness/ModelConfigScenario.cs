@@ -167,14 +167,19 @@ public static partial class Program
             Check("★ 重启后依然用面板里的值（环境变量不再回滚它）", stillB,
                 $"重启后 B 收到 {openAiB.Requests.Count} 次；启动日志：{Truncate(bootLines, 240)}");
 
-            // ---- 6.5) 思考档位（快速回复）：开关真的会把聊天请求换成轻量模型 ----
-            //   2026-09-19 加：实测同一条链路上“关思考”的参数（reasoning_effort / thinking.type=disabled /
-            //   thinking_budget=0）全部无效（首字依旧 ~6.6s），真正能提速的是换轻量档（快 2~3 倍），
-            //   所以开关做成“聊天回复换模型”；这里钉住：开着用快速模型、关掉回主模型。
+            // ---- 6.5) 思考档位（快速回复）：开关换轻量模型，且主模型与快速档思考预算独立配置 ----
             using (var http = CreatePanelHttpClient(panelPort, 10))
             {
                 using var fastContent = new StringContent(
-                    new JsonObject { ["fastReply"] = true, ["fastModel"] = "model-fast-x" }.ToJsonString(),
+                    new JsonObject
+                    {
+                        ["fastReply"] = true,
+                        ["fastModel"] = "model-fast-x",
+                        ["thinkingBudget"] = "high",
+                        ["thinkingCustomBudget"] = "16384",
+                        ["fastThinkingBudget"] = "custom",
+                        ["fastThinkingCustomBudget"] = "2048"
+                    }.ToJsonString(),
                     Encoding.UTF8, "application/json");
                 using var fastRes = await http.PostAsync($"http://127.0.0.1:{panelPort}/api/settings", fastContent, cts.Token);
                 Check("快速档开关能存进面板", fastRes.IsSuccessStatusCode, fastRes.StatusCode.ToString());
@@ -182,8 +187,11 @@ public static partial class Program
 
             await Task.Delay(500);
             var (_, settingsFast) = await PanelGetAsync($"http://127.0.0.1:{panelPort}/api/settings");
-            Check("★ 面板回读里有快速档与“这轮实际用哪个模型”",
-                settingsFast.Contains("\"fastReply\":true") && settingsFast.Contains("\"replyModel\":\"model-fast-x\""),
+            Check("★ 面板回读里有快速档与“这轮实际用哪个模型”及独立思考档位",
+                settingsFast.Contains("\"fastReply\":true") &&
+                settingsFast.Contains("\"replyModel\":\"model-fast-x\"") &&
+                settingsFast.Contains("\"thinkingBudget\":\"high\"") &&
+                settingsFast.Contains("\"fastThinkingBudget\":\"custom\""),
                 Truncate(settingsFast, 200));
 
             openAiB.EnqueueReply("""{"suitability": 90, "reply": "快速档回一句"}""");
@@ -196,6 +204,9 @@ public static partial class Program
             var fastModelInReq = fastHit?["model"]?.GetValue<string>();
             Check("★★ 快速档开着时聊天请求用的是快速模型（而不是主模型）",
                 fastModelInReq == "model-fast-x", $"请求里的 model = {fastModelInReq ?? "(无)"}");
+            var fastThinkingTokens = fastHit?["max_thinking_tokens"]?.GetValue<int>();
+            Check("★★ 快速档使用独立思考预算（自定义 2048 tokens）",
+                fastThinkingTokens == 2048, $"快速档 max_thinking_tokens = {fastThinkingTokens?.ToString() ?? "(无)"}");
 
             using (var http = CreatePanelHttpClient(panelPort, 10))
             {
@@ -213,6 +224,11 @@ public static partial class Program
             var backModelInReq = backHit?["model"]?.GetValue<string>();
             Check("★★ 关掉快速档后回到主模型（开关不是单程票）",
                 backModelInReq == "model-from-panel", $"请求里的 model = {backModelInReq ?? "(无)"}");
+            var backThinkingEffort = backHit?["reasoning_effort"]?.GetValue<string>();
+            var backThinkingTokens = backHit?["max_thinking_tokens"]?.GetValue<int>();
+            Check("★★ 回到主模型后恢复主模型独立思考预算（high · 16384 tokens）",
+                backThinkingEffort == "high" && backThinkingTokens == 16384,
+                $"主模型 effort={backThinkingEffort ?? "(无)"}, tokens={backThinkingTokens?.ToString() ?? "(无)"}");
 
             // ---- 7) 清空密钥 → 回退环境变量 ----
             using (var http = CreatePanelHttpClient(panelPort, 10))

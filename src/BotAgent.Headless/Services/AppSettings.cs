@@ -68,32 +68,53 @@ public sealed class AppSettings
     public int MaxTokens { get; set; } = 2048;
 
     /// <summary>
-    /// 模型思考程度与预算预设：low(1024) / medium(4096) / high(16384) / custom。
+    /// 主模型思考程度与预算预设：low(1024) / medium(4096) / high(16384) / custom。
     /// 默认 medium。暂时不能完全关闭思考（当前测试中）。
     /// </summary>
     public string ThinkingBudget { get; set; } = "medium";
 
     /// <summary>
-    /// 自定义思考程度/预算（当 ThinkingBudget 为 custom 时生效，可为 Token 数字如 "8192" 或自定义档位名）。
+    /// 主模型自定义思考程度/预算（当 ThinkingBudget 为 custom 时生效，可为 Token 数字如 "8192" 或自定义档位名）。
     /// </summary>
     public string ThinkingCustomBudget { get; set; } = "4096";
 
     /// <summary>
-    /// 解析当前生效的思考程度档位与 Token 预算。
+    /// 快速档模型思考程度与预算预设：low(1024) / medium(4096) / high(16384) / custom。
+    /// 默认 low。暂时不能完全关闭思考（当前测试中）。
     /// </summary>
-    public (string Effort, int BudgetTokens) ResolveThinkingBudget()
+    public string FastThinkingBudget { get; set; } = "low";
+
+    /// <summary>
+    /// 快速档模型自定义思考程度/预算（当 FastThinkingBudget 为 custom 时生效，可为 Token 数字如 "1024" 或自定义档位名）。
+    /// </summary>
+    public string FastThinkingCustomBudget { get; set; } = "1024";
+
+    /// <summary>
+    /// 解析当前生效的思考程度档位与 Token 预算（可指定是否为快速档模型）。
+    /// </summary>
+    public (string Effort, int BudgetTokens) ResolveThinkingBudget(bool isFastModel = false)
     {
-        var preset = (ThinkingBudget ?? "medium").Trim().ToLowerInvariant();
+        var budget = isFastModel ? FastThinkingBudget : ThinkingBudget;
+        var custom = isFastModel ? FastThinkingCustomBudget : ThinkingCustomBudget;
+        var defaultPreset = isFastModel ? "low" : "medium";
+        var defaultTokens = isFastModel ? 1024 : 4096;
+        var preset = (budget ?? defaultPreset).Trim().ToLowerInvariant();
         return preset switch
         {
             "low" => ("low", 1024),
+            "medium" => ("medium", 4096),
             "high" => ("high", 16384),
-            "custom" => int.TryParse(ThinkingCustomBudget, out var c) && c > 0
-                ? (ThinkingCustomBudget, c)
-                : (!string.IsNullOrWhiteSpace(ThinkingCustomBudget) ? (ThinkingCustomBudget, 4096) : ("medium", 4096)),
-            _ => ("medium", 4096)
+            "custom" => int.TryParse(custom, out var c) && c > 0
+                ? (custom, c)
+                : (!string.IsNullOrWhiteSpace(custom) ? (custom, defaultTokens) : (defaultPreset, defaultTokens)),
+            _ => (defaultPreset, defaultTokens)
         };
     }
+
+    /// <summary>
+    /// 解析快速档模型生效的思考程度档位与 Token 预算。
+    /// </summary>
+    public (string Effort, int BudgetTokens) ResolveFastThinkingBudget() => ResolveThinkingBudget(isFastModel: true);
     // ---------- 自适应采样超参数 (理性/感性动态温度与 top_p) ----------
     /// <summary>是否开启动态自适应采样（理性问题降温提准确率，感性互动升温保灵动）。默认开。</summary>
     public bool AdaptiveSamplingEnabled { get; set; } = true;

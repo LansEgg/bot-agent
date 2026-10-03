@@ -1544,19 +1544,21 @@ function renderChannelStatus(channels) {
   };
   const THINKING_STEP_MAP = { low: 1, medium: 2, high: 3, custom: 4 };
 
-  function syncThinkingBudgetUi(budget, customVal) {
-    const slider = $("setThinkingBudgetSlider");
-    const hidden = $("setThinkingBudget");
-    const valBadge = $("thinkingBudgetVal");
-    const customWrap = $("thinkingCustomBudgetWrap");
-    const customInput = $("setThinkingCustomBudget");
+  function syncThinkingBudgetUi(budget, customVal, isFast = false) {
+    const slider = $(isFast ? "setFastThinkingBudgetSlider" : "setThinkingBudgetSlider");
+    const hidden = $(isFast ? "setFastThinkingBudget" : "setThinkingBudget");
+    const valBadge = $(isFast ? "fastThinkingBudgetVal" : "thinkingBudgetVal");
+    const customWrap = $(isFast ? "fastThinkingCustomBudgetWrap" : "thinkingCustomBudgetWrap");
+    const customInput = $(isFast ? "setFastThinkingCustomBudget" : "setThinkingCustomBudget");
     if (!slider || !hidden || !valBadge) return;
 
-    const key = String(budget || "medium").toLowerCase();
-    const step = THINKING_STEP_MAP[key] || (key === "custom" || !isNaN(Number(key)) ? 4 : 2);
+    const defaultKey = isFast ? "low" : "medium";
+    const defaultStep = isFast ? 1 : 2;
+    const key = String(budget || defaultKey).toLowerCase();
+    const step = THINKING_STEP_MAP[key] || (key === "custom" || !isNaN(Number(key)) ? 4 : defaultStep);
     slider.value = step;
     hidden.value = key;
-    valBadge.textContent = THINKING_BUDGET_PRESETS[step]?.label || "中 (Medium · 4,096 Tokens)";
+    valBadge.textContent = THINKING_BUDGET_PRESETS[step]?.label || THINKING_BUDGET_PRESETS[defaultStep].label;
     if (customWrap) customWrap.hidden = step !== 4;
     if (customInput && customVal) customInput.value = customVal;
   }
@@ -2039,7 +2041,10 @@ function renderChannelStatus(channels) {
     $("setMaxTokens").value = r.maxTokens;
     $("setThinkingBudget").value = r.thinkingBudget || "medium";
     $("setThinkingCustomBudget").value = r.thinkingCustomBudget || "4096";
-    syncThinkingBudgetUi(r.thinkingBudget || "medium", r.thinkingCustomBudget || "4096");
+    syncThinkingBudgetUi(r.thinkingBudget || "medium", r.thinkingCustomBudget || "4096", false);
+    $("setFastThinkingBudget").value = r.fastThinkingBudget || "low";
+    $("setFastThinkingCustomBudget").value = r.fastThinkingCustomBudget || "1024";
+    syncThinkingBudgetUi(r.fastThinkingBudget || "low", r.fastThinkingCustomBudget || "1024", true);
     $("setWhitelist").value = r.messageWhitelist || "";
     $("setWhitelistGroups").value = r.whitelistGroups || "";
     $("setWhitelistPrivates").value = r.whitelistPrivates || "";
@@ -2324,6 +2329,8 @@ function renderChannelStatus(channels) {
       maxTokens: Number($("setMaxTokens").value),
       thinkingBudget: $("setThinkingBudget").value,
       thinkingCustomBudget: $("setThinkingCustomBudget").value,
+      fastThinkingBudget: $("setFastThinkingBudget").value,
+      fastThinkingCustomBudget: $("setFastThinkingCustomBudget").value,
       groupCooldownSeconds: Number($("setGroupCooldown").value),
       privateCooldownSeconds: Number($("setPrivateCooldown").value),
       idleFallbackSeconds: Number($("setIdleFallback").value),
@@ -4036,6 +4043,20 @@ function renderChannelStatus(channels) {
       });
     }
     $("setThinkingCustomBudget")?.addEventListener("input", markSettingsDirty);
+
+    const fastThinkingSlider = $("setFastThinkingBudgetSlider");
+    if (fastThinkingSlider) {
+      fastThinkingSlider.addEventListener("input", (e) => {
+        const step = Number(e.target.value);
+        const p = THINKING_BUDGET_PRESETS[step] || THINKING_BUDGET_PRESETS[1];
+        $("setFastThinkingBudget").value = p.id;
+        $("fastThinkingBudgetVal").textContent = p.label;
+        const wrap = $("fastThinkingCustomBudgetWrap");
+        if (wrap) wrap.hidden = step !== 4;
+        markSettingsDirty();
+      });
+    }
+    $("setFastThinkingCustomBudget")?.addEventListener("input", markSettingsDirty);
 
     $("saveBtn").addEventListener("click", saveSettings);
     const hb = $("headerSaveBtn");
