@@ -13,6 +13,7 @@ internal sealed class PanelPasswordStore
 
     public bool MustChange { get; private set; }
     public bool Created { get; }
+    public bool IsConfigured { get; private set; }
 
     public PanelPasswordStore(string path)
     {
@@ -34,26 +35,40 @@ internal sealed class PanelPasswordStore
                 _secrets.Save("panelPassword", legacy, throwOnError: true);
             if (legacy is not null)
                 File.Delete(path);
+            IsConfigured = true;
         }
         else
         {
             var initialPassword = Environment.GetEnvironmentVariable(InitialPasswordEnvironmentVariable);
-            if (string.IsNullOrWhiteSpace(initialPassword) || initialPassword.Length < 10 || initialPassword.Length > 200)
+            if (string.IsNullOrWhiteSpace(initialPassword))
             {
-                throw new InvalidOperationException(
-                    $"首次启动必须设置 {InitialPasswordEnvironmentVariable}（10-200 个字符）；初始化后可从环境变量移除。");
+                // 无初始密码：免密模式启动，不抛异常
+                _salt = Array.Empty<byte>();
+                _hash = Array.Empty<byte>();
+                MustChange = false;
+                IsConfigured = false;
             }
+            else
+            {
+                if (initialPassword.Length < 8 || initialPassword.Length > 200)
+                {
+                    throw new InvalidOperationException(
+                        $"首次启动设置的 {InitialPasswordEnvironmentVariable} 必须为 8-200 个字符；初始化后可从环境变量移除。");
+                }
 
-            _salt = RandomNumberGenerator.GetBytes(16);
-            _hash = Hash(initialPassword, _salt);
-            MustChange = true;
-            _secrets.Save("panelPassword", Serialize(), throwOnError: true);
+                _salt = RandomNumberGenerator.GetBytes(16);
+                _hash = Hash(initialPassword, _salt);
+                MustChange = true;
+                IsConfigured = true;
+                _secrets.Save("panelPassword", Serialize(), throwOnError: true);
+            }
         }
     }
 
     public bool Verify(string password)
     {
-        if (password.Length > 200) return false;
+        if (!IsConfigured) return true;
+        if (password.Length > 200 || _salt.Length == 0) return false;
         lock (_gate)
             return CryptographicOperations.FixedTimeEquals(Hash(password, _salt), _hash);
     }
@@ -69,9 +84,9 @@ internal sealed class PanelPasswordStore
             _salt = salt;
             _hash = hash;
             MustChange = false;
+            IsConfigured = true;
         }
     }
-
     private string Serialize() => $"{(MustChange ? 0 : 1)}:{Convert.ToBase64String(_salt)}:{Convert.ToBase64String(_hash)}";
 
     private static byte[] Hash(string password, byte[] salt) =>

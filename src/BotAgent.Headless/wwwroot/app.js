@@ -1525,9 +1525,41 @@ function renderChannelStatus(channels) {
   }
 
   function reasoningLevelLabel(value) {
-    return ({ auto: "自动（兼容优先）", none: "关闭", minimal: "最小", low: "低", medium: "中", high: "高", xhigh: "极高" })[value] || value;
+    return ({
+      auto: "自动 (Auto · 兼容优先)",
+      none: "关闭 (测试中暂不可用)",
+      minimal: "极轻 (Minimal · 512 Tokens)",
+      low: "低 (Low · 1,024 Tokens)",
+      medium: "中 (Medium · 4,096 Tokens)",
+      high: "高 (High · 16,384 Tokens)",
+      xhigh: "极高 (X-High · 32,768 Tokens)"
+    })[value] || value;
   }
 
+  const THINKING_BUDGET_PRESETS = {
+    1: { id: "low", label: "低 (Low · 1,024 Tokens)" },
+    2: { id: "medium", label: "中 (Medium · 4,096 Tokens)" },
+    3: { id: "high", label: "高 (High · 16,384 Tokens)" },
+    4: { id: "custom", label: "自定义 (Custom)" }
+  };
+  const THINKING_STEP_MAP = { low: 1, medium: 2, high: 3, custom: 4 };
+
+  function syncThinkingBudgetUi(budget, customVal) {
+    const slider = $("setThinkingBudgetSlider");
+    const hidden = $("setThinkingBudget");
+    const valBadge = $("thinkingBudgetVal");
+    const customWrap = $("thinkingCustomBudgetWrap");
+    const customInput = $("setThinkingCustomBudget");
+    if (!slider || !hidden || !valBadge) return;
+
+    const key = String(budget || "medium").toLowerCase();
+    const step = THINKING_STEP_MAP[key] || (key === "custom" || !isNaN(Number(key)) ? 4 : 2);
+    slider.value = step;
+    hidden.value = key;
+    valBadge.textContent = THINKING_BUDGET_PRESETS[step]?.label || "中 (Medium · 4,096 Tokens)";
+    if (customWrap) customWrap.hidden = step !== 4;
+    if (customInput && customVal) customInput.value = customVal;
+  }
   function renderReasoningSelect(select, levels, current) {
     if (!select) return;
     const values = normalizeReasoningLevels(levels);
@@ -2005,6 +2037,9 @@ function renderChannelStatus(channels) {
 
     $("setPersona").value = r.botPersona || "";
     $("setMaxTokens").value = r.maxTokens;
+    $("setThinkingBudget").value = r.thinkingBudget || "medium";
+    $("setThinkingCustomBudget").value = r.thinkingCustomBudget || "4096";
+    syncThinkingBudgetUi(r.thinkingBudget || "medium", r.thinkingCustomBudget || "4096");
     $("setWhitelist").value = r.messageWhitelist || "";
     $("setWhitelistGroups").value = r.whitelistGroups || "";
     $("setWhitelistPrivates").value = r.whitelistPrivates || "";
@@ -2287,6 +2322,8 @@ function renderChannelStatus(channels) {
       emotionalTopP: Number($("setEmotionalTopP").value),
       aiModeEnabled: $("setAiMode").checked,
       maxTokens: Number($("setMaxTokens").value),
+      thinkingBudget: $("setThinkingBudget").value,
+      thinkingCustomBudget: $("setThinkingCustomBudget").value,
       groupCooldownSeconds: Number($("setGroupCooldown").value),
       privateCooldownSeconds: Number($("setPrivateCooldown").value),
       idleFallbackSeconds: Number($("setIdleFallback").value),
@@ -3985,6 +4022,21 @@ function renderChannelStatus(channels) {
     $("setRationalTopP").addEventListener("input", (e) => { $("rationalTopPVal").textContent = e.target.value; });
     $("setEmotionalTemp").addEventListener("input", (e) => { $("emotionalTempVal").textContent = e.target.value; });
     $("setEmotionalTopP").addEventListener("input", (e) => { $("emotionalTopPVal").textContent = e.target.value; });
+
+    const thinkingSlider = $("setThinkingBudgetSlider");
+    if (thinkingSlider) {
+      thinkingSlider.addEventListener("input", (e) => {
+        const step = Number(e.target.value);
+        const p = THINKING_BUDGET_PRESETS[step] || THINKING_BUDGET_PRESETS[2];
+        $("setThinkingBudget").value = p.id;
+        $("thinkingBudgetVal").textContent = p.label;
+        const wrap = $("thinkingCustomBudgetWrap");
+        if (wrap) wrap.hidden = step !== 4;
+        markSettingsDirty();
+      });
+    }
+    $("setThinkingCustomBudget")?.addEventListener("input", markSettingsDirty);
+
     $("saveBtn").addEventListener("click", saveSettings);
     const hb = $("headerSaveBtn");
     if (hb) hb.addEventListener("click", saveSettings);

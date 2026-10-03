@@ -27,7 +27,8 @@ public sealed partial class WebUiServer
         return WriteJsonAsync(context, 200, new JsonObject
         {
             ["authenticated"] = IsAuthorized(context),
-            ["mustChangePassword"] = HasPendingSession(context),
+            ["mustChangePassword"] = _panelPassword.IsConfigured && HasPendingSession(context),
+            ["passwordConfigured"] = _panelPassword.IsConfigured,
             ["legacyTokenConfigured"] = !string.IsNullOrWhiteSpace(_settings.PanelToken)
         });
     }
@@ -35,6 +36,13 @@ public sealed partial class WebUiServer
     private async Task HandleAuthLoginAsync(HttpListenerContext context)
     {
         context.Response.Headers["Cache-Control"] = "no-store";
+        if (!_panelPassword.IsConfigured)
+        {
+            SetPanelSession(context);
+            await WriteJsonAsync(context, 200, new JsonObject { ["mustChangePassword"] = false });
+            return;
+        }
+
         var body = await ReadAuthBodyAsync(context);
         var password = body?["password"]?.GetValue<string>();
         if (password is null || password.Length > 200)
@@ -89,19 +97,28 @@ public sealed partial class WebUiServer
         var body = await ReadAuthBodyAsync(context);
         var current = body?["currentPassword"]?.GetValue<string>();
         var next = body?["newPassword"]?.GetValue<string>();
-        if (current is null || next is null || next.Length < 10 || next.Length > 200 || string.IsNullOrWhiteSpace(next))
+        if (next is null || next.Length < 8 || next.Length > 200 || string.IsNullOrWhiteSpace(next))
         {
-            await AuthErrorAsync(context, 400, "新密码至少 10 位，最多 200 位");
+            await AuthErrorAsync(context, 400, "新密码至少 8 位，最多 200 位");
             return;
         }
         lock (_loginGate)
         {
-            if (!_panelPassword.Verify(current) || _panelPassword.Verify(next))
+            if (_panelPassword.IsConfigured)
             {
-                next = null;
+                if (current is null || !_panelPassword.Verify(current) || _panelPassword.Verify(next))
+                {
+                    next = null;
+                }
+                else
+                {
+                    _panelPassword.Change(next);
+                    _panelSessions.Clear();
+                }
             }
             else
             {
+                // 免密状态下首次设置密码无需旧密码
                 _panelPassword.Change(next);
                 _panelSessions.Clear();
             }
