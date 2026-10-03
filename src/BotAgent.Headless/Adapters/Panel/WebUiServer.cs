@@ -215,9 +215,11 @@ public sealed partial class WebUiServer : IDisposable
         // 启动时把密钥库里那份 TTS 密钥重新写给 tts 容器（容器可能刚被重建、
         // 或者上次写文件前我们就重启了）——否则面板里存着 key，语音却发不出去。
         WriteTtsConfToHost();
-        _bind = Environment.GetEnvironmentVariable("QQCHAT_HEALTH_BIND")?.Trim() is { Length: > 0 } custom
-            ? custom
-            : "+";
+        _bind = !_panelPassword.IsConfigured
+            ? "127.0.0.1"
+            : Environment.GetEnvironmentVariable("QQCHAT_HEALTH_BIND")?.Trim() is { Length: > 0 } custom
+                ? custom
+                : "+";
     }
 
     /// <summary>面板自己的两条出网：模型列表探测（20s）与自建网易云登录（15s）。
@@ -278,6 +280,12 @@ public sealed partial class WebUiServer : IDisposable
         // 面板日志页的数据源是 FileLog：它包含所有组件（Agent/OneBot/Voice/Store…）的行，
         // 而且整个进程只有这一个漏斗 —— 实时推流与历史回填用同一份文本，不会两套格式。
         FileLog.LineWritten += OnFileLogLine;
+
+        if (!_panelPassword.IsConfigured)
+        {
+            FileLog.Warn("Web",
+                $"[安全警告] 当前面板未设置密码，已自动启用免密模式并强制限制绑定 127.0.0.1:{_port}（仅限本机访问）。如需开放公网，请在设置中配置面板密码（至少 8 位）。");
+        }
 
         var candidates = _bind == "+" && !OperatingSystem.IsWindows()
             ? new[] { "+" }
@@ -412,6 +420,7 @@ public sealed partial class WebUiServer : IDisposable
 
     private bool IsAuthorized(HttpListenerContext context)
     {
+        if (!_panelPassword.IsConfigured) return true;
         var now = Clock.Now;
         if (IsLegacyAuthorized(context)) return true;
         return TryGetValidPanelSession(context, now) && !_panelPassword.MustChange;

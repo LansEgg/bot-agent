@@ -35,10 +35,10 @@
       <form id="panelForceForm" autocomplete="off" hidden>
         <label for="panelForceCurrent">当前密码</label>
         <input id="panelForceCurrent" type="password" autocomplete="current-password" required placeholder="再次输入初始密码" />
-        <label for="panelForceNew">新密码 <small>至少 10 位</small></label>
-        <input id="panelForceNew" type="password" autocomplete="new-password" minlength="10" maxlength="200" required placeholder="设置独有的新密码" />
+        <label for="panelForceNew">新密码 <small>至少 8 位</small></label>
+        <input id="panelForceNew" type="password" autocomplete="new-password" minlength="8" maxlength="200" required placeholder="设置独有的新密码" />
         <label for="panelForceConfirm">确认新密码</label>
-        <input id="panelForceConfirm" type="password" autocomplete="new-password" minlength="10" required placeholder="再次输入新密码" />
+        <input id="panelForceConfirm" type="password" autocomplete="new-password" minlength="8" required placeholder="再次输入新密码" />
         <button type="submit" class="panel-auth-submit">更新密码并继续 <span aria-hidden="true">↗</span></button>
       </form>
       <form id="panelLegacyForm" hidden>
@@ -429,9 +429,9 @@
             <p>修改用于登录工作台的密码。修改后其他已登录设备需要重新验证。</p>
           </div>
           <form id="panelPasswordForm" class="password-settings-form" autocomplete="off">
-            <label>当前密码<input id="panelPasswordCurrent" type="password" autocomplete="current-password" required placeholder="输入当前密码" /></label>
-            <label>新密码<input id="panelPasswordNew" type="password" autocomplete="new-password" minlength="10" maxlength="200" required placeholder="至少 10 位" /></label>
-            <label>确认新密码<input id="panelPasswordConfirm" type="password" autocomplete="new-password" minlength="10" maxlength="200" required placeholder="再次输入新密码" /></label>
+            <label>当前密码<input id="panelPasswordCurrent" type="password" autocomplete="current-password" placeholder="输入当前密码（首次设置可留空）" /></label>
+            <label>新密码<input id="panelPasswordNew" type="password" autocomplete="new-password" minlength="8" maxlength="200" required placeholder="至少 8 位" /></label>
+            <label>确认新密码<input id="panelPasswordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="200" required placeholder="再次输入新密码" /></label>
             <button class="accent-btn" type="submit">修改面板密码</button>
             <span id="panelPasswordNotice" role="status"></span>
           </form>
