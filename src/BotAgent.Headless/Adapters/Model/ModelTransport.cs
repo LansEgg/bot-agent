@@ -180,7 +180,11 @@ internal sealed class ModelTransport : IModelTransport
         }
 
         // 模型思考程度与预算预设（低 1K / 中 4K / 高 16K / 自定义）
-        var (thinkingEffort, thinkingTokens) = _settings.ResolveThinkingBudget();
+        // 区分主模型与快速档模型
+        var isFastModel = _settings.FastReply &&
+                          !string.IsNullOrWhiteSpace(_settings.FastModel) &&
+                          string.Equals(replyModel, _settings.FastModel.Trim(), StringComparison.Ordinal);
+        var (thinkingEffort, thinkingTokens) = _settings.ResolveThinkingBudget(isFastModel);
         if (!string.IsNullOrWhiteSpace(thinkingEffort))
         {
             if (thinkingEffort is "low" or "medium" or "high")

@@ -527,7 +527,21 @@
                 <details class="model-advanced" open>
                   <summary>高级设置</summary>
                   <div class="model-advanced-body">
-                    <div class="field">
+                    <div class="field model-thinking-settings">
+                      <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <label for="setThinkingBudgetSlider">主模型思考程度与预算预设</label>
+                        <span class="val" id="thinkingBudgetVal">中 (Medium · 4,096 Tokens)</span>
+                      </div>
+                      <input type="range" id="setThinkingBudgetSlider" min="1" max="4" step="1" value="2" />
+                      <input type="hidden" id="setThinkingBudget" value="medium" />
+                      <div id="thinkingCustomBudgetWrap" class="field" style="margin-top: 8px;" hidden>
+                        <label for="setThinkingCustomBudget">主模型自定义思考程度 / 预算（Tokens 或档位名称）</label>
+                        <input type="text" id="setThinkingCustomBudget" placeholder="例如 8192 或特定档位名称" value="4096" />
+                      </div>
+                      <span class="hint">调节主模型推理思考预算深度（预设：低 1K / 中 4K / 高 16K，或自定义）。</span>
+                    </div>
+
+                    <div class="field" style="margin-top: 14px;">
                       <label class="switch-row">
                         <input type="checkbox" id="setFastReply" />
                         <span class="switch"></span>
@@ -547,16 +561,16 @@
                     </div>
                     <div class="field model-thinking-settings" style="margin-top: 14px;">
                       <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <label for="setThinkingBudgetSlider">模型思考程度与预算预设</label>
-                        <span class="val" id="thinkingBudgetVal">中 (Medium · 4,096 Tokens)</span>
+                        <label for="setFastThinkingBudgetSlider">快速档思考程度与预算预设</label>
+                        <span class="val" id="fastThinkingBudgetVal">低 (Low · 1,024 Tokens)</span>
                       </div>
-                      <input type="range" id="setThinkingBudgetSlider" min="1" max="4" step="1" value="2" />
-                      <input type="hidden" id="setThinkingBudget" value="medium" />
-                      <div id="thinkingCustomBudgetWrap" class="field" style="margin-top: 8px;" hidden>
-                        <label for="setThinkingCustomBudget">自定义思考程度 / 预算（Tokens 或档位名称）</label>
-                        <input type="text" id="setThinkingCustomBudget" placeholder="例如 8192 或特定档位名称" value="4096" />
+                      <input type="range" id="setFastThinkingBudgetSlider" min="1" max="4" step="1" value="1" />
+                      <input type="hidden" id="setFastThinkingBudget" value="low" />
+                      <div id="fastThinkingCustomBudgetWrap" class="field" style="margin-top: 8px;" hidden>
+                        <label for="setFastThinkingCustomBudget">快速档自定义思考程度 / 预算（Tokens 或档位名称）</label>
+                        <input type="text" id="setFastThinkingCustomBudget" placeholder="例如 1024 或特定档位名称" value="1024" />
                       </div>
-                      <span class="hint">调节大模型推理思考预算深度（预设：低 1K / 中 4K / 高 16K，或自定义）。<br><b>注：暂时不能完全关闭思考，当前在测试中。</b></span>
+                      <span class="hint">调节快速档轻量模型推理思考预算深度（预设：低 1K / 中 4K / 高 16K，或自定义）。<br><b>注：暂时不能完全关闭思考，当前在测试中。</b></span>
                     </div>
                   </div>
                 </details>

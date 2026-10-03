@@ -700,6 +700,14 @@ public sealed partial class WebUiServer
         {
             s.ThinkingCustomBudget = tcbStr.Trim();
         }
+        if (body["fastThinkingBudget"] is JsonNode ftb && ftb.GetValue<string>() is { Length: > 0 } ftbStr)
+        {
+            s.FastThinkingBudget = ftbStr.Trim().ToLowerInvariant();
+        }
+        if (body["fastThinkingCustomBudget"] is JsonNode ftcb && ftcb.GetValue<string>() is { Length: > 0 } ftcbStr)
+        {
+            s.FastThinkingCustomBudget = ftcbStr.Trim();
+        }
         // 密钥：存 data/secrets.json（权限 600），**不写 settings.json**；留空 = 删掉、回退环境变量
         if (body["apiKey"] is JsonValue keyValue && keyValue.TryGetValue<string>(out var rawKey))
         {
@@ -772,6 +780,8 @@ public sealed partial class WebUiServer
                 ["replyModel"] = s.ReplyModel,
                 ["thinkingBudget"] = s.ThinkingBudget,
                 ["thinkingCustomBudget"] = s.ThinkingCustomBudget,
+                ["fastThinkingBudget"] = s.FastThinkingBudget,
+                ["fastThinkingCustomBudget"] = s.FastThinkingCustomBudget,
         ["suitabilityThreshold"] = s.SuitabilityThreshold,
         ["rationalTemperature"] = s.RationalTemperature,
         ["rationalTopP"] = s.RationalTopP,
@@ -999,6 +1009,8 @@ public sealed partial class WebUiServer
         ["replyModel"] = s.ReplyModel,
         ["thinkingBudget"] = s.ThinkingBudget,
         ["thinkingCustomBudget"] = s.ThinkingCustomBudget,
+        ["fastThinkingBudget"] = s.FastThinkingBudget,
+        ["fastThinkingCustomBudget"] = s.FastThinkingCustomBudget,
         ["maxTokens"] = s.MaxTokens,
         ["apiKeyMasked"] = Mask(s.ApiKey),
         ["apiKeySet"] = !string.IsNullOrWhiteSpace(s.ApiKey),
