@@ -412,7 +412,6 @@ public sealed partial class WebUiServer : IDisposable
 
     private bool IsAuthorized(HttpListenerContext context)
     {
-        if (!_panelPassword.IsConfigured) return true;
         var now = Clock.Now;
         if (IsLegacyAuthorized(context)) return true;
         return TryGetValidPanelSession(context, now) && !_panelPassword.MustChange;

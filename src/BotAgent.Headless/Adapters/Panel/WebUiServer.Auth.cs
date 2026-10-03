@@ -27,8 +27,7 @@ public sealed partial class WebUiServer
         return WriteJsonAsync(context, 200, new JsonObject
         {
             ["authenticated"] = IsAuthorized(context),
-            ["mustChangePassword"] = _panelPassword.IsConfigured && HasPendingSession(context),
-            ["passwordConfigured"] = _panelPassword.IsConfigured,
+            ["mustChangePassword"] = HasPendingSession(context),
             ["legacyTokenConfigured"] = !string.IsNullOrWhiteSpace(_settings.PanelToken)
         });
     }
@@ -90,41 +89,7 @@ public sealed partial class WebUiServer
         var body = await ReadAuthBodyAsync(context);
         var current = body?["currentPassword"]?.GetValue<string>();
         var next = body?["newPassword"]?.GetValue<string>();
-
-        if (current is null)
-        {
-            await AuthErrorAsync(context, 400, "请输入当前密码");
-            return;
-        }
-
-        // 允许清除密码，切换为免密访问模式
-        if (string.IsNullOrEmpty(next) || string.Equals(next, "none", StringComparison.OrdinalIgnoreCase))
-        {
-            lock (_loginGate)
-            {
-                if (!_panelPassword.Verify(current))
-                {
-                    current = null;
-                }
-                else
-                {
-                    _panelPassword.Clear();
-                    _panelSessions.Clear();
-                }
-            }
-
-            if (current is null)
-            {
-                await AuthErrorAsync(context, 400, "当前密码错误");
-                return;
-            }
-
-            FileLog.Write("Web", "面板密码已清除，切换为免密访问模式");
-            await WriteJsonAsync(context, 200, new JsonObject { ["ok"] = true, ["cleared"] = true });
-            return;
-        }
-
-        if (next.Length < 10 || next.Length > 200 || string.IsNullOrWhiteSpace(next))
+        if (current is null || next is null || next.Length < 10 || next.Length > 200 || string.IsNullOrWhiteSpace(next))
         {
             await AuthErrorAsync(context, 400, "新密码至少 10 位，最多 200 位");
             return;
