@@ -79,6 +79,11 @@ public sealed partial class WebUiServer
                     ["active"] = _traces.ActiveCount,
                     ["capacity"] = TurnTraceStore.Capacity,
                 },
+            ["plugins"] = new JsonObject
+            {
+                ["total"] = _plugins?.GetAll().Count ?? 0,
+                ["enabled"] = _plugins?.GetAll().Count(p => p.IsEnabled) ?? 0,
+            },
         };
     }
 

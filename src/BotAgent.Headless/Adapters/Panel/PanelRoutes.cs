@@ -158,7 +158,7 @@ new("GET", PanelMatch.Exact, "/metrics", (r) => WriteMetricsAsync(r.Context)),
         // 一眼看清“系统有哪些工具、谁能用、谁在执行”：名字 / 类别 / 参数 / 是否要审批 / 执行者 / 例外标注。
         // 纯只读：不改任何判定，也不写任何东西。
         new("GET", PanelMatch.Exact, "/api/tools", (r) => WriteJsonAsync(r.Context, 200, BuildToolsPayload())),
-
+        new("GET", PanelMatch.Exact, "/api/plugins", (r) => WriteJsonAsync(r.Context, 200, BuildPluginsPayload())),
         // ─────────── 决策轨迹（通用 Agent 平台 · 批次 C，**只读**）───────────
         // 一轮一条：六个节点（参与 / 上下文 / 模型 / 闸门 / 执行 / 发送），只有形状、没有正文。
         new("GET", PanelMatch.Exact, "/api/traces", (r) =>

@@ -1118,12 +1118,16 @@ function renderChannelStatus(channels) {
     settingsDirty = true;
     const h = $("dirtyHint");
     if (h) h.hidden = false;
+    const hb = $("headerSaveBtn");
+    if (hb) hb.classList.add("dirty");
   }
 
   function clearSettingsDirty() {
     settingsDirty = false;
     const h = $("dirtyHint");
     if (h) h.hidden = true;
+    const hb = $("headerSaveBtn");
+    if (hb) hb.classList.remove("dirty");
   }
 
   /* ── 设置页分节导航（左侧分节栏，一次显示一节）──
@@ -1205,13 +1209,13 @@ function renderChannelStatus(channels) {
     const links = [];
     let current = 0;
 
-    // 5 大类分类元数据（图标、名称、id）
+    // 5 大类分类元数据（名称、id）
     const CATEGORIES = [
-      { id: "channel", label: "通道接入", icon: "🌐" },
-      { id: "model", label: "模型与 Agent", icon: "🧠" },
-      { id: "chat", label: "聊天与互动", icon: "💬" },
-      { id: "multimedia", label: "语音与检索", icon: "🎙️" },
-      { id: "other", label: "其他", icon: "⚙️" },
+      { id: "channel", label: "通道接入" },
+      { id: "model", label: "模型与 Agent" },
+      { id: "chat", label: "聊天与互动" },
+      { id: "multimedia", label: "语音与检索" },
+      { id: "other", label: "其他" },
     ];
     const catMap = new Map();
     CATEGORIES.forEach((c) => catMap.set(c.id, { ...c, indices: [] }));
@@ -1236,7 +1240,7 @@ function renderChannelStatus(channels) {
       catBtn.type = "button";
       catBtn.className = "section-cat-tab";
       catBtn.dataset.cat = catMeta.id;
-      catBtn.innerHTML = `<span>${catMeta.icon} ${escapeHtml(catMeta.label)}</span><span class="badge-count">${entry.indices.length}</span>`;
+      catBtn.innerHTML = `<span>${escapeHtml(catMeta.label)}</span><span class="badge-count">${entry.indices.length}</span>`;
       catBtn.addEventListener("click", () => {
         // 点击大类：展开并切换到该大类下第一个设置卡片
         if (entry.indices.length > 0) showSection(entry.indices[0]);
@@ -1275,7 +1279,7 @@ function renderChannelStatus(channels) {
       headerBtn.setAttribute("aria-expanded", "false");
       headerBtn.innerHTML = `
         <span class="section-cat-arrow" aria-hidden="true">▶</span>
-        <span class="section-cat-title"><span class="section-cat-icon">${catMeta.icon}</span> ${escapeHtml(catMeta.label)}</span>
+        <span class="section-cat-title">${escapeHtml(catMeta.label)}</span>
         <span class="badge-count">${entry.indices.length}</span>
       `;
       headerBtn.addEventListener("click", () => {
@@ -1349,8 +1353,15 @@ function renderChannelStatus(channels) {
       mobileCatButtons.forEach((btn, catId) => {
         const on = all ? catId === "all" : catId === activeCat;
         btn.classList.toggle("active", on);
-        if (on && typeof btn.scrollIntoView === "function") {
-          btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+        if (on && mobileCatBar && typeof mobileCatBar.scrollTo === "function") {
+          const barRect = mobileCatBar.getBoundingClientRect();
+          const btnRect = btn.getBoundingClientRect();
+          if (btnRect.left < barRect.left || btnRect.right > barRect.right) {
+            mobileCatBar.scrollTo({
+              left: btn.offsetLeft - mobileCatBar.offsetWidth / 2 + btn.offsetWidth / 2,
+              behavior: "smooth"
+            });
+          }
         }
       });
 
@@ -1373,8 +1384,16 @@ function renderChannelStatus(channels) {
         if (!b) return;
         const on = all ? k === cards.length : k === current;
         b.classList.toggle("active", on);
-        if (on && typeof b.scrollIntoView === "function") {
-          b.scrollIntoView({ block: "nearest", inline: "nearest" });
+        const parent = b.parentElement;
+        if (on && parent && typeof parent.scrollTo === "function" && parent.scrollWidth > parent.clientWidth) {
+          const pRect = parent.getBoundingClientRect();
+          const bRect = b.getBoundingClientRect();
+          if (bRect.left < pRect.left || bRect.right > pRect.right) {
+            parent.scrollTo({
+              left: b.offsetLeft - parent.offsetWidth / 2 + b.offsetWidth / 2,
+              behavior: "smooth"
+            });
+          }
         }
       });
 
@@ -2233,6 +2252,7 @@ function renderChannelStatus(channels) {
 
     await loadQuotaPanel();
     renderModelStudio();
+    await loadPluginsPanel();
 
     // 放在最后：全部回填成功才认为可保存
     state.settingsLoaded = true;
@@ -2430,7 +2450,9 @@ function renderChannelStatus(channels) {
     else if (pendingAgentServerKeyClear) payload.agentServerKey = "";
 
     const btn = $("saveBtn");
+    const hbtn = $("headerSaveBtn");
     btn.disabled = true;
+    if (hbtn) hbtn.disabled = true;
     const deviceTableSkippedHere = deviceTableSkipped;
     deviceTableSkipped = false;
     // 快照一下改动序号：请求在飞时用户又改了东西的话，这次返回的刷新结果已经过时
@@ -2468,6 +2490,7 @@ function renderChannelStatus(channels) {
       toast("保存失败：" + err.message);
     } finally {
       btn.disabled = false;
+      if (hbtn) hbtn.disabled = false;
     }
   }
 
@@ -2491,6 +2514,40 @@ function renderChannelStatus(channels) {
       });
     }
   }
+  /* ─────────── 插件中心（只读展示）─────────── */
+  async function loadPluginsPanel() {
+    const box = $("pluginListContainer");
+    if (!box) return;
+    try {
+      const data = await api("/api/plugins");
+      const list = data.plugins || [];
+      if (list.length === 0) {
+        box.innerHTML = '<div style="color:var(--text-secondary); font-size:13px;">暂无加载的插件。</div>';
+        return;
+      }
+      box.innerHTML = list.map((p) => {
+        const catBadge = p.category === "Media" ? "多媒体" : p.category === "Channel" ? "通道" : "业务";
+        const statusBadge = p.isEnabled ? '<span style="color:var(--success, #10b981); font-weight:600;">● 已激活</span>' : '<span style="color:var(--text-secondary);">○ 已停用</span>';
+        return `
+          <div style="background:var(--subtle-hover, rgba(255,255,255,0.04)); border:1px solid var(--stroke, rgba(255,255,255,0.08)); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:600; font-size:14px; color:var(--text-primary);">${escapeHtml(p.name)}</span>
+              <span style="font-size:11px; padding:2px 6px; border-radius:4px; background:color-mix(in srgb, var(--accent) 15%, transparent); color:var(--accent);">${catBadge}</span>
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary); line-height:1.4; flex:1;">${escapeHtml(p.description)}</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px; font-size:11px;">
+              <span style="font-family:monospace; color:var(--text-tertiary);">${escapeHtml(p.id)} v${escapeHtml(p.version)}</span>
+              ${statusBadge}
+            </div>
+          </div>
+        `;
+      }).join("");
+    } catch (e) {
+      console.warn("加载插件列表失败：", e);
+      box.innerHTML = '<div style="color:var(--danger, #ef4444); font-size:13px;">加载插件中心失败。</div>';
+    }
+  }
+
   /* ─────────── 参与状态（P1，只读）─────────── */
   /* 为什么放这里：和上面的健康日报同一个理由 —— loadSettings() 可能要调它，
      定义必须是**顶层**的，藏在别的函数体里会 ReferenceError（然后被吞成“没反应”）。 */
@@ -3634,6 +3691,10 @@ function renderChannelStatus(channels) {
       return false;
     }
 
+    document.body.dataset.activePage = page;
+    const hb = $("headerSaveBtn");
+    if (hb) hb.hidden = (page !== "settings");
+
     for (const b of document.querySelectorAll(".navitem, .mtab")) {
       if (b.dataset.page === page) b.classList.add("active"); else b.classList.remove("active");
     }
@@ -3925,21 +3986,23 @@ function renderChannelStatus(channels) {
     $("setEmotionalTemp").addEventListener("input", (e) => { $("emotionalTempVal").textContent = e.target.value; });
     $("setEmotionalTopP").addEventListener("input", (e) => { $("emotionalTopPVal").textContent = e.target.value; });
     $("saveBtn").addEventListener("click", saveSettings);
-     $("quotaTenant").addEventListener("change", (event) => {
-       state.quota.tenant = event.target.value;
-       loadQuotaPanel();
-     });
-     $("quotaSaveBtn").addEventListener("click", saveQuota);
-     const quotaTabsWrap = $("quotaChanTabs");
-     if (quotaTabsWrap) {
-       const quotaTabs = quotaTabsWrap.querySelectorAll(".chan-tab");
-       for (const tab of quotaTabs) {
-         tab.addEventListener("click", () => {
-           state.quota.channel = tab.dataset.quotaChan || "all";
-           loadQuotaPanel();
-         });
-       }
-     }
+    const hb = $("headerSaveBtn");
+    if (hb) hb.addEventListener("click", saveSettings);
+    $("quotaTenant").addEventListener("change", (event) => {
+      state.quota.tenant = event.target.value;
+      loadQuotaPanel();
+    });
+    $("quotaSaveBtn").addEventListener("click", saveQuota);
+    const quotaTabsWrap = $("quotaChanTabs");
+    if (quotaTabsWrap) {
+      const quotaTabs = quotaTabsWrap.querySelectorAll(".chan-tab");
+      for (const tab of quotaTabs) {
+        tab.addEventListener("click", () => {
+          state.quota.channel = tab.dataset.quotaChan || "all";
+          loadQuotaPanel();
+        });
+      }
+    }
 
     // 清除密钥：必须先确认（密钥没了机器人就发不出话，不是小事）
     $("clearApiKey").addEventListener("click", () => {
@@ -4361,7 +4424,7 @@ function renderChannelStatus(channels) {
       }
 
       box.innerHTML = agentDevices.map((d, i) => {
-        const online = d.online ? "🟢 在线" : "⚪ 离线";
+        const online = d.online ? "在线" : "离线";
         const name = escapeHtml(d.name);
         const hint = d.online
           ? ""
@@ -4371,7 +4434,7 @@ function renderChannelStatus(channels) {
         const models = d.models || [];
         const badModel = d.model && models.length > 0 && !models.includes(d.model);
         const badHint = badModel
-          ? `<div class="hint" style="margin-top:4px;color:#c62828">⚠️ 「${escapeHtml(d.model)}」这台设备上没有 —— pi 只认 <code>provider/model</code>（比如 <code>localhost/xxx</code>），不是聊天网关那个模型名；请从下面下拉里重选，或者留空用 pi 默认。</div>`
+          ? `<div class="hint" style="margin-top:4px;color:#c62828">「${escapeHtml(d.model)}」这台设备上没有 —— pi 只认 <code>provider/model</code>（比如 <code>localhost/xxx</code>），不是聊天网关那个模型名；请从下面下拉里重选，或者留空用 pi 默认。</div>`
           : "";
         const modelOptions = models.map((m) =>
           `<option value="${escapeHtml(m)}"${m === d.model ? " selected" : ""}>${escapeHtml(m)}</option>`).join("");
@@ -4529,7 +4592,7 @@ function renderChannelStatus(channels) {
         "① 点下面按钮下载启动脚本（里面已经带好地址、令牌、设备名，不用手改）",
         "② 把 pi-bridge.py 也放到本机同一目录（下面给链接）",
         isWin ? "③ 双击运行 connect-pi-bridge.cmd（窗口别关）" : "③ 运行 sh connect-pi-bridge.sh（窗口别关）",
-        "④ 回来后点「我已运行，检测连接」，看到 🟢 在线就是成了",
+        "④ 回来后点「我已运行，检测连接」，看到 在线 就是成了",
         "",
         "服务器文件：桥会额外把本机一个端口转发到服务器的 sshd（默认 2222），",
         "agent 就能用 sftp/scp 直接读写服务器文件；批量操作可用 server-files.py（上面也能下载）。",
@@ -4603,7 +4666,7 @@ function renderChannelStatus(channels) {
           const runsHtml = runs.length === 0
             ? '<div class="hint">还没跑过任务。</div>'
             : runs.map((r) => {
-                const st = r.ok === null || r.ok === undefined ? "⏳ 在跑" : (r.ok ? "✅" : "❌");
+                const st = r.ok === null || r.ok === undefined ? "进行中" : (r.ok ? "[成功]" : "[失败]");
                 const t = r.at ? new Date(r.at).toLocaleString() : "";
                 const extra = r.ok === null || r.ok === undefined ? "" : ` · ${(r.durationMs / 1000).toFixed(1)}s${r.toolCalls ? ` · ${r.toolCalls} 次工具` : ""}`;
                 return `<div class="hint" style="margin:3px 0">${escapeHtml(st)} ${escapeHtml(t)}${escapeHtml(extra)}｜${escapeHtml(r.prompt || "")}${r.result ? ` → ${escapeHtml(r.result)}` : ""}</div>`;

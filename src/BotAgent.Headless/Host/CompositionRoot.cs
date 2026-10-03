@@ -29,7 +29,8 @@ using BotAgent.Services.Permissions;
 using BotAgent.Services.Participation;
 using BotAgent.Services.Panel;
 using BotAgent.Services.Settings;
-
+using BotAgent.Services.Plugins;
+using BotAgent.Services.Plugins.Presets;
 namespace BotAgent.Host;
 
 /// <summary>
@@ -54,7 +55,8 @@ internal sealed record AppGraph(
     BootReport BootReport,
     LoginQrService LoginQr,
     HealthReportService HealthReports,
-    WebUiServer Web);
+    WebUiServer Web,
+    PluginManager Plugins);
 
 internal static class CompositionRoot
 {
@@ -137,38 +139,11 @@ internal static class CompositionRoot
         var vibes = new VibeTracker();
         var roles = new MemberRoleUseCase(source, new MemberRoleStore(ui.EmitLog), ui.EmitLog);
         var participation = new ParticipationUseCase(settingsBox, ui.EmitLog);
-        var poke = new PokeUseCase(settingsBox, new PokeHooks(
-            SelfId: () => identity.SelfId,
-            IsSourceAllowed: whitelist.AllowsSource,
-            GetOrCreateConversation: registry.GetOrCreate,
-            RecordInbound: (conversation, message) =>
-            {
-                conversation.Append(message);
-                registry.Touch(conversation);
-                ui.NotifyMessageAdded(conversation.SourceKey, message);
-                registry.Save();
-            },
-            LogThrottled: (key, message) => throttled.Write(key, message),
-            Log: ui.EmitLog,
-            RecordPokeMood: now => mood.RecordPoke(now)));
+        var poke = BuildPokeUseCase(settingsBox, identity, whitelist, registry, ui, throttled, mood);
+
         // 会话级权限元数据（批次 B）：内存台账，只记录不改判定 —— 面板的“工具/权限”那页读它。
         var sessionPolicies = new SessionPolicyLedger();
-        var approvals = new ApprovalUseCase(settingsBox, new ApprovalHooks(
-            Log: ui.EmitLog,
-            Mask: (text, key) => MaskingRules.Text(settingsBox.Current.AgentMaskSensitive, text,
-                key is null ? null : registry.KnownNames(key)),
-            SendPlainAsync: plain.SendPlainAsync,
-            SendApprovalReplyAsync: plain.SendApprovalReplyAsync,
-            // 批次 I（面板审批）：面板没有入站消息可回，回执按**会话 key**发回原会话
-            // （群里的人要看到“谁批了”）；会话已删就什么也不做（失败关闭）。
-            SendToKeyAsync: (key, text) =>
-            {
-                var target = registry.Find(key);
-                return target is null ? Task.CompletedTask : plain.SendPlainAsync(target, text);
-            }),
-            sessionPolicies,
-            traces,
-            audit);
+        var approvals = BuildApprovalUseCase(settingsBox, ui, registry, plain, sessionPolicies, traces, audit);
 
         // agent 命令（//）：会话台账 + 内置/外部两路后端
         var sessions = new AgentSessionStore(
@@ -240,21 +215,124 @@ internal static class CompositionRoot
             new HttpFetcher(TimeSpan.FromSeconds(6), msg => FileLog.Write("Net", msg), "health"),
             hostFacts);
 
-        // 面板：一键重启 = 退出进程。为什么不自接 docker.sock 重启容器：那等于把 root 交给面板；
-        // 容器本身就是 `restart: unless-stopped`，退出去 Docker 会毫秒级把它拉起来。
+        var circuitStatusProvider = BuildCircuitStatusProvider(brain, ttsBreaker, searchBreaker, riskBackoff);
+
+        var plugins = new PluginManager(ui.EmitLog);
+        plugins.Register(new MusicPresetPlugin(music));
+        plugins.Register(new VoicePresetPlugin(voice));
+        plugins.Register(new StickersPresetPlugin(stickers));
+        plugins.Register(new PokePresetPlugin(poke));
+        plugins.Register(new VibesPresetPlugin(vibes, participation));
+        plugins.Register(new ProfilesPresetPlugin(profiles));
+        plugins.Register(new WebSearchPresetPlugin(research, links));
+
+        var web = BuildWebUiServer(settings, settingsBox, gateway, source, agent, loginQr,
+            settingsHotReload, ui, stickers, mood, voice, music, research, registry, profiles, secrets, settingsStore, identity, scheduler,
+            reply, participation, agentCmds, quotas, agentBridge, healthReports,
+            sessionPolicies, traces, hostFacts, audit, approvals, local, official, feishu, platformRegistry, platformPolicies,
+            circuitStatusProvider, plugins);
+
+        return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web, plugins);
+    }
+
+    private static PokeUseCase BuildPokeUseCase(
+        SettingsBox settingsBox,
+        BotIdentity identity,
+        WhitelistGate whitelist,
+        ConversationRegistry registry,
+        PanelNotifier ui,
+        ThrottledLog throttled,
+        MoodStore mood) =>
+        new(settingsBox, new PokeHooks(
+            SelfId: () => identity.SelfId,
+            IsSourceAllowed: whitelist.AllowsSource,
+            GetOrCreateConversation: registry.GetOrCreate,
+            RecordInbound: (conversation, message) =>
+            {
+                conversation.Append(message);
+                registry.Touch(conversation);
+                ui.NotifyMessageAdded(conversation.SourceKey, message);
+                registry.Save();
+            },
+            LogThrottled: (key, message) => throttled.Write(key, message),
+            Log: ui.EmitLog,
+            RecordPokeMood: now => mood.RecordPoke(now)));
+
+    private static ApprovalUseCase BuildApprovalUseCase(
+        SettingsBox settingsBox,
+        PanelNotifier ui,
+        ConversationRegistry registry,
+        PlainSender plain,
+        SessionPolicyLedger sessionPolicies,
+        TurnTraceStore traces,
+        AuditLogStore audit) =>
+        new(settingsBox, new ApprovalHooks(
+            Log: ui.EmitLog,
+            Mask: (text, key) => MaskingRules.Text(settingsBox.Current.AgentMaskSensitive, text,
+                key is null ? null : registry.KnownNames(key)),
+            SendPlainAsync: plain.SendPlainAsync,
+            SendApprovalReplyAsync: plain.SendApprovalReplyAsync,
+            // 批次 I（面板审批）：面板没有入站消息可回，回执按**会话 key**发回原会话
+            // （群里的人要看到“谁批了”）；会话已删就什么也不做（失败关闭）。
+            SendToKeyAsync: (key, text) =>
+            {
+                var target = registry.Find(key);
+                return target is null ? Task.CompletedTask : plain.SendPlainAsync(target, text);
+            }),
+            sessionPolicies,
+            traces,
+            audit);
+
+    private static WebUiServer BuildWebUiServer(
+        AppSettings settings,
+        SettingsBox settingsBox,
+        OneBotGateway gateway,
+        IQqChatSource source,
+        BotAgentHost agent,
+        LoginQrService loginQr,
+        SettingsHotReload settingsHotReload,
+        PanelNotifier ui,
+        StickerService stickers,
+        MoodStore mood,
+        VoiceUseCase voice,
+        MusicUseCase music,
+        ResearchUseCase research,
+        ConversationRegistry registry,
+        MemberProfileStore profiles,
+        ISecretsRepository secrets,
+        SettingsStore settingsStore,
+        BotIdentity identity,
+        BotScheduler scheduler,
+        ReplyPipeline reply,
+        ParticipationUseCase participation,
+        AgentCommandService agentCmds,
+        ITenantQuotaLedger quotas,
+        AgentBridgeServer? agentBridge,
+        HealthReportService healthReports,
+        SessionPolicyLedger sessionPolicies,
+        TurnTraceStore traces,
+        HostMetrics hostFacts,
+        AuditLogStore audit,
+        ApprovalUseCase approvals,
+        LocalChannelSource? local,
+        OfficialBotGateway? official,
+        FeishuBotGateway? feishu,
+        IPlatformRegistry platformRegistry,
+        PlatformPolicyResolver platformPolicies,
+        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>> circuitStatusProvider,
+        Domain.Plugins.IPluginRegistry? plugins = null)
+    {
         // 面板自己的两条出网（模型列表探测 20s / 自建网易云登录 15s）
         var panelHttp = new HttpFetcher(TimeSpan.FromSeconds(20), msg => FileLog.Write("Net", msg), "panel-models");
         var neteaseHttp = new HttpFetcher(TimeSpan.FromSeconds(15), msg => FileLog.Write("Net", msg), "panel-netease");
 
-        var circuitStatusProvider = BuildCircuitStatusProvider(brain, ttsBreaker, searchBreaker, riskBackoff);
-
-        var web = new WebUiServer(settings.HealthPort, settingsBox, gateway, source, agent, loginQr, panelHttp, neteaseHttp,
+        return new WebUiServer(settings.HealthPort, settingsBox, gateway, source, agent, loginQr, panelHttp, neteaseHttp,
             settingsHotReload, ui, stickers, mood, voice, music, research, registry, profiles, secrets, settingsStore, identity, scheduler,
             reply, participation, agentCmds, quotas, agentBridge, healthReports,
             sessionPolicies: sessionPolicies,
             traces: traces,
             hostFacts: hostFacts,
-             audit: audit,
+            audit: audit,
             approvals: approvals,
             localChannel: local,
             onRestart: () =>
@@ -277,9 +355,8 @@ internal static class CompositionRoot
             circuitStatusProvider: circuitStatusProvider,
             platformRegistry: platformRegistry,
             feishuGateway: feishu,
-             platformPolicies: platformPolicies);
-
-        return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web);
+            platformPolicies: platformPolicies,
+            plugins: plugins);
     }
 
     /// <summary>

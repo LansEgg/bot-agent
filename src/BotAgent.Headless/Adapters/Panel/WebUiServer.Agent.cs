@@ -127,6 +127,14 @@ public sealed partial class WebUiServer
             : _settings.AgentServerBaseUrl;
         var key = string.IsNullOrWhiteSpace(_settings.AgentServerApiKey) ? _settings.ApiKey : _settings.AgentServerApiKey;
         var url = baseUrl.Trim().TrimEnd('/');
+        if (url.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+        {
+            url = url[..^"/chat/completions".Length].TrimEnd('/');
+        }
+        else if (url.EndsWith("/completions", StringComparison.OrdinalIgnoreCase))
+        {
+            url = url[..^"/completions".Length].TrimEnd('/');
+        }
         if (!url.EndsWith("/models", StringComparison.OrdinalIgnoreCase))
         {
             url += "/models";
