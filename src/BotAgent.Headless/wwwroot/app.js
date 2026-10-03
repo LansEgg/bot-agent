@@ -1209,13 +1209,13 @@ function renderChannelStatus(channels) {
     const links = [];
     let current = 0;
 
-    // 5 大类分类元数据（图标、名称、id）
+    // 5 大类分类元数据（名称、id）
     const CATEGORIES = [
-      { id: "channel", label: "通道接入", icon: "🌐" },
-      { id: "model", label: "模型与 Agent", icon: "🧠" },
-      { id: "chat", label: "聊天与互动", icon: "💬" },
-      { id: "multimedia", label: "语音与检索", icon: "🎙️" },
-      { id: "other", label: "其他", icon: "⚙️" },
+      { id: "channel", label: "通道接入" },
+      { id: "model", label: "模型与 Agent" },
+      { id: "chat", label: "聊天与互动" },
+      { id: "multimedia", label: "语音与检索" },
+      { id: "other", label: "其他" },
     ];
     const catMap = new Map();
     CATEGORIES.forEach((c) => catMap.set(c.id, { ...c, indices: [] }));
@@ -1240,7 +1240,7 @@ function renderChannelStatus(channels) {
       catBtn.type = "button";
       catBtn.className = "section-cat-tab";
       catBtn.dataset.cat = catMeta.id;
-      catBtn.innerHTML = `<span>${catMeta.icon} ${escapeHtml(catMeta.label)}</span><span class="badge-count">${entry.indices.length}</span>`;
+      catBtn.innerHTML = `<span>${escapeHtml(catMeta.label)}</span><span class="badge-count">${entry.indices.length}</span>`;
       catBtn.addEventListener("click", () => {
         // 点击大类：展开并切换到该大类下第一个设置卡片
         if (entry.indices.length > 0) showSection(entry.indices[0]);
@@ -1279,7 +1279,7 @@ function renderChannelStatus(channels) {
       headerBtn.setAttribute("aria-expanded", "false");
       headerBtn.innerHTML = `
         <span class="section-cat-arrow" aria-hidden="true">▶</span>
-        <span class="section-cat-title"><span class="section-cat-icon">${catMeta.icon}</span> ${escapeHtml(catMeta.label)}</span>
+        <span class="section-cat-title">${escapeHtml(catMeta.label)}</span>
         <span class="badge-count">${entry.indices.length}</span>
       `;
       headerBtn.addEventListener("click", () => {
@@ -4389,7 +4389,7 @@ function renderChannelStatus(channels) {
       }
 
       box.innerHTML = agentDevices.map((d, i) => {
-        const online = d.online ? "🟢 在线" : "⚪ 离线";
+        const online = d.online ? "在线" : "离线";
         const name = escapeHtml(d.name);
         const hint = d.online
           ? ""
@@ -4399,7 +4399,7 @@ function renderChannelStatus(channels) {
         const models = d.models || [];
         const badModel = d.model && models.length > 0 && !models.includes(d.model);
         const badHint = badModel
-          ? `<div class="hint" style="margin-top:4px;color:#c62828">⚠️ 「${escapeHtml(d.model)}」这台设备上没有 —— pi 只认 <code>provider/model</code>（比如 <code>localhost/xxx</code>），不是聊天网关那个模型名；请从下面下拉里重选，或者留空用 pi 默认。</div>`
+          ? `<div class="hint" style="margin-top:4px;color:#c62828">「${escapeHtml(d.model)}」这台设备上没有 —— pi 只认 <code>provider/model</code>（比如 <code>localhost/xxx</code>），不是聊天网关那个模型名；请从下面下拉里重选，或者留空用 pi 默认。</div>`
           : "";
         const modelOptions = models.map((m) =>
           `<option value="${escapeHtml(m)}"${m === d.model ? " selected" : ""}>${escapeHtml(m)}</option>`).join("");
@@ -4557,7 +4557,7 @@ function renderChannelStatus(channels) {
         "① 点下面按钮下载启动脚本（里面已经带好地址、令牌、设备名，不用手改）",
         "② 把 pi-bridge.py 也放到本机同一目录（下面给链接）",
         isWin ? "③ 双击运行 connect-pi-bridge.cmd（窗口别关）" : "③ 运行 sh connect-pi-bridge.sh（窗口别关）",
-        "④ 回来后点「我已运行，检测连接」，看到 🟢 在线就是成了",
+        "④ 回来后点「我已运行，检测连接」，看到 在线 就是成了",
         "",
         "服务器文件：桥会额外把本机一个端口转发到服务器的 sshd（默认 2222），",
         "agent 就能用 sftp/scp 直接读写服务器文件；批量操作可用 server-files.py（上面也能下载）。",
@@ -4631,7 +4631,7 @@ function renderChannelStatus(channels) {
           const runsHtml = runs.length === 0
             ? '<div class="hint">还没跑过任务。</div>'
             : runs.map((r) => {
-                const st = r.ok === null || r.ok === undefined ? "⏳ 在跑" : (r.ok ? "✅" : "❌");
+                const st = r.ok === null || r.ok === undefined ? "进行中" : (r.ok ? "[成功]" : "[失败]");
                 const t = r.at ? new Date(r.at).toLocaleString() : "";
                 const extra = r.ok === null || r.ok === undefined ? "" : ` · ${(r.durationMs / 1000).toFixed(1)}s${r.toolCalls ? ` · ${r.toolCalls} 次工具` : ""}`;
                 return `<div class="hint" style="margin:3px 0">${escapeHtml(st)} ${escapeHtml(t)}${escapeHtml(extra)}｜${escapeHtml(r.prompt || "")}${r.result ? ` → ${escapeHtml(r.result)}` : ""}</div>`;
