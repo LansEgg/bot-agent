@@ -29,7 +29,8 @@ using BotAgent.Services.Permissions;
 using BotAgent.Services.Participation;
 using BotAgent.Services.Panel;
 using BotAgent.Services.Settings;
-
+using BotAgent.Services.Plugins;
+using BotAgent.Services.Plugins.Presets;
 namespace BotAgent.Host;
 
 /// <summary>
@@ -54,7 +55,8 @@ internal sealed record AppGraph(
     BootReport BootReport,
     LoginQrService LoginQr,
     HealthReportService HealthReports,
-    WebUiServer Web);
+    WebUiServer Web,
+    PluginManager Plugins);
 
 internal static class CompositionRoot
 {
@@ -215,13 +217,22 @@ internal static class CompositionRoot
 
         var circuitStatusProvider = BuildCircuitStatusProvider(brain, ttsBreaker, searchBreaker, riskBackoff);
 
+        var plugins = new PluginManager(ui.EmitLog);
+        plugins.Register(new MusicPresetPlugin(music));
+        plugins.Register(new VoicePresetPlugin(voice));
+        plugins.Register(new StickersPresetPlugin(stickers));
+        plugins.Register(new PokePresetPlugin(poke));
+        plugins.Register(new VibesPresetPlugin(vibes, participation));
+        plugins.Register(new ProfilesPresetPlugin(profiles));
+        plugins.Register(new WebSearchPresetPlugin(research, links));
+
         var web = BuildWebUiServer(settings, settingsBox, gateway, source, agent, loginQr,
             settingsHotReload, ui, stickers, mood, voice, music, research, registry, profiles, secrets, settingsStore, identity, scheduler,
             reply, participation, agentCmds, quotas, agentBridge, healthReports,
             sessionPolicies, traces, hostFacts, audit, approvals, local, official, feishu, platformRegistry, platformPolicies,
-            circuitStatusProvider);
+            circuitStatusProvider, plugins);
 
-        return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web);
+        return new AppGraph(settings, settingsBox, source, gateway, official, brain, agentBridge, agent, bootReport, loginQr, healthReports, web, plugins);
     }
 
     private static PokeUseCase BuildPokeUseCase(
@@ -308,7 +319,8 @@ internal static class CompositionRoot
         FeishuBotGateway? feishu,
         IPlatformRegistry platformRegistry,
         PlatformPolicyResolver platformPolicies,
-        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>> circuitStatusProvider)
+        Func<IReadOnlyList<Domain.Ops.CircuitStatusSnapshot>> circuitStatusProvider,
+        Domain.Plugins.IPluginRegistry? plugins = null)
     {
         // 面板自己的两条出网（模型列表探测 20s / 自建网易云登录 15s）
         var panelHttp = new HttpFetcher(TimeSpan.FromSeconds(20), msg => FileLog.Write("Net", msg), "panel-models");
@@ -343,7 +355,8 @@ internal static class CompositionRoot
             circuitStatusProvider: circuitStatusProvider,
             platformRegistry: platformRegistry,
             feishuGateway: feishu,
-            platformPolicies: platformPolicies);
+            platformPolicies: platformPolicies,
+            plugins: plugins);
     }
 
     /// <summary>

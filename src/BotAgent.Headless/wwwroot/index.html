@@ -436,6 +436,16 @@
             <span id="panelPasswordNotice" role="status"></span>
           </form>
         </div>
+        <!-- 插件中心：展示已装载的预设插件与扩展 -->
+        <div class="card" id="pluginsCard" data-category="model">
+          <div class="card-head">
+            <h3>插件与扩展</h3>
+            <p>基于微内核架构的可插拔模块中心。当前系统已分离并激活预设插件，开箱即用。</p>
+          </div>
+          <div id="pluginListContainer" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 12px;">
+            <div style="color:var(--text-secondary); font-size:13px;">正在加载插件清单…</div>
+          </div>
+        </div>
 
         <!-- 模型工作区：沿用现有设置接口，按运行上下文切换，不引入新的供应商存储协议。 -->
         <div class="card model-studio-card" id="modelSettingsCard" data-category="model">

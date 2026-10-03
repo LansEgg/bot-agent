@@ -2252,6 +2252,7 @@ function renderChannelStatus(channels) {
 
     await loadQuotaPanel();
     renderModelStudio();
+    await loadPluginsPanel();
 
     // 放在最后：全部回填成功才认为可保存
     state.settingsLoaded = true;
@@ -2513,6 +2514,40 @@ function renderChannelStatus(channels) {
       });
     }
   }
+  /* ─────────── 插件中心（只读展示）─────────── */
+  async function loadPluginsPanel() {
+    const box = $("pluginListContainer");
+    if (!box) return;
+    try {
+      const data = await api("/api/plugins");
+      const list = data.plugins || [];
+      if (list.length === 0) {
+        box.innerHTML = '<div style="color:var(--text-secondary); font-size:13px;">暂无加载的插件。</div>';
+        return;
+      }
+      box.innerHTML = list.map((p) => {
+        const catBadge = p.category === "Media" ? "多媒体" : p.category === "Channel" ? "通道" : "业务";
+        const statusBadge = p.isEnabled ? '<span style="color:var(--success, #10b981); font-weight:600;">● 已激活</span>' : '<span style="color:var(--text-secondary);">○ 已停用</span>';
+        return `
+          <div style="background:var(--subtle-hover, rgba(255,255,255,0.04)); border:1px solid var(--stroke, rgba(255,255,255,0.08)); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:600; font-size:14px; color:var(--text-primary);">${escapeHtml(p.name)}</span>
+              <span style="font-size:11px; padding:2px 6px; border-radius:4px; background:color-mix(in srgb, var(--accent) 15%, transparent); color:var(--accent);">${catBadge}</span>
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary); line-height:1.4; flex:1;">${escapeHtml(p.description)}</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px; font-size:11px;">
+              <span style="font-family:monospace; color:var(--text-tertiary);">${escapeHtml(p.id)} v${escapeHtml(p.version)}</span>
+              ${statusBadge}
+            </div>
+          </div>
+        `;
+      }).join("");
+    } catch (e) {
+      console.warn("加载插件列表失败：", e);
+      box.innerHTML = '<div style="color:var(--danger, #ef4444); font-size:13px;">加载插件中心失败。</div>';
+    }
+  }
+
   /* ─────────── 参与状态（P1，只读）─────────── */
   /* 为什么放这里：和上面的健康日报同一个理由 —— loadSettings() 可能要调它，
      定义必须是**顶层**的，藏在别的函数体里会 ReferenceError（然后被吞成“没反应”）。 */
